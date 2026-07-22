@@ -7,7 +7,7 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import { Input } from '$lib/components/ui/input';
 	import { TogglePill } from '$lib/components/ui/toggle-pill';
-	import { Loader2, GitBranch, RefreshCw, Webhook, Rocket, RefreshCcw, Copy, Check, XCircle, FolderGit2, Github, Key, KeyRound, Lock, FileText, HelpCircle, GripVertical, X, Download, Hammer, ArrowDownToLine, Zap, FolderOpen, Ban, TriangleAlert } from 'lucide-svelte';
+	import { Loader2, GitBranch, RefreshCw, Webhook, Rocket, RefreshCcw, Copy, Check, XCircle, FolderGit2, Github, Key, KeyRound, Lock, FileText, HelpCircle, GripVertical, X, Download, Hammer, ArrowDownToLine, Zap, FolderOpen, Ban, TriangleAlert, GitFork } from 'lucide-svelte';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import CronEditor from '$lib/components/cron-editor.svelte';
@@ -17,6 +17,7 @@
 	import { focusFirstInput } from '$lib/utils';
 	import { readJobResponse } from '$lib/utils/sse-fetch';
 	import { useSidebar } from '$lib/components/ui/sidebar/context.svelte';
+	import FilesystemBrowser from './FilesystemBrowser.svelte';
 
 	// Get sidebar state to adjust modal positioning
 	const sidebar = useSidebar();
@@ -73,9 +74,11 @@
 		credentials: GitCredential[];
 		onClose: () => void;
 		onSaved: () => void;
+		/** Called when a new repository is created inline (via Browse) so the parent can refresh the repos list */
+		onRepositoryCreated?: () => void;
 	}
 
-	let { open = $bindable(), gitStack = null, environmentId = null, repositories, credentials, onClose, onSaved }: Props = $props();
+	let { open = $bindable(), gitStack = null, environmentId = null, repositories, credentials, onClose, onSaved, onRepositoryCreated }: Props = $props();
 
 	// Form state - repository selection or creation
 	let formRepoMode = $state<'existing' | 'new'>('existing');
@@ -124,6 +127,73 @@
 	let isDraggingSplit = $state(false);
 	let containerRef: HTMLDivElement | null = $state(null);
 
+
+	// Git repository browse state
+	let showGitRepoBrowser = $state(false);
+	let gitBrowserApiUrl = $state('');
+	let gitBrowserRootPath = $state('');
+	let gitBrowserCloningMessage = $state<string | undefined>(undefined);
+	let gitBrowserError = $state<string | null>(null);
+	/** Tracks whether formComposePath was set by the Browse button (vs. typed manually) */
+	let formComposePathBrowsed = $state(false);
+
+	let cloneStatus = $state<'idle' | 'cloning' | 'success' | 'error'>('idle');
+	let cloneError = $state<string | null>(null);
+	let cloningRepoId = $state<number | null>(null);
+	let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+	function stopPolling() {
+		if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+	}
+
+	async function deleteRepositoryAndClose() {
+		const targetId = cloningRepoId ?? formRepositoryId;
+		if (!targetId) return;
+		try {
+			await fetch(`/api/git/repositories/${targetId}`, { method: 'DELETE' });
+			onRepositoryCreated?.(); // Refresh list
+		} catch (e) {
+			// ignore
+		}
+		cloneStatus = 'idle';
+		stopPolling();
+		cloningRepoId = null;
+	}
+
+	async function pollJob(jobId: string, repoId: number) {
+		try {
+			const res = await fetch(`/api/jobs/${jobId}`);
+			if (!res.ok) {
+				stopPolling();
+				cloneStatus = 'error';
+				cloneError = 'Could not retrieve clone status. The repository may still be cloning in the background.';
+				return;
+			}
+			const job = await res.json();
+			if (job.status === 'done') {
+				stopPolling();
+				cloneStatus = 'success';
+				cloningRepoId = null;
+				onRepositoryCreated?.(); // refresh list
+				// Switch to 'existing' mode so the stack-save flow uses the real repo ID
+				formRepositoryId = repoId;
+				formRepoMode = 'existing';
+				gitBrowserApiUrl = `/api/git/repositories/${repoId}/browse`;
+				gitBrowserRootPath = '';
+				showGitRepoBrowser = true;
+				cloneStatus = 'idle';
+			} else if (job.status === 'error') {
+				stopPolling();
+				cloneStatus = 'error';
+				// Keep cloningRepoId set so they can delete it
+				cloneError = (job.result as any)?.error ?? 'Clone failed — check the repository URL and credentials.';
+				onRepositoryCreated?.();
+			}
+			// status === 'running' → keep polling
+		} catch {
+			// Network error — keep polling silently
+		}
+	}
 
 	// Track which gitStack was initialized to avoid repeated resets
 	let lastInitializedStackId = $state<number | null | undefined>(undefined);
@@ -393,6 +463,7 @@
 			formStackName = '';
 			formStackNameUserModified = false;
 			formComposePath = 'compose.yaml';
+			formComposePathBrowsed = false;
 			formEnvFilePath = null;
 			formAutoUpdate = false;
 			formAutoUpdateCron = '0 3 * * *';
@@ -539,8 +610,10 @@
 	}
 
 	// Auto-populate stack name from selected repo and compose path (only if user hasn't manually edited)
+	// Auto-populate stack name from selected repo and compose path (only if user hasn't manually edited
+	// AND the path wasn't set via the Browse button — Browse already sets the optimal name from parent dir).
 	$effect(() => {
-		if (formRepoMode === 'existing' && formRepositoryId && !gitStack && !formStackNameUserModified) {
+		if (formRepoMode === 'existing' && formRepositoryId && !gitStack && !formStackNameUserModified && !formComposePathBrowsed) {
 			const repo = repositories.find(r => r.id === formRepositoryId);
 			if (repo) {
 				// Normalize repo name: lowercase, spaces/underscores to hyphens, strip invalid chars
@@ -567,6 +640,125 @@
 			}
 		}
 	});
+
+	/**
+	 * Open the FilesystemBrowser scoped to a git repository's clone directory.
+	 *
+	 * For "existing" repos: opens the browse dialog immediately. The browse API
+	 * will clone the repo synchronously on first request if it isn't on disk yet.
+	 *
+	 * For "new" repos: creates the repository in the DB first (giving it a real
+	 * ID, standard clone path, and making it visible in the dropdown for future
+	 * stacks), then opens the browse API for the newly created repo.
+	 */
+	async function openGitRepoBrowser() {
+		gitBrowserError = null;
+
+		if (formRepoMode === 'new') {
+			// Validate required fields before creating the repo
+			const newErrors: typeof errors = {};
+			if (!formNewRepoName.trim()) newErrors.repoName = 'Required before browsing';
+			if (!formNewRepoUrl.trim()) newErrors.repoUrl = 'Required before browsing';
+			if (newErrors.repoName || newErrors.repoUrl) {
+				errors = { ...errors, ...newErrors };
+				return;
+			}
+
+			try {
+				// Check if a repo with this URL+branch already exists to avoid creating duplicates
+				const existingRes = await fetch('/api/git/repositories');
+				const allRepos: GitRepository[] = existingRes.ok ? await existingRes.json() : [];
+				const existingRepo = allRepos.find(
+					r => r.url === formNewRepoUrl.trim() && r.branch === (formNewRepoBranch || 'main')
+				);
+
+				let repoId: number;
+				if (existingRepo) {
+					// Reuse the existing repository — no duplicate created
+					repoId = existingRepo.id;
+					formNewRepoName = existingRepo.name;
+
+					formRepositoryId = repoId;
+					formRepoMode = 'existing';
+					gitBrowserApiUrl = `/api/git/repositories/${repoId}/browse`;
+					gitBrowserRootPath = '';
+					showGitRepoBrowser = true;
+				} else {
+					// Create the repository in the DB (also triggers background clone-on-save)
+					const res = await fetch('/api/git/repositories', {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({
+							name: formNewRepoName.trim(),
+							url: formNewRepoUrl.trim(),
+							branch: formNewRepoBranch || 'main',
+							credentialId: formNewRepoCredentialId
+						})
+					});
+					const data = await res.json();
+					if (!res.ok) {
+						gitBrowserError = data.error || 'Failed to save repository';
+						toast.error('Failed to save repository', { description: gitBrowserError || undefined });
+						return;
+					}
+					repoId = data.id;
+
+					cloneStatus = 'cloning';
+					cloneError = null;
+					cloningRepoId = repoId;
+					pollJob(data.jobId, repoId);
+					pollTimer = setInterval(() => pollJob(data.jobId, repoId), 1500);
+				}
+			} catch (e) {
+				gitBrowserError = 'Failed to save repository';
+				toast.error('Failed to save repository');
+			}
+		} else {
+			// Existing repo — open browse dialog immediately.
+			// The browse API will pull latest changes before listing (or clone if not on disk yet).
+			gitBrowserApiUrl = `/api/git/repositories/${formRepositoryId}/browse`;
+			gitBrowserRootPath = '';
+			showGitRepoBrowser = true;
+		}
+	}
+
+	/**
+	 * Called when the user selects a file in the git repo browser.
+	 * Converts the absolute clone path to a repo-relative path, stores it in
+	 * formComposePath, and auto-derives the stack name from the parent directory
+	 * (e.g. selecting "immich/compose.yaml" → stack name defaults to "immich").
+	 */
+	function handleGitBrowseSelect(absolutePath: string, _name: string) {
+		// Compute repo-relative path by stripping the repo root prefix
+		const relativePath = gitBrowserRootPath && absolutePath.startsWith(gitBrowserRootPath)
+			? absolutePath.slice(gitBrowserRootPath.length).replace(/^\//, '')
+			: absolutePath;
+
+		formComposePath = relativePath;
+		formComposePathBrowsed = true;
+
+		// Auto-set stack name from the parent directory of the selected compose file
+		// (only if the user hasn't manually typed a name)
+		if (!formStackNameUserModified) {
+			const parts = relativePath.split('/');
+			if (parts.length >= 2) {
+				// e.g. "immich/compose.yaml" → parent dir is "immich"
+				const parentDir = parts[parts.length - 2];
+				formStackName = parentDir
+					.toLowerCase()
+					.replace(/[\s_]+/g, '-')
+					.replace(/[^a-z0-9-]/g, '')
+					.replace(/-+/g, '-')
+					.replace(/^-|-$/g, '');
+			}
+			// If file is at repo root (parts.length === 1), the $effect will pick
+			// up the typed repo name since formComposePathBrowsed is still true but
+			// there's no parent dir to extract — leave formStackName unchanged.
+		}
+
+		showGitRepoBrowser = false;
+		gitBrowserCloningMessage = undefined;
+	}
 </script>
 
 <Dialog.Root bind:open onOpenChange={(isOpen) => { if (isOpen) focusFirstInput(); }}>
@@ -794,8 +986,33 @@
 
 			<div class="space-y-2">
 				<Label for="compose-path">Compose file path</Label>
-				<Input id="compose-path" bind:value={formComposePath} placeholder="compose.yaml" />
-				<p class="text-xs text-muted-foreground">Path to the compose file within the repository</p>
+				<div class="flex gap-2">
+					<Input
+						id="compose-path"
+						bind:value={formComposePath}
+						placeholder="compose.yaml"
+						class="flex-1"
+						oninput={() => { formComposePathBrowsed = false; }}
+					/>
+					<Button
+						variant="outline"
+						size="sm"
+						onclick={openGitRepoBrowser}
+						disabled={formRepoMode === 'existing' ? !formRepositoryId : (!formNewRepoName.trim() || !formNewRepoUrl.trim())}
+						title="Browse repository for compose file"
+						class="shrink-0"
+					>
+						<FolderOpen class="w-4 h-4" />
+						Browse
+					</Button>
+				</div>
+				{#if gitBrowserError}
+					<p class="text-xs text-destructive">{gitBrowserError}</p>
+				{:else if formComposePathBrowsed}
+					<p class="text-xs text-green-600 dark:text-green-400">✓ Selected from repository</p>
+				{:else}
+					<p class="text-xs text-muted-foreground">Path to the compose file within the repository, or click Browse to select</p>
+				{/if}
 			</div>
 
 			<!-- Additional env file for variable substitution -->
@@ -1147,5 +1364,70 @@
 				OK
 			</Button>
 		</div>
+	</Dialog.Content>
+</Dialog.Root>
+
+<!-- Git repository filesystem browser -->
+<!-- Opens when user clicks Browse next to the compose file path field -->
+<FilesystemBrowser
+	bind:open={showGitRepoBrowser}
+	title="Select compose file"
+	icon={FolderGit2}
+	description="Browse the repository contents and select a compose file"
+	selectFilter={/\.ya?ml$/i}
+	selectMode="file"
+	apiUrl={gitBrowserApiUrl}
+	bind:rootPath={gitBrowserRootPath}
+	bind:cloningMessage={gitBrowserCloningMessage}
+	onSelect={handleGitBrowseSelect}
+	onClose={() => {
+		showGitRepoBrowser = false;
+		gitBrowserCloningMessage = undefined;
+	}}
+/>
+
+<!-- Cloning Progress Dialog for newly added repo inside Stack creation -->
+<Dialog.Root open={cloneStatus === 'cloning' || cloneStatus === 'error'} onOpenChange={(v) => { if (!v) { cloneStatus = 'idle'; stopPolling(); } }}>
+	<Dialog.Content class="max-w-lg">
+		{#if cloneStatus === 'cloning'}
+			<!-- ── Cloning state ── -->
+			<Dialog.Header>
+				<Dialog.Title class="flex items-center gap-2">
+					<GitFork class="w-5 h-5" />
+					Cloning repository…
+				</Dialog.Title>
+				<Dialog.Description>
+					Please wait while the repository is being cloned. This may take a moment.
+				</Dialog.Description>
+			</Dialog.Header>
+			<div class="flex flex-col items-center justify-center gap-4 py-10">
+				<Loader2 class="w-10 h-10 animate-spin text-muted-foreground" />
+				<p class="text-sm text-muted-foreground">Cloning from <span class="font-mono text-foreground">{formNewRepoUrl}</span>…</p>
+			</div>
+		{:else if cloneStatus === 'error'}
+			<!-- ── Error state ── -->
+			<Dialog.Header>
+				<Dialog.Title class="flex items-center gap-2 text-destructive">
+					<XCircle class="w-5 h-5" />
+					Clone failed
+				</Dialog.Title>
+				<Dialog.Description>
+					The repository was saved but could not be cloned. Check the error below.
+				</Dialog.Description>
+			</Dialog.Header>
+			<div class="rounded-md border border-destructive/40 bg-destructive/5 p-4 my-2">
+				<p class="text-sm font-medium text-destructive mb-1">Git error</p>
+				<pre class="text-xs text-destructive/90 whitespace-pre-wrap break-all font-mono">{cloneError}</pre>
+			</div>
+			<p class="text-xs text-muted-foreground">
+				You can fix the URL or credentials to retry, or delete it to start over.
+			</p>
+			<Dialog.Footer class="gap-2 flex-col sm:flex-row">
+				<Button variant="destructive" onclick={deleteRepositoryAndClose}>
+					Delete repository
+				</Button>
+				<Button variant="outline" onclick={() => { cloneStatus = 'idle'; stopPolling(); }}>Close</Button>
+			</Dialog.Footer>
+		{/if}
 	</Dialog.Content>
 </Dialog.Root>

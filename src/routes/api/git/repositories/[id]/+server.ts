@@ -7,7 +7,8 @@ import {
 	getGitCredentials,
 	getGitStacksByRepositoryId
 } from '$lib/server/db';
-import { deleteRepositoryFiles, deleteGitStackFiles } from '$lib/server/git';
+import { deleteRepositoryFiles, deleteGitStackFiles, syncRepositoryExclusive } from '$lib/server/git';
+import { createJob, completeJob, failJob } from '$lib/server/jobs';
 import { authorize } from '$lib/server/authorize';
 import { auditGitRepository } from '$lib/server/audit';
 import { computeAuditDiff } from '$lib/utils/diff';
@@ -84,7 +85,19 @@ export const PUT: RequestHandler = async (event) => {
 		// Audit log
 		await auditGitRepository(event, 'update', repository.id, repository.name, diff);
 
-		return json(repository);
+		// Create a job to track the re-clone progress so the frontend can poll for the result
+		const job = createJob();
+		syncRepositoryExclusive(id).then((result) => {
+			if (result.success) {
+				completeJob(job, { success: true, commit: result.commit });
+			} else {
+				failJob(job, result.error ?? 'Clone failed');
+			}
+		}).catch((err: unknown) => {
+			failJob(job, err instanceof Error ? err.message : String(err));
+		});
+
+		return json({ ...repository, jobId: job.id });
 	} catch (error: any) {
 		console.error('Failed to update git repository:', error);
 		if (error.message?.includes('UNIQUE constraint failed')) {
@@ -121,7 +134,7 @@ export const DELETE: RequestHandler = async (event) => {
 		}
 
 		// Delete repository clone directory
-		deleteRepositoryFiles(id);
+		deleteRepositoryFiles(repository.name, id);
 
 		const deleted = await deleteGitRepository(id);
 		if (!deleted) {

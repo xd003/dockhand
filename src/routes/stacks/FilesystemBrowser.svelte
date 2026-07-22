@@ -33,6 +33,25 @@
 		onScanDirectory?: (path: string) => void;
 		/** For adopt mode: show loading state on scan button */
 		scanning?: boolean;
+		/**
+		 * If set, directory-listing requests are sent to this URL instead of /api/system/files.
+		 * The endpoint must accept a `?path=` query parameter and return the same
+		 * { path, entries: FileEntry[], repoRoot?, parent } shape.
+		 * Used for browsing git repository clones without exposing the full host filesystem.
+		 */
+		apiUrl?: string;
+		/**
+		 * If set, the browser will not navigate above this path (i.e. "Go up" is
+		 * disabled when currentPath === rootPath). Used together with apiUrl to
+		 * confine navigation to a git repository clone directory.
+		 */
+		rootPath?: string;
+		/**
+		 * When set to a non-empty string, a fullscreen spinner overlay is shown
+		 * over the dialog content with this message. Used to indicate that the
+		 * repository is being cloned before the first listing is available.
+		 */
+		cloningMessage?: string;
 		onSelect: (path: string, name: string) => void;
 		onClose: () => void;
 	}
@@ -49,6 +68,9 @@
 		onFilePreview,
 		onScanDirectory,
 		scanning = false,
+		apiUrl,
+		rootPath = $bindable(undefined),
+		cloningMessage = $bindable(undefined),
 		onSelect,
 		onClose
 	}: Props = $props();
@@ -83,11 +105,16 @@
 	// Load directory when dialog opens
 	$effect(() => {
 		if (open && !currentPath) {
-			// Wait a tick for the panel to load, then use first location or initialPath
-			setTimeout(() => {
-				const firstLocation = recentLocationsPanel?.getFirstLocation();
-				loadDirectory(firstLocation || initialPath);
-			}, 50);
+			if (apiUrl) {
+				// Git-repo browse mode: start at the repo root (no recent-locations panel)
+				loadDirectory(rootPath || '/');
+			} else {
+				// Wait a tick for the panel to load, then use first location or initialPath
+				setTimeout(() => {
+					const firstLocation = recentLocationsPanel?.getFirstLocation();
+					loadDirectory(firstLocation || initialPath);
+				}, 50);
+			}
 		}
 	});
 
@@ -100,7 +127,11 @@
 		error = null;
 
 		try {
-			const res = await fetch(`/api/system/files?path=${encodeURIComponent(path)}`);
+			// Use custom apiUrl (git repo browse) or default host filesystem API
+			const endpoint = apiUrl
+				? `${apiUrl}?path=${encodeURIComponent(path)}`
+				: `/api/system/files?path=${encodeURIComponent(path)}`;
+			const res = await fetch(endpoint);
 			const data = await res.json();
 
 			if (!res.ok) {
@@ -110,6 +141,17 @@
 
 			currentPath = data.path;
 			entries = data.entries;
+
+			// For git-repo browse mode: capture the repo root returned by the API.
+			// This allows the parent to compute relative paths from the absolute clone path.
+			if (apiUrl && data.repoRoot && !rootPath) {
+				rootPath = data.repoRoot;
+			}
+
+			// Clear the cloning spinner on first successful listing
+			if (cloningMessage) {
+				cloningMessage = undefined;
+			}
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to load directory';
 		} finally {
@@ -273,7 +315,12 @@
 		return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 	}
 
-	const canGoUp = $derived(currentPath && currentPath !== '/');
+	// In git-repo browse mode, don't allow navigating above the repo root
+	const canGoUp = $derived(
+		currentPath &&
+		currentPath !== '/' &&
+		!(rootPath && currentPath === rootPath)
+	);
 
 	// In directory mode, only show directories; otherwise show all
 	const filteredEntries = $derived(
@@ -287,6 +334,13 @@
 
 <Dialog.Root bind:open onOpenChange={(isOpen) => { if (!isOpen) handleClose(); }}>
 	<Dialog.Content class="max-w-4xl h-[80vh] flex flex-col {isAdoptMode ? 'p-0 gap-0' : ''}">
+		<!-- Cloning overlay: shown while a repository is being cloned before first listing -->
+		{#if cloningMessage}
+			<div class="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-background/90 rounded-lg">
+				<Loader2 class="w-8 h-8 animate-spin text-primary" />
+				<p class="text-sm text-muted-foreground">{cloningMessage}</p>
+			</div>
+		{/if}
 		<Dialog.Header class={isAdoptMode ? 'px-6 py-4 border-b shrink-0' : ''}>
 			<Dialog.Title class="flex items-center gap-2">
 				{#if icon}
@@ -321,6 +375,7 @@
 						<ArrowUp class="w-4 h-4" />
 					</button>
 					<code class="text-xs bg-muted px-2 py-1 rounded truncate flex-1">{currentPath || '/'}</code>
+					{#if !apiUrl}
 					{#if creatingFolder}
 						<div class="flex items-center gap-1">
 							<Input
@@ -361,6 +416,7 @@
 							<FolderPlus class="w-4 h-4" />
 						</button>
 					{/if}
+				{/if}
 					{#if isAdoptMode}
 						<Button
 							variant="default"

@@ -2541,6 +2541,14 @@
 		editingGitStack = null;
 	}}
 	onSaved={fetchStacks}
+	onRepositoryCreated={async () => {
+		try {
+			const reposRes = await fetch('/api/git/repositories');
+			gitRepositories = await reposRes.json();
+		} catch {
+			// Non-fatal — dropdown may not reflect the new repo immediately
+		}
+	}}
 />
 
 <ImportStackModal

@@ -5,6 +5,8 @@ import {
 	createGitRepository,
 	getGitCredentials
 } from '$lib/server/db';
+import { syncRepositoryExclusive } from '$lib/server/git';
+import { createJob, completeJob, failJob } from '$lib/server/jobs';
 import { authorize } from '$lib/server/authorize';
 import { auditGitRepository } from '$lib/server/audit';
 
@@ -64,7 +66,19 @@ export const POST: RequestHandler = async (event) => {
 		// Audit log
 		await auditGitRepository(event, 'create', repository.id, repository.name);
 
-		return json(repository);
+		// Create a job to track the clone progress so the frontend can poll for the result
+		const job = createJob();
+		syncRepositoryExclusive(repository.id).then((result) => {
+			if (result.success) {
+				completeJob(job, { success: true, commit: result.commit });
+			} else {
+				failJob(job, result.error ?? 'Clone failed');
+			}
+		}).catch((err: unknown) => {
+			failJob(job, err instanceof Error ? err.message : String(err));
+		});
+
+		return json({ ...repository, cloneStarted: true, jobId: job.id });
 	} catch (error: any) {
 		console.error('Failed to create git repository:', error);
 		if (error.message?.includes('UNIQUE constraint failed')) {

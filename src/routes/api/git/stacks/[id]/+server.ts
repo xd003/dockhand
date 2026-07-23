@@ -3,7 +3,6 @@ import type { RequestHandler } from './$types';
 import { getGitStack, updateGitStack, deleteGitStack, deleteStackSource, updateStackSourceName, updateStackEnvVarsName, setStackEnvVars, getStackEnvVars, deleteStackEnvVars } from '$lib/server/db';
 import { deleteGitStackFiles, deployGitStack } from '$lib/server/git';
 import { authorize } from '$lib/server/authorize';
-import { registerSchedule, unregisterSchedule } from '$lib/server/scheduler';
 import { auditGitStack } from '$lib/server/audit';
 import { computeAuditDiff } from '$lib/utils/diff';
 import { createJobResponse } from '$lib/server/sse';
@@ -68,11 +67,6 @@ export const PUT: RequestHandler = async (event) => {
 			stackName: data.stackName,
 			composePath: data.composePath,
 			envFilePath: data.envFilePath,
-			autoUpdate: data.autoUpdate,
-			autoUpdateSchedule: data.autoUpdateSchedule,
-			autoUpdateCron: data.autoUpdateCron,
-			webhookEnabled: data.webhookEnabled,
-			webhookSecret: data.webhookSecret,
 			contextDir: data.contextDir,
 			buildOnDeploy: data.buildOnDeploy,
 			noBuildCache: data.noBuildCache,
@@ -86,16 +80,9 @@ export const PUT: RequestHandler = async (event) => {
 			await updateStackEnvVarsName(oldStackName, data.stackName, existing.environmentId);
 		}
 
-		// Register or unregister schedule with croner
-		if (updated.autoUpdate && updated.autoUpdateCron) {
-			await registerSchedule(id, 'git_stack_sync', updated.environmentId);
-		} else {
-			unregisterSchedule(id, 'git_stack_sync');
-		}
-
 		// Compute diff for audit (exclude sensitive fields)
 		const diff = computeAuditDiff(existing, updated, {
-			excludeFields: ['webhookSecret', 'createdAt', 'updatedAt', 'lastSync', 'lastCommit', 'syncStatus', 'syncError']
+			excludeFields: ['createdAt', 'updatedAt', 'lastSync', 'lastCommit', 'syncStatus', 'syncError']
 		});
 
 		// Audit log
@@ -185,9 +172,6 @@ export const DELETE: RequestHandler = async (event) => {
 		if (auth.authEnabled && !await auth.can('stacks', 'remove', existing.environmentId || undefined)) {
 			return json({ error: 'Permission denied' }, { status: 403 });
 		}
-
-		// Unregister schedule from croner
-		unregisterSchedule(id, 'git_stack_sync');
 
 		// Delete git files first
 		await deleteGitStackFiles(id, existing.stackName, existing.environmentId);

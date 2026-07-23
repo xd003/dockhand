@@ -13,8 +13,10 @@ import { Cron } from 'croner';
 import {
 	getEnabledAutoUpdateSettings,
 	getEnabledAutoUpdateGitStacks,
+	getEnabledAutoUpdateRepositories,
 	getAutoUpdateSettingById,
 	getGitStack,
+	getGitRepository,
 	getScheduleCleanupCron,
 	getEventCleanupCron,
 	getScannerCleanupCron,
@@ -41,6 +43,7 @@ import {
 // Import task execution functions
 import { runContainerUpdate } from './tasks/container-update';
 import { runGitStackSync } from './tasks/git-stack-sync';
+import { runGitRepositorySync } from './tasks/git-repository-sync';
 import { runEnvUpdateCheckJob } from './tasks/env-update-check';
 import { runImagePrune } from './tasks/image-prune';
 import {
@@ -274,6 +277,25 @@ export async function refreshAllSchedules(): Promise<void> {
 		console.error('[Scheduler] Error loading git stack schedules:', errorMsg);
 	}
 
+	// Register git repository auto-sync schedules
+	let gitRepoCount = 0;
+	try {
+		const gitRepos = await getEnabledAutoUpdateRepositories();
+		for (const repo of gitRepos) {
+			if (repo.autoUpdateCron) {
+				const registered = await registerSchedule(
+					repo.id,
+					'git_repository_sync',
+					null
+				);
+				if (registered) gitRepoCount++;
+			}
+		}
+	} catch (error) {
+		const errorMsg = error instanceof Error ? error.message : String(error);
+		console.error('[Scheduler] Error loading git repository schedules:', errorMsg);
+	}
+
 	// Register environment update check schedules
 	let envUpdateCheckCount = 0;
 	try {
@@ -312,7 +334,7 @@ export async function refreshAllSchedules(): Promise<void> {
 		console.error('[Scheduler] Error loading image prune schedules:', errorMsg);
 	}
 
-	console.log(`[Scheduler] Registered ${containerCount} container schedules, ${gitStackCount} git stack schedules, ${envUpdateCheckCount} env update check schedules, ${imagePruneCount} image prune schedules`);
+	console.log(`[Scheduler] Registered ${containerCount} container schedules, ${gitStackCount} git stack schedules, ${gitRepoCount} git repo schedules, ${envUpdateCheckCount} env update check schedules, ${imagePruneCount} image prune schedules`);
 }
 
 /**
@@ -321,7 +343,7 @@ export async function refreshAllSchedules(): Promise<void> {
  */
 export async function registerSchedule(
 	scheduleId: number,
-	type: 'container_update' | 'git_stack_sync' | 'env_update_check' | 'image_prune',
+	type: 'container_update' | 'git_stack_sync' | 'git_repository_sync' | 'env_update_check' | 'image_prune',
 	environmentId: number | null
 ): Promise<boolean> {
 	const key = `${type}-${scheduleId}`;
@@ -347,6 +369,12 @@ export async function registerSchedule(
 			cronExpression = stack.autoUpdateCron;
 			entityName = stack.stackName;
 			enabled = stack.autoUpdate;
+		} else if (type === 'git_repository_sync') {
+			const repo = await getGitRepository(scheduleId);
+			if (!repo) return false;
+			cronExpression = repo.autoUpdateCron;
+			entityName = repo.name;
+			enabled = repo.autoUpdate;
 		} else if (type === 'env_update_check') {
 			const config = await getEnvUpdateCheckSettings(scheduleId);
 			if (!config) return false;
@@ -387,6 +415,10 @@ export async function registerSchedule(
 				const stack = await getGitStack(scheduleId);
 				if (!stack || !stack.autoUpdate) return;
 				await runGitStackSync(scheduleId, stack.stackName, environmentId, 'cron');
+			} else if (type === 'git_repository_sync') {
+				const repo = await getGitRepository(scheduleId);
+				if (!repo || !repo.autoUpdate) return;
+				await runGitRepositorySync(scheduleId, repo.name, 'cron');
 			} else if (type === 'env_update_check') {
 				const config = await getEnvUpdateCheckSettings(scheduleId);
 				if (!config || !config.enabled) return;
@@ -414,7 +446,7 @@ export async function registerSchedule(
  */
 export function unregisterSchedule(
 	scheduleId: number,
-	type: 'container_update' | 'git_stack_sync' | 'env_update_check' | 'image_prune'
+	type: 'container_update' | 'git_stack_sync' | 'git_repository_sync' | 'env_update_check' | 'image_prune'
 ): void {
 	const key = `${type}-${scheduleId}`;
 	const job = activeJobs.get(key);
@@ -623,6 +655,44 @@ export async function triggerGitStackSyncFromWebhook(stackId: number): Promise<{
 
 		// Run in background
 		runGitStackSync(stackId, stack.stackName, stack.environmentId, 'webhook');
+
+		return { success: true };
+	} catch (error: any) {
+		return { success: false, error: error.message };
+	}
+}
+
+/**
+ * Manually trigger a git repository sync.
+ */
+export async function triggerGitRepositorySync(repositoryId: number): Promise<{ success: boolean; executionId?: number; error?: string }> {
+	try {
+		const repo = await getGitRepository(repositoryId);
+		if (!repo) {
+			return { success: false, error: 'Git repository not found' };
+		}
+
+		// Run in background
+		runGitRepositorySync(repositoryId, repo.name, 'manual');
+
+		return { success: true };
+	} catch (error: any) {
+		return { success: false, error: error.message };
+	}
+}
+
+/**
+ * Trigger git repository sync from webhook (called from webhook endpoint).
+ */
+export async function triggerGitRepositorySyncFromWebhook(repositoryId: number): Promise<{ success: boolean; executionId?: number; error?: string }> {
+	try {
+		const repo = await getGitRepository(repositoryId);
+		if (!repo) {
+			return { success: false, error: 'Git repository not found' };
+		}
+
+		// Run in background
+		runGitRepositorySync(repositoryId, repo.name, 'webhook');
 
 		return { success: true };
 	} catch (error: any) {

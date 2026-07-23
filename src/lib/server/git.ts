@@ -9,6 +9,7 @@ import {
 	getGitStack,
 	updateGitStack,
 	upsertStackSource,
+	getFullGitStacksByRepositoryId,
 	type GitRepository,
 	type GitCredential,
 	type GitStackWithRepo
@@ -769,38 +770,77 @@ export async function syncRepository(repoId: number): Promise<SyncResult> {
 	}
 }
 
-export async function deployFromRepository(repoId: number): Promise<{ success: boolean; output?: string; error?: string }> {
-	const repo = await getGitRepository(repoId);
+export async function deployFromRepositoryWithFanOut(
+	repositoryId: number,
+	log?: (msg: string) => void
+): Promise<{
+	success: boolean;
+	output?: string;
+	error?: string;
+	stacks?: Array<{ id: number; status: 'deployed' | 'skipped' | 'failed'; error?: string }>;
+}> {
+	const _log = log || console.log;
+
+	const repo = await getGitRepository(repositoryId);
 	if (!repo) {
 		return { success: false, error: 'Repository not found' };
 	}
 
-	// Sync first
-	const syncResult = await syncRepository(repoId);
+	_log(`[Git] Starting fan-out deployment for repository "${repo.name}" (ID: ${repositoryId})`);
+
+	// Force a repo-level sync first so we pull exactly once for all stacks
+	const syncResult = await syncRepositoryExclusive(repositoryId);
 	if (!syncResult.success) {
+		_log(`[Git] Repository sync failed: ${syncResult.error}`);
 		return { success: false, error: syncResult.error };
 	}
 
-	const stackName = repo.name;
+	_log(`[Git] Repository synced. Current commit: ${syncResult.commit}`);
 
-	// Deploy using unified function - handles both new and existing stacks
-	const result = await deployStack({
-		name: stackName,
-		compose: syncResult.composeContent!,
-		envId: repo.environmentId
-	});
-
-	if (result.success) {
-		// Record the stack source
-		await upsertStackSource({
-			stackName: stackName,
-			environmentId: repo.environmentId,
-			sourceType: 'git',
-			gitRepositoryId: repoId
-		});
+	// Get all stacks tied to this repository
+	const stacks = await getFullGitStacksByRepositoryId(repositoryId);
+	if (stacks.length === 0) {
+		_log(`[Git] No stacks linked to repository "${repo.name}".`);
+		return { success: true, stacks: [] };
 	}
 
-	return result;
+	_log(`[Git] Found ${stacks.length} stack(s) linked to this repository.`);
+
+	const results = [];
+	let hasError = false;
+
+	for (const stack of stacks) {
+		_log(`[Git] Evaluating stack "${stack.stackName}"...`);
+		
+		try {
+			// deployGitStack internally computes diffs based on the new commit vs the stack's lastCommit
+			const deployResult = await deployGitStack(stack.id, { force: false });
+			
+			if (deployResult.success) {
+				if (deployResult.skipped) {
+					_log(`[Git] Stack "${stack.stackName}" was skipped (no changes).`);
+					results.push({ id: stack.id, status: 'skipped' as const });
+				} else {
+					_log(`[Git] Stack "${stack.stackName}" was successfully deployed.`);
+					results.push({ id: stack.id, status: 'deployed' as const });
+				}
+			} else {
+				_log(`[Git] Stack "${stack.stackName}" failed to deploy: ${deployResult.error}`);
+				hasError = true;
+				results.push({ id: stack.id, status: 'failed' as const, error: deployResult.error });
+			}
+		} catch (err: any) {
+			_log(`[Git] Stack "${stack.stackName}" threw an error: ${err.message}`);
+			hasError = true;
+			results.push({ id: stack.id, status: 'failed' as const, error: err.message });
+		}
+	}
+
+	return {
+		success: !hasError,
+		stacks: results,
+		error: hasError ? 'One or more stacks failed to deploy' : undefined
+	};
 }
 
 export async function checkForUpdates(repoId: number): Promise<{ hasUpdates: boolean; currentCommit?: string; latestCommit?: string; error?: string }> {
@@ -862,6 +902,28 @@ export function deleteRepositoryFiles(repoName: string, repoId?: number): void {
 		} catch {
 			// Ignore legacy cleanup errors
 		}
+	}
+}
+
+/**
+ * Rename the on-disk clone directory when a repository is renamed.
+ * No-op if sanitized paths are identical or the source dir is missing.
+ */
+export function renameRepositoryFiles(oldName: string, newName: string): void {
+	const oldPath = getRepoPath(oldName);
+	const newPath = getRepoPath(newName);
+	if (oldPath === newPath) return;
+	if (!existsSync(oldPath)) return;
+	if (existsSync(newPath)) {
+		console.warn(`[Git] Cannot rename repo dir ${oldPath} -> ${newPath}: target already exists`);
+		return;
+	}
+	try {
+		renameSync(oldPath, newPath);
+		console.log(`[Git] Renamed repo dir ${oldPath} -> ${newPath}`);
+	} catch (error) {
+		const errorMsg = error instanceof Error ? error.message : String(error);
+		console.error('[Git] Failed to rename repository files:', errorMsg);
 	}
 }
 

@@ -1,7 +1,7 @@
 import { json, text } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getGitRepository } from '$lib/server/db';
-import { deployFromRepository } from '$lib/server/git';
+import { triggerGitRepositorySyncFromWebhook } from '$lib/server/scheduler';
 import { auditGitRepository } from '$lib/server/audit';
 import crypto from 'node:crypto';
 
@@ -75,11 +75,17 @@ export const POST: RequestHandler = async (event) => {
 		// }
 
 		// Deploy from repository
-		const result = await deployFromRepository(id);
+		// Trigger background sync
+		const result = await triggerGitRepositorySyncFromWebhook(id);
 		await auditGitRepository(event, 'webhook', id, repository.name, {
-			method: 'POST', source, result: result.success ? 'deployed' : 'failed'
+			method: 'POST', source, result: result.success ? 'triggered' : 'failed'
 		});
-		return json(result);
+		
+		if (!result.success) {
+			return json(result, { status: 500 });
+		}
+		
+		return json({ success: true, message: 'Repository sync triggered' }, { status: 202 });
 	} catch (error: any) {
 		console.error('Webhook error:', error);
 		return json({ success: false, error: error.message }, { status: 500 });
@@ -114,11 +120,17 @@ export const GET: RequestHandler = async (event) => {
 		}
 
 		// Deploy from repository
-		const result = await deployFromRepository(id);
+		// Trigger background sync
+		const result = await triggerGitRepositorySyncFromWebhook(id);
 		await auditGitRepository(event, 'webhook', id, repository.name, {
-			method: 'GET', source: 'get', result: result.success ? 'deployed' : 'failed'
+			method: 'GET', source: 'get', result: result.success ? 'triggered' : 'failed'
 		});
-		return json(result);
+		
+		if (!result.success) {
+			return json(result, { status: 500 });
+		}
+		
+		return json({ success: true, message: 'Repository sync triggered' }, { status: 202 });
 	} catch (error: any) {
 		console.error('Webhook GET error:', error);
 		return json({ success: false, error: error.message }, { status: 500 });

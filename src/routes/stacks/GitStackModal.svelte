@@ -54,11 +54,6 @@
 		environmentId: number | null;
 		composePath: string;
 		envFilePath: string | null;
-		autoUpdate: boolean;
-		autoUpdateSchedule: 'daily' | 'weekly' | 'custom';
-		autoUpdateCron: string;
-		webhookEnabled: boolean;
-		webhookSecret: string | null;
 		contextDir: string | null;
 		buildOnDeploy: boolean;
 		noBuildCache: boolean;
@@ -87,15 +82,15 @@
 	let formNewRepoUrl = $state('');
 	let formNewRepoBranch = $state('main');
 	let formNewRepoCredentialId = $state<number | null>(null);
+	let formNewRepoAutoUpdate = $state(false);
+	let formNewRepoAutoUpdateCron = $state('0 3 * * *');
+	let formNewRepoWebhookEnabled = $state(false);
+	let formNewRepoWebhookSecret = $state('');
 
 	// Form state - stack deployment config
 	let formStackName = $state('');
 	let formStackNameUserModified = $state(false);
 	let formComposePath = $state('compose.yaml');
-	let formAutoUpdate = $state(false);
-	let formAutoUpdateCron = $state('0 3 * * *');
-	let formWebhookEnabled = $state(false);
-	let formWebhookSecret = $state('');
 	let formContextDir = $state<string | null>(null);
 	let formBuildOnDeploy = $state(false);
 	let formNoBuildCache = $state(false);
@@ -109,8 +104,6 @@
 
 	// Stack name validation: must start with alphanumeric, can contain alphanumeric, hyphens, underscores
 	const STACK_NAME_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
-	let copiedWebhookUrl = $state<'ok' | 'error' | null>(null);
-	let copiedWebhookSecret = $state<'ok' | 'error' | null>(null);
 
 	// Environment variables state
 	let formEnvFilePath = $state<string | null>(null);
@@ -259,28 +252,6 @@
 		}
 	}
 
-	function generateWebhookSecret(): string {
-		const array = new Uint8Array(24);
-		crypto.getRandomValues(array);
-		return Array.from(array, b => b.toString(16).padStart(2, '0')).join('');
-	}
-
-	function getWebhookUrl(stackId: number): string {
-		return `${window.location.origin}/api/git/stacks/${stackId}/webhook`;
-	}
-
-	async function copyWebhookField(text: string, type: 'url' | 'secret') {
-		const ok = await copyToClipboard(text);
-		const state = ok ? 'ok' : 'error';
-		if (type === 'url') {
-			copiedWebhookUrl = state;
-			setTimeout(() => copiedWebhookUrl = null, 2000);
-		} else {
-			copiedWebhookSecret = state;
-			setTimeout(() => copiedWebhookSecret = null, 2000);
-		}
-	}
-
 	async function loadEnvFiles() {
 		if (!gitStack) return;
 
@@ -422,8 +393,6 @@
 		// Clear state BEFORE async loads to avoid race conditions
 		formError = '';
 		errors = {};
-		copiedWebhookUrl = null;
-		copiedWebhookSecret = null;
 		envFiles = [];
 		envVars = [];
 		fileEnvVars = {};
@@ -435,10 +404,6 @@
 			formStackName = gitStack.stackName;
 			formComposePath = gitStack.composePath;
 			formEnvFilePath = gitStack.envFilePath;
-			formAutoUpdate = gitStack.autoUpdate;
-			formAutoUpdateCron = gitStack.autoUpdateCron || '0 3 * * *';
-			formWebhookEnabled = gitStack.webhookEnabled;
-			formWebhookSecret = gitStack.webhookSecret || '';
 			formContextDir = gitStack.contextDir ?? null;
 			formBuildOnDeploy = gitStack.buildOnDeploy ?? false;
 			formNoBuildCache = gitStack.noBuildCache ?? false;
@@ -460,15 +425,15 @@
 			formNewRepoUrl = '';
 			formNewRepoBranch = 'main';
 			formNewRepoCredentialId = null;
+			formNewRepoAutoUpdate = false;
+			formNewRepoAutoUpdateCron = '0 3 * * *';
+			formNewRepoWebhookEnabled = false;
+			formNewRepoWebhookSecret = '';
 			formStackName = '';
 			formStackNameUserModified = false;
 			formComposePath = 'compose.yaml';
 			formComposePathBrowsed = false;
 			formEnvFilePath = null;
-			formAutoUpdate = false;
-			formAutoUpdateCron = '0 3 * * *';
-			formWebhookEnabled = false;
-			formWebhookSecret = '';
 			formContextDir = null;
 			formBuildOnDeploy = false;
 			formNoBuildCache = false;
@@ -545,10 +510,6 @@
 				composePath: formComposePath || 'compose.yaml',
 				envFilePath: formEnvFilePath,
 				environmentId: environmentId,
-				autoUpdate: formAutoUpdate,
-				autoUpdateCron: formAutoUpdateCron,
-				webhookEnabled: formWebhookEnabled,
-				webhookSecret: formWebhookEnabled ? formWebhookSecret : null,
 				contextDir: formContextDir || null,
 				buildOnDeploy: formBuildOnDeploy,
 				noBuildCache: formNoBuildCache,
@@ -570,6 +531,10 @@
 				body.url = formNewRepoUrl;
 				body.branch = formNewRepoBranch || 'main';
 				body.credentialId = formNewRepoCredentialId;
+				body.autoUpdate = formNewRepoAutoUpdate;
+				body.autoUpdateCron = formNewRepoAutoUpdateCron;
+				body.webhookEnabled = formNewRepoWebhookEnabled;
+				body.webhookSecret = formNewRepoWebhookEnabled ? formNewRepoWebhookSecret : null;
 			}
 
 			const url = gitStack
@@ -949,6 +914,64 @@
 									</Select.Root>
 								</div>
 							</div>
+							
+							<div class="space-y-3 mt-4 border-t pt-4 border-muted">
+								<p class="text-xs font-medium text-muted-foreground uppercase tracking-wider">Repository Sync</p>
+								
+								<!-- Auto-update section -->
+								<div class="flex items-center gap-3">
+									<div class="flex items-center gap-2 flex-1">
+										<RefreshCw class="w-4 h-4 text-muted-foreground" />
+										<Label class="text-sm font-normal">Enable scheduled sync</Label>
+									</div>
+									<TogglePill bind:checked={formNewRepoAutoUpdate} />
+								</div>
+								{#if formNewRepoAutoUpdate}
+									<CronEditor
+										value={formNewRepoAutoUpdateCron}
+										onchange={(cron) => formNewRepoAutoUpdateCron = cron}
+									/>
+								{/if}
+
+								<!-- Webhook section -->
+								<div class="flex items-center gap-3 pt-2">
+									<div class="flex items-center gap-2 flex-1">
+										<Webhook class="w-4 h-4 text-muted-foreground" />
+										<Label class="text-sm font-normal">Enable webhook</Label>
+									</div>
+									<TogglePill bind:checked={formNewRepoWebhookEnabled} />
+								</div>
+								{#if formNewRepoWebhookEnabled}
+									<div class="space-y-2">
+										<Label for="new-repo-webhook-secret">Webhook secret (optional)</Label>
+										<div class="flex gap-2">
+											<Input
+												id="new-repo-webhook-secret"
+												bind:value={formNewRepoWebhookSecret}
+												placeholder="Leave empty for no signature verification"
+												class="font-mono text-xs"
+											/>
+											<Tooltip.Root>
+												<Tooltip.Trigger>
+													<Button
+														variant="outline"
+														size="sm"
+														type="button"
+														onclick={() => {
+															const array = new Uint8Array(24);
+															crypto.getRandomValues(array);
+															formNewRepoWebhookSecret = Array.from(array, b => b.toString(16).padStart(2, '0')).join('');
+														}}
+													>
+														<Key class="w-4 h-4" />
+													</Button>
+												</Tooltip.Trigger>
+												<Tooltip.Content>Generate secret</Tooltip.Content>
+											</Tooltip.Root>
+										</div>
+									</div>
+								{/if}
+							</div>
 						</div>
 					{/if}
 				</div>
@@ -1064,126 +1087,6 @@
 					placeholder="Defaults to compose file's directory"
 				/>
 				<p class="text-xs text-muted-foreground">Relative to repository root, e.g. <code class="text-xs bg-muted px-1 rounded">.</code> for root</p>
-			</div>
-
-			<!-- Auto-update section -->
-			<div class="space-y-3 p-3 bg-muted/50 rounded-md">
-			<div class="flex items-center gap-3">
-				<div class="flex items-center gap-2 flex-1">
-					<RefreshCw class="w-4 h-4 text-muted-foreground" />
-					<Label class="text-sm font-normal">Enable scheduled sync</Label>
-				</div>
-				<TogglePill bind:checked={formAutoUpdate} />
-			</div>
-				<p class="text-xs text-muted-foreground">
-					Automatically sync repository and redeploy stack if there are changes.
-				</p>
-				{#if formAutoUpdate}
-					<CronEditor
-						value={formAutoUpdateCron}
-						onchange={(cron) => formAutoUpdateCron = cron}
-					/>
-				{/if}
-			</div>
-
-			<!-- Webhook section -->
-			<div class="space-y-3 p-3 bg-muted/50 rounded-md">
-			<div class="flex items-center gap-3">
-				<div class="flex items-center gap-2 flex-1">
-					<Webhook class="w-4 h-4 text-muted-foreground" />
-					<Label class="text-sm font-normal">Enable webhook</Label>
-				</div>
-				<TogglePill bind:checked={formWebhookEnabled} />
-			</div>
-				<p class="text-xs text-muted-foreground">
-					Receive push events from your Git provider to trigger sync and redeploy.
-				</p>
-				{#if formWebhookEnabled}
-					{#if gitStack}
-						<div class="space-y-2">
-							<Label>Webhook URL</Label>
-							<div class="flex gap-2">
-								<Input
-									value={getWebhookUrl(gitStack.id)}
-									readonly
-									class="font-mono text-xs bg-background"
-								/>
-								<Button
-									variant="outline"
-									size="sm"
-									onclick={() => copyWebhookField(getWebhookUrl(gitStack.id), 'url')}
-									title="Copy URL"
-								>
-									{#if copiedWebhookUrl === 'error'}
-										<Tooltip.Root open>
-											<Tooltip.Trigger>
-												<XCircle class="w-4 h-4 text-red-500" />
-											</Tooltip.Trigger>
-											<Tooltip.Content>Copy requires HTTPS</Tooltip.Content>
-										</Tooltip.Root>
-									{:else if copiedWebhookUrl === 'ok'}
-										<Check class="w-4 h-4 text-green-500" />
-									{:else}
-										<Copy class="w-4 h-4" />
-									{/if}
-								</Button>
-							</div>
-						</div>
-					{/if}
-					<div class="space-y-2">
-						<Label for="webhook-secret">Webhook secret (optional)</Label>
-						<div class="flex gap-2">
-							<Input
-								id="webhook-secret"
-								bind:value={formWebhookSecret}
-								placeholder="Leave empty for no signature verification"
-								class="font-mono text-xs"
-							/>
-							{#if gitStack && formWebhookSecret}
-								<Button
-									variant="outline"
-									size="sm"
-									onclick={() => copyWebhookField(formWebhookSecret, 'secret')}
-									title="Copy secret"
-								>
-									{#if copiedWebhookSecret === 'error'}
-										<Tooltip.Root open>
-											<Tooltip.Trigger>
-												<XCircle class="w-4 h-4 text-red-500" />
-											</Tooltip.Trigger>
-											<Tooltip.Content>Copy requires HTTPS</Tooltip.Content>
-										</Tooltip.Root>
-									{:else if copiedWebhookSecret === 'ok'}
-										<Check class="w-4 h-4 text-green-500" />
-									{:else}
-										<Copy class="w-4 h-4" />
-									{/if}
-								</Button>
-							{/if}
-							<Tooltip.Root>
-								<Tooltip.Trigger>
-									<Button
-										variant="outline"
-										size="sm"
-										onclick={() => formWebhookSecret = generateWebhookSecret()}
-									>
-										<Key class="w-4 h-4" />
-									</Button>
-								</Tooltip.Trigger>
-								<Tooltip.Content>Generate secret</Tooltip.Content>
-							</Tooltip.Root>
-						</div>
-					</div>
-					{#if !gitStack}
-						<p class="text-xs text-muted-foreground">
-							The webhook URL will be available after creating the stack.
-						</p>
-					{:else}
-						<p class="text-xs text-muted-foreground">
-							Configure this URL in your Git provider. Secret is used for signature verification.
-						</p>
-					{/if}
-				{/if}
 			</div>
 
 			<!-- Deploy options section -->

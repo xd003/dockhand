@@ -9,6 +9,7 @@ import { syncRepositoryExclusive } from '$lib/server/git';
 import { createJob, completeJob, failJob } from '$lib/server/jobs';
 import { authorize } from '$lib/server/authorize';
 import { auditGitRepository } from '$lib/server/audit';
+import { registerSchedule } from '$lib/server/scheduler';
 
 export const GET: RequestHandler = async ({ url, cookies }) => {
 	const auth = await authorize(cookies);
@@ -54,17 +55,26 @@ export const POST: RequestHandler = async (event) => {
 			}
 		}
 
-		// Create repository with just the basic fields
-		// Deployment-specific config (composePath, autoUpdate, webhook) now belongs to git_stacks
+		// Create repository with basic fields and new sync/webhook settings
 		const repository = await createGitRepository({
 			name: data.name,
 			url: data.url,
 			branch: data.branch || 'main',
-			credentialId: data.credentialId || null
+			credentialId: data.credentialId || null,
+			autoUpdate: data.autoUpdate || false,
+			autoUpdateSchedule: data.autoUpdate ? (data.autoUpdateSchedule || 'daily') : undefined,
+			autoUpdateCron: data.autoUpdate ? (data.autoUpdateCron || '0 3 * * *') : undefined,
+			webhookEnabled: data.webhookEnabled || false,
+			webhookSecret: data.webhookSecret || null
 		});
 
 		// Audit log
 		await auditGitRepository(event, 'create', repository.id, repository.name);
+
+		// Register schedule if auto-update is enabled
+		if (repository.autoUpdate) {
+			await registerSchedule(repository.id, 'git_repository_sync', null);
+		}
 
 		// Create a job to track the clone progress so the frontend can poll for the result
 		const job = createJob();

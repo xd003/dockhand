@@ -71,7 +71,9 @@ export const PUT: RequestHandler = async (event) => {
 			buildOnDeploy: data.buildOnDeploy,
 			noBuildCache: data.noBuildCache,
 			repullImages: data.repullImages,
-			forceRedeploy: data.forceRedeploy
+			forceRedeploy: data.forceRedeploy,
+			webhookEnabled: data.forceRedeploy === false ? false : data.webhookEnabled,
+			webhookSecret: (data.forceRedeploy !== false && data.webhookEnabled) ? data.webhookSecret : null
 		});
 
 		// If stack name changed, update related records

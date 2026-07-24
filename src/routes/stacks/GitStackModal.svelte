@@ -59,6 +59,8 @@
 		noBuildCache: boolean;
 		repullImages: boolean;
 		forceRedeploy: boolean;
+		webhookEnabled: boolean;
+		webhookSecret: string | null;
 	}
 
 	interface Props {
@@ -96,6 +98,10 @@
 	let formNoBuildCache = $state(false);
 	let formRepullImages = $state(false);
 	let formForceRedeploy = $state(false);
+	let formStackWebhookEnabled = $state(false);
+	let formStackWebhookSecret = $state('');
+	let copiedStackWebhookUrl = $state<'' | 'ok' | 'error'>('');
+	let copiedStackWebhookSecret = $state<'' | 'ok' | 'error'>('');
 	let formDeployNow = $state(false);
 	let formError = $state('');
 	let formSaving = $state(false);
@@ -409,6 +415,8 @@
 			formNoBuildCache = gitStack.noBuildCache ?? false;
 			formRepullImages = gitStack.repullImages ?? false;
 			formForceRedeploy = gitStack.forceRedeploy ?? false;
+			formStackWebhookEnabled = gitStack.webhookEnabled ?? false;
+			formStackWebhookSecret = gitStack.webhookSecret || '';
 			formDeployNow = false;
 
 			// Load env files and overrides SYNCHRONOUSLY to avoid race conditions
@@ -439,6 +447,10 @@
 			formNoBuildCache = false;
 			formRepullImages = false;
 			formForceRedeploy = false;
+			formStackWebhookEnabled = false;
+			formStackWebhookSecret = '';
+			copiedStackWebhookUrl = '';
+			copiedStackWebhookSecret = '';
 			formDeployNow = false;
 		}
 	}
@@ -515,6 +527,8 @@
 				noBuildCache: formNoBuildCache,
 				repullImages: formRepullImages,
 				forceRedeploy: formForceRedeploy,
+				webhookEnabled: formForceRedeploy ? formStackWebhookEnabled : false,
+				webhookSecret: (formForceRedeploy && formStackWebhookEnabled) ? formStackWebhookSecret || null : null,
 				deployNow: deployAfterSave,
 				envVars: overrideVars.map(v => ({
 					key: v.key.trim(),
@@ -1129,11 +1143,121 @@
 						<Zap class="w-4 h-4 text-muted-foreground" />
 						<Label class="text-sm font-normal">Force redeployment</Label>
 					</div>
-					<TogglePill bind:checked={formForceRedeploy} />
+					<TogglePill bind:checked={formForceRedeploy} onchange={() => { if (!formForceRedeploy) { formStackWebhookEnabled = false; formStackWebhookSecret = ''; } }} />
 				</div>
 				<p class="text-xs text-muted-foreground">
 					Always redeploy the stack on webhook or scheduled sync, even if no git changes are detected.
 				</p>
+				{#if formForceRedeploy}
+				<div class="space-y-3 ml-6 p-3 bg-muted/50 rounded-md">
+					<div class="flex items-center gap-3">
+						<div class="flex items-center gap-2 flex-1">
+							<Webhook class="w-4 h-4 text-muted-foreground" />
+							<Label class="text-sm font-normal">Enable stack webhook</Label>
+						</div>
+						<TogglePill bind:checked={formStackWebhookEnabled} />
+					</div>
+					<p class="text-xs text-muted-foreground">
+						Call this webhook to force redeploy <strong>this stack only</strong>. The repository-level webhook redeploys all linked stacks with force redeployment enabled.
+					</p>
+					{#if formStackWebhookEnabled}
+						{#if gitStack}
+							<div class="space-y-2">
+								<Label>Stack webhook URL</Label>
+								<div class="flex gap-2">
+									<Input
+										value={`${typeof window !== 'undefined' ? window.location.origin : ''}/api/git/stacks/${gitStack.id}/webhook`}
+										readonly
+										class="font-mono text-xs bg-background"
+									/>
+									<Button
+										variant="outline"
+										size="sm"
+										onclick={async () => {
+											const result = await copyToClipboard(`${window.location.origin}/api/git/stacks/${gitStack.id}/webhook`);
+											copiedStackWebhookUrl = result ? 'ok' : 'error';
+											setTimeout(() => copiedStackWebhookUrl = '', 2000);
+										}}
+										title="Copy URL"
+									>
+										{#if copiedStackWebhookUrl === 'error'}
+											<Tooltip.Root open>
+												<Tooltip.Trigger><XCircle class="w-4 h-4 text-red-500" /></Tooltip.Trigger>
+												<Tooltip.Content>Copy requires HTTPS</Tooltip.Content>
+											</Tooltip.Root>
+										{:else if copiedStackWebhookUrl === 'ok'}
+											<Check class="w-4 h-4 text-green-500" />
+										{:else}
+											<Copy class="w-4 h-4" />
+										{/if}
+									</Button>
+								</div>
+							</div>
+						{:else}
+							<p class="text-xs text-muted-foreground">
+								The stack webhook URL will be available after creating the stack.
+							</p>
+						{/if}
+						<div class="space-y-2">
+							<Label for="stack-webhook-secret">Webhook secret (optional)</Label>
+							<div class="flex gap-2">
+								<Input
+									id="stack-webhook-secret"
+									bind:value={formStackWebhookSecret}
+									placeholder="Leave empty for no signature verification"
+									class="font-mono text-xs"
+								/>
+								{#if gitStack && formStackWebhookSecret}
+									<Button
+										variant="outline"
+										size="sm"
+										onclick={async () => {
+											const result = await copyToClipboard(formStackWebhookSecret);
+											copiedStackWebhookSecret = result ? 'ok' : 'error';
+											setTimeout(() => copiedStackWebhookSecret = '', 2000);
+										}}
+										title="Copy secret"
+									>
+										{#if copiedStackWebhookSecret === 'error'}
+											<Tooltip.Root open>
+												<Tooltip.Trigger><XCircle class="w-4 h-4 text-red-500" /></Tooltip.Trigger>
+												<Tooltip.Content>Copy requires HTTPS</Tooltip.Content>
+											</Tooltip.Root>
+										{:else if copiedStackWebhookSecret === 'ok'}
+											<Check class="w-4 h-4 text-green-500" />
+										{:else}
+											<Copy class="w-4 h-4" />
+										{/if}
+									</Button>
+								{/if}
+								<Tooltip.Root>
+									<Tooltip.Trigger>
+										<Button
+											variant="outline"
+											size="sm"
+											onclick={() => {
+												const arr = new Uint8Array(32);
+												crypto.getRandomValues(arr);
+												formStackWebhookSecret = Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
+											}}
+										>
+											<Key class="w-4 h-4" />
+										</Button>
+									</Tooltip.Trigger>
+									<Tooltip.Content>Generate secret</Tooltip.Content>
+								</Tooltip.Root>
+							</div>
+							<p class="text-xs text-muted-foreground">
+								{#if gitStack}
+									Configure this URL in your Git provider or CI/CD pipeline. Secret is used for signature verification.
+								{:else}
+									Secret will be saved when you create the stack.
+								{/if}
+							</p>
+						</div>
+					{/if}
+				</div>
+				{/if}
 			</div>
 
 			<!-- Deploy now option (only for new stacks) -->

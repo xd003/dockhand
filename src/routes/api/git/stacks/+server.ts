@@ -127,7 +127,9 @@ export const POST: RequestHandler = async (event) => {
 			buildOnDeploy: data.buildOnDeploy ?? false,
 			noBuildCache: data.noBuildCache ?? false,
 			repullImages: data.repullImages ?? false,
-			forceRedeploy: data.forceRedeploy ?? false
+			forceRedeploy: data.forceRedeploy ?? false,
+			webhookEnabled: data.forceRedeploy ? (data.webhookEnabled || false) : false,
+			webhookSecret: (data.forceRedeploy && data.webhookEnabled) ? (data.webhookSecret || null) : null
 		});
 
 		// Create stack_sources entry so the stack appears in the list immediately

@@ -773,12 +773,23 @@ export async function syncRepository(repoId: number): Promise<SyncResult> {
 export async function deployFromRepositoryWithFanOut(
 	repositoryId: number,
 	log?: (msg: string) => void
-): Promise<{
-	success: boolean;
-	output?: string;
-	error?: string;
-	stacks?: Array<{ id: number; status: 'deployed' | 'skipped' | 'failed'; error?: string }>;
-}> {
+): Promise<FanOutResult> {
+	// Coalesce concurrent repo webhooks / manual triggers for the same repository
+	// into a single in-flight fan-out (+ at most one trailing re-run).
+	return runCoalesced(
+		repoFanOutSlots,
+		repositoryId,
+		{ log },
+		mergeFanOutOpts,
+		(opts) => deployFromRepositoryWithFanOutImpl(repositoryId, opts.log),
+		'repo-fan-out'
+	);
+}
+
+async function deployFromRepositoryWithFanOutImpl(
+	repositoryId: number,
+	log?: (msg: string) => void
+): Promise<FanOutResult> {
 	const _log = log || console.log;
 
 	const repo = await getGitRepository(repositoryId);
@@ -813,8 +824,17 @@ export async function deployFromRepositoryWithFanOut(
 		_log(`[Git] Evaluating stack "${stack.stackName}"...`);
 		
 		try {
+			// If the stack has its own stack-level webhook enabled, ignore the force-redeploy
+			// behaviour from the repo-level fan-out. The stack should be triggered explicitly
+			// via its own webhook URL instead.
+			const ignoreForceRedeploy = stack.forceRedeploy && stack.webhookEnabled;
+			if (ignoreForceRedeploy) {
+				_log(`[Git] Stack "${stack.stackName}" has a stack-level webhook enabled — ignoring force redeploy from repo webhook. Will only deploy if changes exist.`);
+			}
+
 			// deployGitStack internally computes diffs based on the new commit vs the stack's lastCommit
-			const deployResult = await deployGitStack(stack.id, { force: false });
+			// Concurrent stack-level webhooks coalesce inside deployGitStack (stronger intent wins).
+			const deployResult = await deployGitStack(stack.id, { force: false, ignoreForceRedeploy });
 			
 			if (deployResult.success) {
 				if (deployResult.skipped) {
@@ -983,7 +1003,215 @@ export async function syncRepositoryExclusive(repoId: number): Promise<SyncResul
 	return promise;
 }
 
+// -----------------------------------------------------------------------------
+// Coalescing exclusive runners
+//
+// Repo-level and stack-level webhooks (and manual/cron triggers) often fire
+// together for the same push. Instead of failing with "Sync already in progress"
+// or double-deploying, concurrent callers for the same key are folded into a
+// single trailing re-run. Stronger deploy intent always wins when options merge.
+// -----------------------------------------------------------------------------
+
+type CoalesceWaiter<TResult> = {
+	resolve: (value: TResult) => void;
+	reject: (reason?: unknown) => void;
+};
+
+type CoalesceSlot<TOpts, TResult> = {
+	done: boolean;
+	trailing: { opts: TOpts; waiters: CoalesceWaiter<TResult>[] } | null;
+	/** Resolves when the owner fully finishes and the slot is released. */
+	idle: Promise<void>;
+	markIdle: () => void;
+};
+
+function createCoalesceSlot<TOpts, TResult>(): CoalesceSlot<TOpts, TResult> {
+	let markIdle!: () => void;
+	const idle = new Promise<void>((resolve) => {
+		markIdle = resolve;
+	});
+	return { done: false, trailing: null, idle, markIdle };
+}
+
+/**
+ * Run `fn` exclusively per numeric key.
+ * Concurrent callers while a run is in-flight coalesce into one trailing re-run
+ * with options merged via `merge`. The initial caller receives the initial run's
+ * result; coalesced callers receive the trailing run's result.
+ *
+ * Trailing always re-runs (at most once per wave) so a webhook that arrived
+ * mid-flight can still pick up a newer commit — N concurrent triggers collapse
+ * to at most 2 executions (in-flight + one trailing), never N.
+ */
+async function runCoalesced<TOpts, TResult>(
+	slots: Map<number, CoalesceSlot<TOpts, TResult>>,
+	key: number,
+	opts: TOpts,
+	merge: (a: TOpts, b: TOpts) => TOpts,
+	fn: (opts: TOpts) => Promise<TResult>,
+	label: string
+): Promise<TResult> {
+	for (;;) {
+		const existing = slots.get(key);
+		if (existing && !existing.done) {
+			if (!existing.trailing) {
+				existing.trailing = { opts, waiters: [] };
+				console.log(`[Git] ${label} ${key}: in-flight — coalescing into trailing run`);
+			} else {
+				existing.trailing.opts = merge(existing.trailing.opts, opts);
+				console.log(`[Git] ${label} ${key}: merged into existing trailing run`);
+			}
+			return new Promise<TResult>((resolve, reject) => {
+				existing.trailing!.waiters.push({ resolve, reject });
+			});
+		}
+
+		// Claim ownership (no await between has/set — safe on the JS event loop)
+		if (slots.has(key)) continue;
+		const slot = createCoalesceSlot<TOpts, TResult>();
+		slots.set(key, slot);
+
+		let ownerResult!: TResult;
+		let ownerError: unknown;
+		let ownerFailed = false;
+		let work: { opts: TOpts; waiters: CoalesceWaiter<TResult>[] | null } = {
+			opts,
+			waiters: null
+		};
+
+		try {
+			for (;;) {
+				try {
+					const result = await fn(work.opts);
+					if (work.waiters) {
+						for (const w of work.waiters) w.resolve(result);
+					} else {
+						ownerResult = result;
+					}
+				} catch (e) {
+					if (work.waiters) {
+						for (const w of work.waiters) w.reject(e);
+					} else {
+						ownerFailed = true;
+						ownerError = e;
+					}
+				}
+
+				const trailing = slot.trailing;
+				if (trailing) {
+					slot.trailing = null;
+					work = { opts: trailing.opts, waiters: trailing.waiters };
+					continue;
+				}
+
+				// Mark done before delete so newcomers don't join a finishing slot
+				slot.done = true;
+				slots.delete(key);
+
+				// Race: trailing may have been added after the null-check above
+				// (concurrent callers on the event loop between check and done=true).
+				const raced: typeof slot.trailing = slot.trailing;
+				if (raced) {
+					slot.done = false;
+					slots.set(key, slot);
+					slot.trailing = null;
+					work = { opts: raced.opts, waiters: raced.waiters };
+					continue;
+				}
+
+				break;
+			}
+		} catch (e) {
+			slot.done = true;
+			if (slots.get(key) === slot) slots.delete(key);
+			if (slot.trailing) {
+				for (const w of slot.trailing.waiters) w.reject(e);
+				slot.trailing = null;
+			}
+			slot.markIdle();
+			throw e;
+		}
+
+		slot.markIdle();
+		if (ownerFailed) throw ownerError;
+		return ownerResult;
+	}
+}
+
+type DeployGitStackOpts = {
+	force: boolean;
+	ignoreForceRedeploy: boolean;
+};
+
+type DeployGitStackResult = {
+	success: boolean;
+	output?: string;
+	error?: string;
+	skipped?: boolean;
+};
+
+type FanOutOpts = {
+	log?: (msg: string) => void;
+};
+
+type FanOutResult = {
+	success: boolean;
+	output?: string;
+	error?: string;
+	stacks?: Array<{ id: number; status: 'deployed' | 'skipped' | 'failed'; error?: string }>;
+};
+
+/** Per-stack deploy coalesce slots (repo webhook fan-out ↔ stack webhook). */
+const stackDeploySlots = new Map<number, CoalesceSlot<DeployGitStackOpts, DeployGitStackResult>>();
+
+/** Per-repository fan-out coalesce slots (duplicate repo webhooks). */
+const repoFanOutSlots = new Map<number, CoalesceSlot<FanOutOpts, FanOutResult>>();
+
+/**
+ * Merge deploy intents: stronger wins.
+ * - force if either caller forces
+ * - honor forceRedeploy unless ALL callers opt into ignoreForceRedeploy
+ *   (stack-level webhook must not lose to repo fan-out)
+ */
+function mergeDeployGitStackOpts(a: DeployGitStackOpts, b: DeployGitStackOpts): DeployGitStackOpts {
+	return {
+		force: a.force || b.force,
+		ignoreForceRedeploy: a.ignoreForceRedeploy && b.ignoreForceRedeploy
+	};
+}
+
+function mergeFanOutOpts(a: FanOutOpts, b: FanOutOpts): FanOutOpts {
+	// Prefer the newer caller's logger so its schedule-execution log is populated
+	return { log: b.log ?? a.log };
+}
+
+/**
+ * Re-entrancy marker: deployGitStack holds the coalesce slot and then calls
+ * syncGitStack — that nested call must not wait on its own slot.
+ */
+const stackDeployReentrancy = new Set<number>();
+
+/**
+ * Wait until no coalesced stack deploy is in flight for this stack.
+ * Used by standalone sync so it does not race a webhook deploy mid-flight.
+ */
+async function waitForStackDeployIdle(stackId: number): Promise<void> {
+	for (;;) {
+		const slot = stackDeploySlots.get(stackId);
+		if (!slot || slot.done) return;
+		console.log(`[Git] Stack ${stackId}: waiting for in-flight deploy to finish before sync...`);
+		await slot.idle;
+	}
+}
+
 export async function syncGitStack(stackId: number): Promise<SyncResult> {
+	// If a coalesced deploy owns this stack, wait for it rather than failing.
+	// (deployGitStack calls syncGitStack while it already holds the slot — that
+	// path is re-entrant via the flag below.)
+	if (!stackDeployReentrancy.has(stackId)) {
+		await waitForStackDeployIdle(stackId);
+	}
+
 	const gitStack = await getGitStack(stackId);
 	if (!gitStack) {
 		return { success: false, error: 'Git stack not found' };
@@ -1000,8 +1228,8 @@ export async function syncGitStack(stackId: number): Promise<SyncResult> {
 	console.log(`${logPrefix} Env file path:`, gitStack.envFilePath || '(none)');
 	console.log(`${logPrefix} Environment ID:`, gitStack.environmentId);
 
-	// Check if sync is already in progress
-	if (gitStack.syncStatus === 'syncing') {
+	// Stale DB status only — concurrent deploys are serialized via stackDeploySlots
+	if (gitStack.syncStatus === 'syncing' && !stackDeployReentrancy.has(stackId)) {
 		console.log(`${logPrefix} ERROR: Sync already in progress`);
 		return { success: false, error: 'Sync already in progress' };
 	}
@@ -1209,8 +1437,32 @@ export async function syncGitStack(stackId: number): Promise<SyncResult> {
 	}
 }
 
-export async function deployGitStack(stackId: number, options?: { force?: boolean }): Promise<{ success: boolean; output?: string; error?: string; skipped?: boolean }> {
-	const force = options?.force ?? true; // Default to force for backward compatibility
+export async function deployGitStack(
+	stackId: number,
+	options?: { force?: boolean; ignoreForceRedeploy?: boolean }
+): Promise<DeployGitStackResult> {
+	// Coalesce concurrent stack deploys (stack webhook ↔ repo fan-out ↔ manual).
+	// Stronger intent wins: force ORs; ignoreForceRedeploy only if all agree.
+	const opts: DeployGitStackOpts = {
+		force: options?.force ?? true, // Default to force for backward compatibility
+		ignoreForceRedeploy: options?.ignoreForceRedeploy ?? false
+	};
+
+	return runCoalesced(
+		stackDeploySlots,
+		stackId,
+		opts,
+		mergeDeployGitStackOpts,
+		(merged) => deployGitStackImpl(stackId, merged),
+		'stack-deploy'
+	);
+}
+
+async function deployGitStackImpl(
+	stackId: number,
+	opts: DeployGitStackOpts
+): Promise<DeployGitStackResult> {
+	const { force, ignoreForceRedeploy } = opts;
 
 	const gitStack = await getGitStack(stackId);
 	if (!gitStack) {
@@ -1223,106 +1475,113 @@ export async function deployGitStack(stackId: number, options?: { force?: boolea
 	console.log(`${logPrefix} ========================================`);
 	console.log(`${logPrefix} Stack ID:`, stackId);
 	console.log(`${logPrefix} Force deploy:`, force);
+	console.log(`${logPrefix} Ignore force redeploy:`, ignoreForceRedeploy);
 
-	// Sync first
-	console.log(`${logPrefix} Syncing git repository...`);
-	const syncResult = await syncGitStack(stackId);
-	if (!syncResult.success) {
-		console.log(`${logPrefix} Sync failed:`, syncResult.error);
-		return { success: false, error: syncResult.error };
-	}
+	// Mark re-entrancy so nested syncGitStack does not wait on our own slot
+	stackDeployReentrancy.add(stackId);
+	try {
+		// Sync first
+		console.log(`${logPrefix} Syncing git repository...`);
+		const syncResult = await syncGitStack(stackId);
+		if (!syncResult.success) {
+			console.log(`${logPrefix} Sync failed:`, syncResult.error);
+			return { success: false, error: syncResult.error };
+		}
 
-	console.log(`${logPrefix} Sync successful`);
-	console.log(`${logPrefix} Sync result - updated:`, syncResult.updated);
-	console.log(`${logPrefix} Sync result - commit:`, syncResult.commit);
-	console.log(`${logPrefix} Sync result - env file vars:`, syncResult.envFileVars ? Object.keys(syncResult.envFileVars).length : 0);
-	if (syncResult.envFileVars && Object.keys(syncResult.envFileVars).length > 0) {
-		console.log(`${logPrefix} Env file var keys:`, Object.keys(syncResult.envFileVars).join(', '));
-		console.log(`${logPrefix} Env file vars (masked):`, JSON.stringify(redactEnvVarsForLog(syncResult.envFileVars), null, 2));
-	}
+		console.log(`${logPrefix} Sync successful`);
+		console.log(`${logPrefix} Sync result - updated:`, syncResult.updated);
+		console.log(`${logPrefix} Sync result - commit:`, syncResult.commit);
+		console.log(`${logPrefix} Sync result - env file vars:`, syncResult.envFileVars ? Object.keys(syncResult.envFileVars).length : 0);
+		if (syncResult.envFileVars && Object.keys(syncResult.envFileVars).length > 0) {
+			console.log(`${logPrefix} Env file var keys:`, Object.keys(syncResult.envFileVars).join(', '));
+			console.log(`${logPrefix} Env file vars (masked):`, JSON.stringify(redactEnvVarsForLog(syncResult.envFileVars), null, 2));
+		}
 
-	// Check if there are changes - skip redeploy if no changes and not forced
-	// Note: For new stacks (first deploy), syncResult.updated will be true
-	// forceRedeploy setting overrides the skip logic for webhooks/scheduled syncs
-	const shouldDeploy = force || gitStack.forceRedeploy || syncResult.updated;
-	if (!shouldDeploy) {
-		console.log(`${logPrefix} No changes detected and force=false, forceRedeploy=false, skipping redeploy`);
-		return {
-			success: true,
-			output: 'No changes detected, skipping redeploy',
-			skipped: true
-		};
-	}
+		// Check if there are changes - skip redeploy if no changes and not forced
+		// Note: For new stacks (first deploy), syncResult.updated will be true
+		// forceRedeploy setting overrides the skip logic for webhooks/scheduled syncs
+		const shouldDeploy = force || (!ignoreForceRedeploy && gitStack.forceRedeploy) || syncResult.updated;
+		if (!shouldDeploy) {
+			console.log(`${logPrefix} No changes detected and force=false, forceRedeploy=false, skipping redeploy`);
+			return {
+				success: true,
+				output: 'No changes detected, skipping redeploy',
+				skipped: true
+			};
+		}
 
-	const forceRecreate = syncResult.updated;
-	console.log(`${logPrefix} Will force recreate:`, forceRecreate, `(updated=${syncResult.updated})`);
-	console.log(`${logPrefix} Build on deploy:`, gitStack.buildOnDeploy);
-	console.log(`${logPrefix} Re-pull images:`, gitStack.repullImages);
-	console.log(`${logPrefix} Force redeploy setting:`, gitStack.forceRedeploy);
+		const forceRecreate = syncResult.updated;
+		console.log(`${logPrefix} Will force recreate:`, forceRecreate, `(updated=${syncResult.updated})`);
+		console.log(`${logPrefix} Build on deploy:`, gitStack.buildOnDeploy);
+		console.log(`${logPrefix} Re-pull images:`, gitStack.repullImages);
+		console.log(`${logPrefix} Force redeploy setting:`, gitStack.forceRedeploy);
 
-	// Deploy using unified function - handles both new and existing stacks
-	// Uses `docker compose up -d --remove-orphans` which only recreates changed services
-	// Force recreate whenever git detected changes to ensure containers pick up
-	// new env var values even if compose file itself didn't change
-	console.log(`${logPrefix} Calling deployStack...`);
-	console.log(`${logPrefix} Source directory (composeDir):`, syncResult.composeDir);
-	console.log(`${logPrefix} Compose filename:`, syncResult.composeFileName);
-	console.log(`${logPrefix} Env filename:`, syncResult.envFileName ?? '(none)');
+		// Deploy using unified function - handles both new and existing stacks
+		// Uses `docker compose up -d --remove-orphans` which only recreates changed services
+		// Force recreate whenever git detected changes to ensure containers pick up
+		// new env var values even if compose file itself didn't change
+		console.log(`${logPrefix} Calling deployStack...`);
+		console.log(`${logPrefix} Source directory (composeDir):`, syncResult.composeDir);
+		console.log(`${logPrefix} Compose filename:`, syncResult.composeFileName);
+		console.log(`${logPrefix} Env filename:`, syncResult.envFileName ?? '(none)');
 
-	const result = await deployStack({
-		name: gitStack.stackName,
-		compose: syncResult.composeContent!,
-		envId: gitStack.environmentId,
-		sourceDir: syncResult.composeDir, // Copy entire directory from git repo
-		composeFileName: syncResult.composeFileName, // Use original compose filename from repo
-		envFileName: syncResult.envFileName, // Env file relative to compose dir (for --env-file flag, optional)
-		forceRecreate,
-		build: gitStack.buildOnDeploy,
-		noBuildCache: gitStack.noBuildCache,
-		pullPolicy: gitStack.repullImages ? 'always' : undefined,
-		filesToDelete: syncResult.deletionPlan?.toDelete
-	});
+		const result = await deployStack({
+			name: gitStack.stackName,
+			compose: syncResult.composeContent!,
+			envId: gitStack.environmentId,
+			sourceDir: syncResult.composeDir, // Copy entire directory from git repo
+			composeFileName: syncResult.composeFileName, // Use original compose filename from repo
+			envFileName: syncResult.envFileName, // Env file relative to compose dir (for --env-file flag, optional)
+			forceRecreate,
+			build: gitStack.buildOnDeploy,
+			noBuildCache: gitStack.noBuildCache,
+			pullPolicy: gitStack.repullImages ? 'always' : undefined,
+			filesToDelete: syncResult.deletionPlan?.toDelete
+		});
 
-	console.log(`${logPrefix} ----------------------------------------`);
-	console.log(`${logPrefix} DEPLOY GIT STACK RESULT`);
-	console.log(`${logPrefix} ----------------------------------------`);
-	console.log(`${logPrefix} Success:`, result.success);
-	if (result.output) console.log(`${logPrefix} Output:`, result.output);
-	if (result.error) console.log(`${logPrefix} Error:`, result.error);
+		console.log(`${logPrefix} ----------------------------------------`);
+		console.log(`${logPrefix} DEPLOY GIT STACK RESULT`);
+		console.log(`${logPrefix} ----------------------------------------`);
+		console.log(`${logPrefix} Success:`, result.success);
+		if (result.output) console.log(`${logPrefix} Output:`, result.output);
+		if (result.error) console.log(`${logPrefix} Error:`, result.error);
 
-	if (result.success) {
-		// Deletion sync: persist manifest + log per-file change summary
-		if (syncResult.previousManifest && syncResult.newFiles && syncResult.newCommitFull && syncResult.deletionPlan) {
-			await finalizeDeletionSync({
-				stackId,
-				logPrefix,
-				previousManifest: syncResult.previousManifest,
-				newCommitFull: syncResult.newCommitFull,
-				newFiles: syncResult.newFiles,
-				plan: syncResult.deletionPlan,
-				applyResult: result.deletion
+		if (result.success) {
+			// Deletion sync: persist manifest + log per-file change summary
+			if (syncResult.previousManifest && syncResult.newFiles && syncResult.newCommitFull && syncResult.deletionPlan) {
+				await finalizeDeletionSync({
+					stackId,
+					logPrefix,
+					previousManifest: syncResult.previousManifest,
+					newCommitFull: syncResult.newCommitFull,
+					newFiles: syncResult.newFiles,
+					plan: syncResult.deletionPlan,
+					applyResult: result.deletion
+				});
+			}
+
+			// Record the stack source with resolved compose path for consistency
+			const stackDir = await getStackDir(gitStack.stackName, gitStack.environmentId);
+			const resolvedComposePath = syncResult.composeFileName
+				? join(stackDir, syncResult.composeFileName)
+				: undefined;
+
+			console.log(`${logPrefix} Resolved compose path for stack_sources:`, resolvedComposePath);
+
+			await upsertStackSource({
+				stackName: gitStack.stackName,
+				environmentId: gitStack.environmentId,
+				sourceType: 'git',
+				gitRepositoryId: gitStack.repositoryId,
+				gitStackId: stackId,
+				composePath: resolvedComposePath
 			});
 		}
 
-		// Record the stack source with resolved compose path for consistency
-		const stackDir = await getStackDir(gitStack.stackName, gitStack.environmentId);
-		const resolvedComposePath = syncResult.composeFileName
-			? join(stackDir, syncResult.composeFileName)
-			: undefined;
-
-		console.log(`${logPrefix} Resolved compose path for stack_sources:`, resolvedComposePath);
-
-		await upsertStackSource({
-			stackName: gitStack.stackName,
-			environmentId: gitStack.environmentId,
-			sourceType: 'git',
-			gitRepositoryId: gitStack.repositoryId,
-			gitStackId: stackId,
-			composePath: resolvedComposePath
-		});
+		return result;
+	} finally {
+		stackDeployReentrancy.delete(stackId);
 	}
-
-	return result;
 }
 
 export async function testGitStack(stackId: number): Promise<TestResult> {
@@ -1396,13 +1655,36 @@ export async function deployGitStackWithProgress(
 	stackId: number,
 	onProgress: ProgressCallback
 ): Promise<{ success: boolean; output?: string; error?: string }> {
+	// Serialize with webhook/cron deploys via the same coalesce slot (force deploy).
+	// Progress UI waits cleanly instead of failing with "already in progress".
+	return runCoalesced(
+		stackDeploySlots,
+		stackId,
+		{ force: true, ignoreForceRedeploy: false } satisfies DeployGitStackOpts,
+		mergeDeployGitStackOpts,
+		async () => {
+			stackDeployReentrancy.add(stackId);
+			try {
+				return await deployGitStackWithProgressImpl(stackId, onProgress);
+			} finally {
+				stackDeployReentrancy.delete(stackId);
+			}
+		},
+		'stack-deploy'
+	);
+}
+
+async function deployGitStackWithProgressImpl(
+	stackId: number,
+	onProgress: ProgressCallback
+): Promise<{ success: boolean; output?: string; error?: string }> {
 	const gitStack = await getGitStack(stackId);
 	if (!gitStack) {
 		onProgress({ status: 'error', error: 'Git stack not found' });
 		return { success: false, error: 'Git stack not found' };
 	}
 
-	// Check if sync is already in progress
+	// Under the coalesce lock; only stale DB status should hit this
 	if (gitStack.syncStatus === 'syncing') {
 		onProgress({ status: 'error', error: 'Sync already in progress' });
 		return { success: false, error: 'Sync already in progress' };

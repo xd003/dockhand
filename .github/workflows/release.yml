@@ -11,60 +11,17 @@ permissions:
   packages: write
 
 jobs:
-  release:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Extract changelog
-        id: changelog
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          BODY=$(jq -r --arg v "$VERSION" '
-            .[] | select(.version == $v) |
-            "## What'\''s new in v\(.version)\n\n" +
-            ([.changes[] |
-              if .type == "feature" then "- ✨ \(.text)"
-              elif .type == "fix" then "- 🐛 \(.text)"
-              elif .type == "improvement" then "- ⚡ \(.text)"
-              else "- \(.text)"
-              end
-            ] | join("\n")) +
-            "\n"
-          ' src/lib/data/changelog.json)
-
-          if [ -z "$BODY" ]; then
-            BODY="Release ${GITHUB_REF_NAME}"
-          fi
-
-          cat <<EOF > /tmp/release-body.md
-          ${BODY}
-
-          ## Docker image
-
-          \`\`\`bash
-          docker pull fnsys/dockhand:${GITHUB_REF_NAME}
-          \`\`\`
-
-          Also available as \`fnsys/dockhand:latest\` and \`ghcr.io/fnsys/dockhand:${GITHUB_REF_NAME}\`
-
-          [View on Docker Hub](https://hub.docker.com/r/fnsys/dockhand)
-          EOF
-
-          sed -i 's/^          //' /tmp/release-body.md
-
-      - name: Create release
-        uses: softprops/action-gh-release@v2
-        with:
-          body_path: /tmp/release-body.md
-          generate_release_notes: false
-
   docker:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -77,6 +34,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: |
             ghcr.io/${{ github.repository_owner }}/dockhand:${{ github.ref_name }}

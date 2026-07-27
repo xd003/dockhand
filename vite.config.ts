@@ -1204,8 +1204,28 @@ async function handleHawserMessage(ws: any, msg: any) {
 	}
 }
 
+function stubProblemCss() {
+  return {
+    name: 'stub-layercake-layerchart-css',
+    enforce: 'pre' as const,
+    load(id: string) {
+      if (
+        (id.includes('node_modules/layercake') || id.includes('node_modules/layerchart')) &&
+        id.includes('type=style')
+      ) {
+        return '';
+      }
+    },
+  };
+}
+
 export default defineConfig({
-	plugins: [tailwindcss(), sveltekit(), webSocketPlugin()],
+	plugins: [stubProblemCss(), tailwindcss(), sveltekit(), webSocketPlugin()],
+	server: {
+		watch: {
+			ignored: ['**/data/**']
+		}
+	},
 	define: {
 		__BUILD_DATE__: JSON.stringify(new Date().toISOString()),
 		__BUILD_COMMIT__: JSON.stringify(getGitCommit()),
@@ -1213,7 +1233,8 @@ export default defineConfig({
 		__APP_VERSION__: JSON.stringify(getGitTag())
 	},
 	optimizeDeps: {
-		include: ['lucide-svelte', '@xterm/xterm', '@xterm/addon-fit']
+		include: ['lucide-svelte', '@xterm/xterm', '@xterm/addon-fit'],
+		exclude: ['layerchart']
 	},
 	resolve: {
 		dedupe: [

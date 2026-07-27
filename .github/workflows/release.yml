@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
   release:
@@ -45,7 +46,7 @@ jobs:
           docker pull fnsys/dockhand:${GITHUB_REF_NAME}
           \`\`\`
 
-          Also available as \`fnsys/dockhand:latest\`
+          Also available as \`fnsys/dockhand:latest\` and \`ghcr.io/fnsys/dockhand:${GITHUB_REF_NAME}\`
 
           [View on Docker Hub](https://hub.docker.com/r/fnsys/dockhand)
           EOF
@@ -57,3 +58,25 @@ jobs:
         with:
           body_path: /tmp/release-body.md
           generate_release_notes: false
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/dockhand:${{ github.ref_name }}
+            ghcr.io/${{ github.repository_owner }}/dockhand:latest

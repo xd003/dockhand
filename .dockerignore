@@ -55,7 +55,6 @@ data/
 # Development files
 docker-compose*.yml
 !docker-compose.yml
-bun.lock
 tsconfig.json
 .prettierrc
 .eslintrc*

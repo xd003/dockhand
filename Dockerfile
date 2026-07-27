@@ -70,26 +70,28 @@ FROM --platform=$TARGETPLATFORM node:24-slim AS app-builder
 
 WORKDIR /app
 
-# Install build dependencies
+# Install build dependencies and bun
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    jq git curl python3 make g++ libnss-wrapper \
-    && rm -rf /var/lib/apt/lists/* \
-    && cp "$(dpkg -L libnss-wrapper | grep 'libnss_wrapper\.so$')" /usr/local/lib/libnss_wrapper.so
+    jq git curl python3 make g++ libnss-wrapper unzip ca-certificates \
+    && cp "$(dpkg -L libnss-wrapper | grep 'libnss_wrapper\.so$')" /usr/local/lib/libnss_wrapper.so \
+    && curl -fsSL https://bun.sh/install | bash \
+    && cp /root/.bun/bin/bun /usr/local/bin/bun \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy package files and install dependencies (--ignore-scripts blocks malicious postinstall hooks)
-COPY package.json package-lock.json ./
-RUN MAKEFLAGS="-j$(nproc)" npm ci --ignore-scripts \
-    && MAKEFLAGS="-j$(nproc)" npm rebuild better-sqlite3 argon2
+# Copy package files and install with bun (matches local dev exactly)
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile \
+    && npm rebuild better-sqlite3 argon2
 
 # Copy source code and build
 COPY . .
-RUN npm run build
+RUN bun run build
 
 # Production dependencies only
 # Preserve better-sqlite3 native addon (no prebuilds exist for Node 24 ABI 137)
 RUN cp -r node_modules/better-sqlite3/build /tmp/better-sqlite3-build \
     && rm -rf node_modules \
-    && npm ci --omit=dev --ignore-scripts \
+    && bun install --production --ignore-scripts \
     && cp -r /tmp/better-sqlite3-build node_modules/better-sqlite3/build \
     && rm -rf node_modules/@types /tmp/better-sqlite3-build
 

@@ -1,4 +1,4 @@
-name: Create GitHub Release
+name: Trigger build image to GHCR
 
 on:
   workflow_dispatch:

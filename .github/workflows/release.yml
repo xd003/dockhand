@@ -1,4 +1,4 @@
-name: Trigger build image to GHCR
+name: Build and push to Forgejo Packages
 
 on:
   workflow_dispatch:
@@ -23,10 +23,10 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to GitHub Container Registry
+      - name: Log in to Forgejo Container Registry
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
+          registry: git.xd003.cc
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
@@ -37,5 +37,5 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/dockhand:${{ github.ref_name }}
-            ghcr.io/${{ github.repository_owner }}/dockhand:latest
+            git.xd003.cc/${{ github.repository }}:${{ github.ref_name }}
+            git.xd003.cc/${{ github.repository }}:latest

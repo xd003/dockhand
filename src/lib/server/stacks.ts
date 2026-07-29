@@ -41,8 +41,7 @@ import {
 	getPendingContainerUpdates,
 	deleteAutoUpdateSchedule,
 	getAutoUpdateSetting,
-	getStackSourceByComposePath,
-	getStackComposePaths
+	getStackSourceByComposePath
 } from './db';
 import { unregisterSchedule } from './scheduler';
 import { sendEventNotification } from './notifications';
@@ -2222,10 +2221,6 @@ export async function requireComposeFile(
 		envFilePath = join(stackDir, '.env');
 	}
 
-	// Read compose paths array from the stack source
-	const source = await getStackSource(stackName, envId);
-	const composePaths = source ? getStackComposePaths(source) : [];
-
 	// Docker Compose reads non-secrets from the .env file via --env-file.
 	// Secrets and non-secrets from DB need to be injected via shell environment
 	// for stacks without .env files (e.g., git stacks with manual env vars).
@@ -2236,7 +2231,11 @@ export async function requireComposeFile(
 		nonSecretVars,
 		stackDir: composeResult.stackDir,
 		composePath: composeResult.composePath ?? undefined,
-		composePaths: composePaths.length > 0 ? composePaths : undefined,
+		// Use resolved on-disk paths from getStackComposeFile. Git stacks store
+		// repo-relative composePaths in the DB (e.g. "forgejo/compose.yaml");
+		// passing those raw paths to docker compose -f would double-prefix them
+		// against the stack working directory.
+		composePaths: composeResult.composePaths?.length ? composeResult.composePaths : undefined,
 		envPath: envFilePath ?? undefined
 	};
 }
@@ -2475,9 +2474,6 @@ export async function removeStack(
 			const envVars = await getNonSecretEnvVarsAsRecord(stackName, envId);
 			const secretVars = await getSecretEnvVarsAsRecord(stackName, envId);
 
-			const sourceForRemove = await getStackSource(stackName, envId);
-			const removeComposePaths = sourceForRemove ? getStackComposePaths(sourceForRemove) : undefined;
-
 			// Stack removal cleanup (#1162): the agent deletes ONLY what Dockhand
 			// explicitly lists. The list is the local staging dir contents — exactly
 			// the files Dockhand ever wrote for this stack (compose, .env,
@@ -2503,7 +2499,7 @@ export async function removeStack(
 					removeVolumes,
 					workingDir: composeResult.stackDir,
 					composePath: composeResult.composePath ?? undefined,
-					composePaths: removeComposePaths?.length ? removeComposePaths : undefined,
+					composePaths: composeResult.composePaths?.length ? composeResult.composePaths : undefined,
 					envPath: composeResult.envPath ?? undefined,
 					// Full stack removal: the Hawser agent cleans its stack dir (#1162)
 					removeFiles: true,

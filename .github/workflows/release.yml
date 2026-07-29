@@ -5,6 +5,7 @@ on:
     inputs:
       tag:
         description: 'Image tag to publish'
+        type: string
         required: false
         default: 'manual'
   push:

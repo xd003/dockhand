@@ -469,6 +469,75 @@ export async function findStackDir(stackName: string, envId?: number | null): Pr
 	return null;
 }
 
+/**
+ * Resolve stack source compose paths to absolute on-disk paths for UI display.
+ * Git stacks store repo-relative paths in the DB; external/adopted stacks use absolute paths.
+ */
+export function resolveStackSourceDisplayPaths(
+	source: {
+		sourceType: string;
+		composePath?: string | null;
+		composePaths?: string | null;
+		gitStack?: { contextDir?: string | null; composePath?: string } | null;
+	}
+): { composePath: string | null; composePaths: string[] } {
+	let rawPaths: string[] = [];
+
+	if (source.composePaths) {
+		try {
+			const parsed = JSON.parse(source.composePaths);
+			if (Array.isArray(parsed) && parsed.length > 0) {
+				rawPaths = parsed;
+			}
+		} catch { /* ignore malformed JSON */ }
+	}
+	if (rawPaths.length === 0 && source.composePath) {
+		rawPaths = [source.composePath];
+	}
+
+	if (rawPaths.length === 0) {
+		return { composePath: null, composePaths: [] };
+	}
+
+	// Non-git stacks store absolute paths — return as-is.
+	if (source.sourceType !== 'git') {
+		const absolutePaths = rawPaths.map(p => (isAbsolute(p) ? p : resolve(p)));
+		return {
+			composePath: absolutePaths[0] ?? null,
+			composePaths: absolutePaths
+		};
+	}
+
+	const deployedComposePath = source.composePath && isAbsolute(source.composePath) ? source.composePath : null;
+	if (!deployedComposePath) {
+		return { composePath: null, composePaths: [] };
+	}
+
+	const stackDir = dirname(deployedComposePath);
+
+	let baseDir = source.gitStack?.contextDir ??
+		(source.gitStack?.composePath ? dirname(source.gitStack.composePath) : '');
+	if (baseDir === '.') baseDir = '';
+
+	const absolutePaths = rawPaths.map(p => {
+		if (isAbsolute(p)) return p;
+		let relativeToStack = p;
+		if (baseDir) {
+			if (p.startsWith(baseDir + '/')) {
+				relativeToStack = p.slice(baseDir.length + 1);
+			} else if (p === baseDir) {
+				relativeToStack = basename(p);
+			}
+		}
+		return join(stackDir, relativeToStack);
+	});
+
+	return {
+		composePath: absolutePaths[0] ?? null,
+		composePaths: absolutePaths
+	};
+}
+
 // =============================================================================
 // COMPOSE FILE MANAGEMENT
 // =============================================================================

@@ -2,6 +2,7 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getStackSources } from '$lib/server/db';
 import { authorize } from '$lib/server/authorize';
+import { resolveStackSourceDisplayPaths } from '$lib/server/stacks';
 
 export const GET: RequestHandler = async ({ url, cookies }) => {
 	const auth = await authorize(cookies);
@@ -17,13 +18,15 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 	try {
 		const sources = await getStackSources(envIdNum);
 
-		// Convert to a map for easier lookup in the frontend
+		// Convert to a map for easier lookup in the frontend.
+		// Resolve compose paths to absolute on-disk paths (git stacks store repo-relative paths).
 		const sourceMap: Record<string, { sourceType: string; composePath?: string | null; composePaths?: string | null; repository?: any }> = {};
 		for (const source of sources) {
+			const resolved = resolveStackSourceDisplayPaths(source);
 			sourceMap[source.stackName] = {
 				sourceType: source.sourceType,
-				composePath: source.composePath,
-				composePaths: source.composePaths,
+				composePath: resolved.composePath,
+				composePaths: resolved.composePaths.length > 0 ? JSON.stringify(resolved.composePaths) : null,
 				repository: source.repository
 			};
 		}

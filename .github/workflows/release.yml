@@ -2,10 +2,15 @@ name: Build and push to Forgejo Packages
 
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag to publish'
+        required: false
+        default: 'manual'
   push:
     tags:
       - 'v*'
-      
+
 jobs:
   docker:
     runs-on: ubuntu-latest-amd64
@@ -26,6 +31,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Determine tag
+        id: vars
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
@@ -33,5 +47,5 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            git.xd003.cc/${{ github.repository }}:${{ github.ref_name }}
+            git.xd003.cc/${{ github.repository }}:${{ steps.vars.outputs.tag }}
             git.xd003.cc/${{ github.repository }}:latest

@@ -30,7 +30,7 @@ jobs:
         with:
           registry: git.xd003.cc
           username: ${{ github.actor }}
-          password: ${{ secrets.FORGEJO_PAT }}
+          password: ${{ secrets.REGISTRY_PAT }}
 
       - name: Determine tag
         id: vars

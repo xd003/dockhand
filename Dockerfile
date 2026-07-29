@@ -85,6 +85,7 @@ RUN bun install --frozen-lockfile \
 
 # Copy source code and build
 COPY . .
+ENV NODE_OPTIONS="--max-old-space-size=4096"
 RUN bun run build
 
 # Production dependencies only

@@ -605,25 +605,27 @@
 						Click a file to select it
 					</div>
 				{/if}
-				<Button variant="outline" onclick={handleClose}>
-					Cancel
-				</Button>
-				{#if selectMode === 'directory'}
-					<Button onclick={handleConfirm}>
-						<FolderPlus class="w-4 h-4" />
-						Select
+				{#if !multiSelect}
+					<Button variant="outline" onclick={handleClose}>
+						Cancel
 					</Button>
-				{:else if selectMode === 'file_or_directory'}
-					<Button onclick={handleConfirm}>
-						Select
-					</Button>
-				{:else}
-					<Button
-						disabled={!selectedPath}
-						onclick={handleConfirm}
-					>
-						Select
-					</Button>
+					{#if selectMode === 'directory'}
+						<Button onclick={handleConfirm}>
+							<FolderPlus class="w-4 h-4" />
+							Select
+						</Button>
+					{:else if selectMode === 'file_or_directory'}
+						<Button onclick={handleConfirm}>
+							Select
+						</Button>
+					{:else}
+						<Button
+							disabled={!selectedPath}
+							onclick={handleConfirm}
+						>
+							Select
+						</Button>
+					{/if}
 				{/if}
 			</Dialog.Footer>
 		{/if}

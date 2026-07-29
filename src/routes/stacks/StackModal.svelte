@@ -214,46 +214,13 @@
 		}
 	}
 
-	function handleComposeMultiSelect(entries: { path: string; name: string }[]) {
-		const newPaths = entries.map(e => e.path);
-		const existing = new Set(workingComposePaths);
-		for (const p of newPaths) {
-			if (!existing.has(p)) {
-				workingComposePaths = [...workingComposePaths, p];
-				existing.add(p);
-			}
-		}
-		// Set the first selected as primary if no primary exists yet
-		if (!workingComposePath && newPaths.length > 0) {
-			workingComposePath = newPaths[0];
-		}
-		// In create mode with browsed files, load content from the first selected file
-		if (mode === 'create' && newPaths.length > 0) {
-			const dir = newPaths[0].replace(/\/[^/]+$/, '');
-			loadFilesFromLocalFilesystem(newPaths[0], `${dir}/.env`);
-			workingEnvPath = `${dir}/.env`;
-			pathSource = 'custom';
-			maybeDeriveStackNameFromCompose(newPaths[0]);
-		} else if (mode === 'edit' && newPaths.length > 0) {
-			workingComposePath = newPaths[0];
-			pathSource = 'browsed';
-			const dir = newPaths[0].replace(/\/[^/]+$/, '');
-			if (!workingEnvPath) workingEnvPath = `${dir}/.env`;
-			loadFilesFromLocalFilesystem(newPaths[0], workingEnvPath || suggestedEnvPath || '');
-		}
-		showFileBrowser = false;
-		isDirty = true;
-	}
-
 	function openComposeBrowser() {
 		const isUntracked = needsFileLocation;
 		fileBrowserConfig = {
 			title: isUntracked ? 'Select compose file' : 'Select compose file or directory',
 			selectFilter: /\.ya?ml$/,
 			selectMode: isUntracked ? 'file' : 'file_or_directory',
-			onSelect: handleComposeSelect,
-			multiSelect: !isUntracked,
-			onSelectMany: !isUntracked ? handleComposeMultiSelect : undefined
+			onSelect: handleComposeSelect
 		};
 		showFileBrowser = true;
 	}

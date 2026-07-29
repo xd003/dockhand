@@ -71,6 +71,13 @@
       "when": 1781620377161,
       "tag": "0009_add_backup_tables",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1785144054494,
+      "tag": "0010_apply_commit_changes",
+      "breakpoints": true
     }
   ]
 }

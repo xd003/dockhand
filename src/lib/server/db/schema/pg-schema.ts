@@ -311,11 +311,9 @@ export const gitStacks = pgTable('git_stacks', {
 	stackName: text('stack_name').notNull(),
 	environmentId: integer('environment_id').references(() => environments.id, { onDelete: 'cascade' }),
 	repositoryId: integer('repository_id').notNull().references(() => gitRepositories.id, { onDelete: 'cascade' }),
-	composePath: text('compose_path').default('docker-compose.yml'), // Reverted to original value (#1110)
+	composePath: text('compose_path').default('docker-compose.yml'), // Primary compose file path (denormalized from composePaths[0])
+	composePaths: text('compose_paths'), // JSON array of ordered compose file paths (repo-relative)
 	envFilePath: text('env_file_path'), // Path to .env file in repository (e.g., ".env", "config/.env.prod")
-	autoUpdate: boolean('auto_update').default(false),
-	autoUpdateSchedule: text('auto_update_schedule').default('daily'),
-	autoUpdateCron: text('auto_update_cron').default('0 3 * * *'),
 	webhookEnabled: boolean('webhook_enabled').default(false),
 	webhookSecret: text('webhook_secret'),
 	contextDir: text('context_dir'), // Working directory relative to repo root (null = compose file's directory)
@@ -341,7 +339,8 @@ export const stackSources = pgTable('stack_sources', {
 	sourceType: text('source_type').notNull().default('internal'),
 	gitRepositoryId: integer('git_repository_id').references(() => gitRepositories.id, { onDelete: 'set null' }),
 	gitStackId: integer('git_stack_id').references(() => gitStacks.id, { onDelete: 'set null' }),
-	composePath: text('compose_path'), // Custom path to compose file (for stacks with non-default location)
+	composePath: text('compose_path'), // Primary compose file path (denormalized from composePaths[0])
+	composePaths: text('compose_paths'), // JSON array of ordered compose file paths
 	envPath: text('env_path'), // Custom path to .env file (for stacks with non-default location)
 	createdAt: timestamp('created_at', { mode: 'string' }).defaultNow(),
 	updatedAt: timestamp('updated_at', { mode: 'string' }).defaultNow()

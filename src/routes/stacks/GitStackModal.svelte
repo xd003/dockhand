@@ -7,7 +7,7 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import { Input } from '$lib/components/ui/input';
 	import { TogglePill } from '$lib/components/ui/toggle-pill';
-	import { Loader2, GitBranch, RefreshCw, Webhook, Rocket, RefreshCcw, Copy, Check, XCircle, FolderGit2, Github, Key, KeyRound, Lock, FileText, HelpCircle, GripVertical, X, Download, Hammer, ArrowDownToLine, Zap, FolderOpen, Ban, TriangleAlert, Settings2, Archive } from 'lucide-svelte';
+	import { Loader2, GitBranch, RefreshCw, Webhook, Rocket, RefreshCcw, Copy, Check, XCircle, FolderGit2, Github, Key, KeyRound, Lock, FileText, HelpCircle, GripVertical, X, Download, Hammer, ArrowDownToLine, Zap, FolderOpen, Ban, TriangleAlert, Settings2, Archive, GitFork, ArrowUp, ArrowDown } from 'lucide-svelte';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import { page } from '$app/stores'; // BETA GATE: backups feature flag
 	import BackupPanel from '../containers/BackupPanel.svelte';
@@ -21,6 +21,7 @@
 	import { focusFirstInput } from '$lib/utils';
 	import { readJobResponse } from '$lib/utils/sse-fetch';
 	import { useSidebar } from '$lib/components/ui/sidebar/context.svelte';
+	import FilesystemBrowser from './FilesystemBrowser.svelte';
 
 	// Get sidebar state to adjust modal positioning
 	const sidebar = useSidebar();
@@ -56,17 +57,15 @@
 		repositoryId: number;
 		environmentId: number | null;
 		composePath: string;
+		composePaths: string | null;
 		envFilePath: string | null;
-		autoUpdate: boolean;
-		autoUpdateSchedule: 'daily' | 'weekly' | 'custom';
-		autoUpdateCron: string;
-		webhookEnabled: boolean;
-		webhookSecret: string | null;
 		contextDir: string | null;
 		buildOnDeploy: boolean;
 		noBuildCache: boolean;
 		repullImages: boolean;
 		forceRedeploy: boolean;
+		webhookEnabled: boolean;
+		webhookSecret: string | null;
 	}
 
 	interface Props {
@@ -77,9 +76,11 @@
 		credentials: GitCredential[];
 		onClose: () => void;
 		onSaved: () => void;
+		/** Called when a new repository is created inline (via Browse) so the parent can refresh the repos list */
+		onRepositoryCreated?: () => void;
 	}
 
-	let { open = $bindable(), gitStack = null, environmentId = null, repositories, credentials, onClose, onSaved }: Props = $props();
+	let { open = $bindable(), gitStack = null, environmentId = null, repositories, credentials, onClose, onSaved, onRepositoryCreated }: Props = $props();
 
 	// Form state - repository selection or creation
 	let formRepoMode = $state<'existing' | 'new'>('existing');
@@ -88,6 +89,10 @@
 	let formNewRepoUrl = $state('');
 	let formNewRepoBranch = $state('main');
 	let formNewRepoCredentialId = $state<number | null>(null);
+	let formNewRepoAutoUpdate = $state(false);
+	let formNewRepoAutoUpdateCron = $state('0 3 * * *');
+	let formNewRepoWebhookEnabled = $state(false);
+	let formNewRepoWebhookSecret = $state('');
 
 	// Tabs: Settings (the deploy form) and Backups (edit mode + feature flag only).
 	let activeTab = $state<'settings' | 'backups'>('settings');
@@ -136,26 +141,128 @@
 	let formStackName = $state('');
 	let formStackNameUserModified = $state(false);
 	let formComposePath = $state('compose.yaml');
-	let formAutoUpdate = $state(false);
-	let formAutoUpdateCron = $state('0 3 * * *');
-	let formWebhookEnabled = $state(false);
-	let formWebhookSecret = $state('');
+	let formComposePaths = $state<string[]>([]);
 	let formContextDir = $state<string | null>(null);
+
+	// Drag-and-drop state for compose paths reordering
+	let gitDragIndex = $state<number | null>(null);
+
+	function gitAddComposePath() {
+		formComposePaths = [...formComposePaths, ''];
+	}
+
+	function gitRemoveComposePath(index: number) {
+		if (formComposePaths.length <= 1) return;
+		const newPaths = formComposePaths.filter((_, i) => i !== index);
+		formComposePaths = newPaths;
+		if (index === 0) formComposePath = newPaths[0] || 'compose.yaml';
+	}
+
+	function gitMovePathUp(index: number) {
+		if (index <= 0) return;
+		const newPaths = [...formComposePaths];
+		[newPaths[index - 1], newPaths[index]] = [newPaths[index], newPaths[index - 1]];
+		formComposePaths = newPaths;
+		if (index - 1 === 0) formComposePath = newPaths[0];
+	}
+
+	function gitMovePathDown(index: number) {
+		if (index >= formComposePaths.length - 1) return;
+		const newPaths = [...formComposePaths];
+		[newPaths[index], newPaths[index + 1]] = [newPaths[index + 1], newPaths[index]];
+		formComposePaths = newPaths;
+		if (index === 0) formComposePath = newPaths[0];
+	}
+
+	function gitDragStart(e: DragEvent, index: number) {
+		gitDragIndex = index;
+		if (e.dataTransfer) {
+			e.dataTransfer.effectAllowed = 'move';
+			e.dataTransfer.setData('text/plain', String(index));
+		}
+	}
+
+	function gitDragOver(e: DragEvent, index: number) {
+		e.preventDefault();
+		if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+		if (gitDragIndex === null || gitDragIndex === index) return;
+		const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+		const before = e.clientY < rect.top + rect.height / 2;
+		const targetIndex = before ? index : index + 1;
+		const newPaths = [...formComposePaths];
+		const [moved] = newPaths.splice(gitDragIndex, 1);
+		const insertAt = gitDragIndex < targetIndex ? targetIndex - 1 : targetIndex;
+		newPaths.splice(insertAt, 0, moved);
+		formComposePaths = newPaths;
+		gitDragIndex = insertAt;
+		if (insertAt === 0) formComposePath = newPaths[0];
+	}
+
+	function gitDragEnd() {
+		gitDragIndex = null;
+	}
+
+	let gitBrowseForRowIndex = $state<number | null>(null);
+
+	async function gitBrowseForRow(index: number) {
+		gitBrowserError = null;
+		gitBrowseForRowIndex = index;
+
+		const repoId = formRepoMode === 'existing' ? formRepositoryId : null;
+		if (repoId) {
+			gitBrowserApiUrl = `/api/git/repositories/${repoId}/browse`;
+			gitBrowserRootPath = '';
+			showGitRepoBrowser = true;
+		}
+	}
+
+	function gitHandleRowBrowseSelect(absolutePath: string) {
+		if (gitBrowseForRowIndex === null) return;
+		const capturedIndex = gitBrowseForRowIndex;
+		const relativePath = gitBrowserRootPath && absolutePath.startsWith(gitBrowserRootPath)
+			? absolutePath.slice(gitBrowserRootPath.length).replace(/^\//, '')
+			: absolutePath;
+		const newPaths = [...formComposePaths];
+		newPaths[capturedIndex] = relativePath;
+		formComposePaths = newPaths;
+		if (capturedIndex === 0) {
+			formComposePath = relativePath;
+			// Mark as browsed so the repo-name $effect no longer overrides the stack name
+			formComposePathBrowsed = true;
+		}
+		showGitRepoBrowser = false;
+		gitBrowseForRowIndex = null;
+		// Auto-derive stack name from parent directory if user hasn't typed one
+		if (capturedIndex === 0 && !formStackNameUserModified) {
+			const parts = relativePath.split('/');
+			if (parts.length >= 2) {
+				const parentDir = parts[parts.length - 2];
+				formStackName = parentDir
+					.toLowerCase()
+					.replace(/[\s_]+/g, '-')
+					.replace(/[^a-z0-9-]/g, '')
+					.replace(/-+/g, '-')
+					.replace(/^-|-$/g, '');
+			}
+		}
+	}
+
 	let formBuildOnDeploy = $state(false);
 	let formNoBuildCache = $state(false);
 	let formRepullImages = $state(false);
 	let formForceRedeploy = $state(false);
+	let formStackWebhookEnabled = $state(false);
+	let formStackWebhookSecret = $state('');
+	let copiedStackWebhookUrl = $state<'' | 'ok' | 'error'>('');
+	let copiedStackWebhookSecret = $state<'' | 'ok' | 'error'>('');
 	let formDeployNow = $state(false);
 	let formError = $state('');
 	let formSaving = $state(false);
 	let showExistsWarning = $state(false);
 	let errors = $state<{ stackName?: string; repository?: string; repoName?: string; repoUrl?: string }>({});
 
-	// Stack name validation: Docker Compose requires lowercase; must start with a
-	// letter or number, and contain only lowercase letters, numbers, hyphens, underscores
-	const STACK_NAME_REGEX = /^[a-z0-9][a-z0-9_-]*$/;
-	let copiedWebhookUrl = $state<'ok' | 'error' | null>(null);
-	let copiedWebhookSecret = $state<'ok' | 'error' | null>(null);
+	// Stack name validation: must start with alphanumeric, can contain alphanumeric, hyphens, underscores
+	const STACK_NAME_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
 
 	// Environment variables state
 	let formEnvFilePath = $state<string | null>(null);
@@ -172,6 +279,73 @@
 	let isDraggingSplit = $state(false);
 	let containerRef: HTMLDivElement | null = $state(null);
 
+
+	// Git repository browse state
+	let showGitRepoBrowser = $state(false);
+	let gitBrowserApiUrl = $state('');
+	let gitBrowserRootPath = $state('');
+	let gitBrowserCloningMessage = $state<string | undefined>(undefined);
+	let gitBrowserError = $state<string | null>(null);
+	/** Tracks whether formComposePath was set by the Browse button (vs. typed manually) */
+	let formComposePathBrowsed = $state(false);
+
+	let cloneStatus = $state<'idle' | 'cloning' | 'success' | 'error'>('idle');
+	let cloneError = $state<string | null>(null);
+	let cloningRepoId = $state<number | null>(null);
+	let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+	function stopPolling() {
+		if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+	}
+
+	async function deleteRepositoryAndClose() {
+		const targetId = cloningRepoId ?? formRepositoryId;
+		if (!targetId) return;
+		try {
+			await fetch(`/api/git/repositories/${targetId}`, { method: 'DELETE' });
+			onRepositoryCreated?.(); // Refresh list
+		} catch (e) {
+			// ignore
+		}
+		cloneStatus = 'idle';
+		stopPolling();
+		cloningRepoId = null;
+	}
+
+	async function pollJob(jobId: string, repoId: number) {
+		try {
+			const res = await fetch(`/api/jobs/${jobId}`);
+			if (!res.ok) {
+				stopPolling();
+				cloneStatus = 'error';
+				cloneError = 'Could not retrieve clone status. The repository may still be cloning in the background.';
+				return;
+			}
+			const job = await res.json();
+			if (job.status === 'done') {
+				stopPolling();
+				cloneStatus = 'success';
+				cloningRepoId = null;
+				onRepositoryCreated?.(); // refresh list
+				// Switch to 'existing' mode so the stack-save flow uses the real repo ID
+				formRepositoryId = repoId;
+				formRepoMode = 'existing';
+				gitBrowserApiUrl = `/api/git/repositories/${repoId}/browse`;
+				gitBrowserRootPath = '';
+				showGitRepoBrowser = true;
+				cloneStatus = 'idle';
+			} else if (job.status === 'error') {
+				stopPolling();
+				cloneStatus = 'error';
+				// Keep cloningRepoId set so they can delete it
+				cloneError = (job.result as any)?.error ?? 'Clone failed — check the repository URL and credentials.';
+				onRepositoryCreated?.();
+			}
+			// status === 'running' → keep polling
+		} catch {
+			// Network error — keep polling silently
+		}
+	}
 
 	// Track which gitStack was initialized to avoid repeated resets
 	let lastInitializedStackId = $state<number | null | undefined>(undefined);
@@ -234,28 +408,6 @@
 			isDraggingSplit = false;
 			// Save split ratio
 			localStorage.setItem(STORAGE_KEY_SPLIT, splitRatio.toString());
-		}
-	}
-
-	function generateWebhookSecret(): string {
-		const array = new Uint8Array(24);
-		crypto.getRandomValues(array);
-		return Array.from(array, b => b.toString(16).padStart(2, '0')).join('');
-	}
-
-	function getWebhookUrl(stackId: number): string {
-		return `${window.location.origin}/api/git/stacks/${stackId}/webhook`;
-	}
-
-	async function copyWebhookField(text: string, type: 'url' | 'secret') {
-		const ok = await copyToClipboard(text);
-		const state = ok ? 'ok' : 'error';
-		if (type === 'url') {
-			copiedWebhookUrl = state;
-			setTimeout(() => copiedWebhookUrl = null, 2000);
-		} else {
-			copiedWebhookSecret = state;
-			setTimeout(() => copiedWebhookSecret = null, 2000);
 		}
 	}
 
@@ -338,6 +490,7 @@
 		try {
 			const body: Record<string, any> = {
 				composePath: formComposePath || 'compose.yaml',
+				composePaths: formComposePaths.length > 0 ? formComposePaths : null,
 				envFilePath: formEnvFilePath || null
 			};
 
@@ -405,8 +558,6 @@
 		backupTallyLoaded = false;
 		formError = '';
 		errors = {};
-		copiedWebhookUrl = null;
-		copiedWebhookSecret = null;
 		envFiles = [];
 		envVars = [];
 		fileEnvVars = {};
@@ -418,16 +569,18 @@
 			formStackName = gitStack.stackName;
 			if ($page.data.backupsEnabled) void loadBackupTally();
 			formComposePath = gitStack.composePath;
+			try {
+				formComposePaths = gitStack.composePaths ? JSON.parse(gitStack.composePaths) : [];
+				if (formComposePaths.length === 0) formComposePaths = [gitStack.composePath || 'compose.yaml'];
+			} catch { formComposePaths = [gitStack.composePath || 'compose.yaml']; }
 			formEnvFilePath = gitStack.envFilePath;
-			formAutoUpdate = gitStack.autoUpdate;
-			formAutoUpdateCron = gitStack.autoUpdateCron || '0 3 * * *';
-			formWebhookEnabled = gitStack.webhookEnabled;
-			formWebhookSecret = gitStack.webhookSecret || '';
 			formContextDir = gitStack.contextDir ?? null;
 			formBuildOnDeploy = gitStack.buildOnDeploy ?? false;
 			formNoBuildCache = gitStack.noBuildCache ?? false;
 			formRepullImages = gitStack.repullImages ?? false;
 			formForceRedeploy = gitStack.forceRedeploy ?? false;
+			formStackWebhookEnabled = gitStack.webhookEnabled ?? false;
+			formStackWebhookSecret = gitStack.webhookSecret || '';
 			formDeployNow = false;
 
 			// Load env files and overrides SYNCHRONOUSLY to avoid race conditions
@@ -444,19 +597,25 @@
 			formNewRepoUrl = '';
 			formNewRepoBranch = 'main';
 			formNewRepoCredentialId = null;
+			formNewRepoAutoUpdate = false;
+			formNewRepoAutoUpdateCron = '0 3 * * *';
+			formNewRepoWebhookEnabled = false;
+			formNewRepoWebhookSecret = '';
 			formStackName = '';
 			formStackNameUserModified = false;
 			formComposePath = 'compose.yaml';
+			formComposePaths = ['compose.yaml'];
+			formComposePathBrowsed = false;
 			formEnvFilePath = null;
-			formAutoUpdate = false;
-			formAutoUpdateCron = '0 3 * * *';
-			formWebhookEnabled = false;
-			formWebhookSecret = '';
 			formContextDir = null;
 			formBuildOnDeploy = false;
 			formNoBuildCache = false;
 			formRepullImages = false;
 			formForceRedeploy = false;
+			formStackWebhookEnabled = false;
+			formStackWebhookSecret = '';
+			copiedStackWebhookUrl = '';
+			copiedStackWebhookSecret = '';
 			formDeployNow = false;
 		}
 	}
@@ -526,17 +685,16 @@
 			let body: any = {
 				stackName: formStackName,
 				composePath: formComposePath || 'compose.yaml',
+				composePaths: formComposePaths.length > 0 ? formComposePaths : null,
 				envFilePath: formEnvFilePath,
 				environmentId: environmentId,
-				autoUpdate: formAutoUpdate,
-				autoUpdateCron: formAutoUpdateCron,
-				webhookEnabled: formWebhookEnabled,
-				webhookSecret: formWebhookEnabled ? formWebhookSecret : null,
 				contextDir: formContextDir || null,
 				buildOnDeploy: formBuildOnDeploy,
 				noBuildCache: formNoBuildCache,
 				repullImages: formRepullImages,
 				forceRedeploy: formForceRedeploy,
+				webhookEnabled: formForceRedeploy ? formStackWebhookEnabled : false,
+				webhookSecret: (formForceRedeploy && formStackWebhookEnabled) ? formStackWebhookSecret || null : null,
 				deployNow: deployAfterSave,
 				envVars: overrideVars.map(v => ({
 					key: v.key.trim(),
@@ -553,6 +711,10 @@
 				body.url = formNewRepoUrl;
 				body.branch = formNewRepoBranch || 'main';
 				body.credentialId = formNewRepoCredentialId;
+				body.autoUpdate = formNewRepoAutoUpdate;
+				body.autoUpdateCron = formNewRepoAutoUpdateCron;
+				body.webhookEnabled = formNewRepoWebhookEnabled;
+				body.webhookSecret = formNewRepoWebhookEnabled ? formNewRepoWebhookSecret : null;
 			}
 
 			const url = gitStack
@@ -593,8 +755,10 @@
 	}
 
 	// Auto-populate stack name from selected repo and compose path (only if user hasn't manually edited)
+	// Auto-populate stack name from selected repo and compose path (only if user hasn't manually edited
+	// AND the path wasn't set via the Browse button — Browse already sets the optimal name from parent dir).
 	$effect(() => {
-		if (formRepoMode === 'existing' && formRepositoryId && !gitStack && !formStackNameUserModified) {
+		if (formRepoMode === 'existing' && formRepositoryId && !gitStack && !formStackNameUserModified && !formComposePathBrowsed) {
 			const repo = repositories.find(r => r.id === formRepositoryId);
 			if (repo) {
 				// Normalize repo name: lowercase, spaces/underscores to hyphens, strip invalid chars
@@ -621,6 +785,119 @@
 			}
 		}
 	});
+
+	/**
+	 * Open the FilesystemBrowser scoped to a git repository's clone directory.
+	 *
+	 * For "existing" repos: opens the browse dialog immediately. The browse API
+	 * will clone the repo synchronously on first request if it isn't on disk yet.
+	 *
+	 * For "new" repos: creates the repository in the DB first (giving it a real
+	 * ID, standard clone path, and making it visible in the dropdown for future
+	 * stacks), then opens the browse API for the newly created repo.
+	 */
+	async function openGitRepoBrowser() {
+		gitBrowserError = null;
+
+		if (formRepoMode === 'new') {
+			// Validate required fields before creating the repo
+			const newErrors: typeof errors = {};
+			if (!formNewRepoName.trim()) newErrors.repoName = 'Required before browsing';
+			if (!formNewRepoUrl.trim()) newErrors.repoUrl = 'Required before browsing';
+			if (newErrors.repoName || newErrors.repoUrl) {
+				errors = { ...errors, ...newErrors };
+				return;
+			}
+
+			try {
+				// Check if a repo with this URL+branch already exists to avoid creating duplicates
+				const existingRes = await fetch('/api/git/repositories');
+				const allRepos: GitRepository[] = existingRes.ok ? await existingRes.json() : [];
+				const existingRepo = allRepos.find(
+					r => r.url === formNewRepoUrl.trim() && r.branch === (formNewRepoBranch || 'main')
+				);
+
+				let repoId: number;
+				if (existingRepo) {
+					// Reuse the existing repository — no duplicate created
+					repoId = existingRepo.id;
+					formNewRepoName = existingRepo.name;
+
+					formRepositoryId = repoId;
+					formRepoMode = 'existing';
+					gitBrowserApiUrl = `/api/git/repositories/${repoId}/browse`;
+					gitBrowserRootPath = '';
+					showGitRepoBrowser = true;
+				} else {
+					// Create the repository in the DB (also triggers background clone-on-save)
+					const res = await fetch('/api/git/repositories', {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({
+							name: formNewRepoName.trim(),
+							url: formNewRepoUrl.trim(),
+							branch: formNewRepoBranch || 'main',
+							credentialId: formNewRepoCredentialId
+						})
+					});
+					const data = await res.json();
+					if (!res.ok) {
+						gitBrowserError = data.error || 'Failed to save repository';
+						toast.error('Failed to save repository', { description: gitBrowserError || undefined });
+						return;
+					}
+					repoId = data.id;
+
+					cloneStatus = 'cloning';
+					cloneError = null;
+					cloningRepoId = repoId;
+					pollJob(data.jobId, repoId);
+					pollTimer = setInterval(() => pollJob(data.jobId, repoId), 1500);
+				}
+			} catch (e) {
+				gitBrowserError = 'Failed to save repository';
+				toast.error('Failed to save repository');
+			}
+		} else {
+			// Existing repo — open browse dialog immediately.
+			// The browse API will pull latest changes before listing (or clone if not on disk yet).
+			gitBrowserApiUrl = `/api/git/repositories/${formRepositoryId}/browse`;
+			gitBrowserRootPath = '';
+			showGitRepoBrowser = true;
+		}
+	}
+
+	function handleGitMultiBrowseSelect(entries: { path: string; name: string }[]) {
+		const newRelativePaths: string[] = [];
+		for (const entry of entries) {
+			const relativePath = gitBrowserRootPath && entry.path.startsWith(gitBrowserRootPath)
+				? entry.path.slice(gitBrowserRootPath.length).replace(/^\//, '')
+				: entry.path;
+			if (!formComposePaths.includes(relativePath)) {
+				formComposePaths = [...formComposePaths, relativePath];
+				newRelativePaths.push(relativePath);
+			}
+		}
+		// Set first selected as primary and auto-derive stack name from parent dir
+		if (newRelativePaths.length > 0) {
+			if (!formComposePath) formComposePath = newRelativePaths[0];
+			if (!formStackNameUserModified) {
+				const parts = newRelativePaths[0].split('/');
+				if (parts.length >= 2) {
+					const parentDir = parts[parts.length - 2];
+					formStackName = parentDir
+						.toLowerCase()
+						.replace(/[\s_]+/g, '-')
+						.replace(/[^a-z0-9-]/g, '')
+						.replace(/-+/g, '-')
+						.replace(/^-|-$/g, '');
+					formComposePathBrowsed = true;
+				}
+			}
+		}
+		showGitRepoBrowser = false;
+	}
+
 </script>
 
 <Dialog.Root bind:open onOpenChange={(isOpen) => { if (isOpen) focusFirstInput(); }}>
@@ -846,6 +1123,64 @@
 									</Select.Root>
 								</div>
 							</div>
+							
+							<div class="space-y-3 mt-4 border-t pt-4 border-muted">
+								<p class="text-xs font-medium text-muted-foreground uppercase tracking-wider">Repository Sync</p>
+								
+								<!-- Auto-update section -->
+								<div class="flex items-center gap-3">
+									<div class="flex items-center gap-2 flex-1">
+										<RefreshCw class="w-4 h-4 text-muted-foreground" />
+										<Label class="text-sm font-normal">Enable scheduled sync</Label>
+									</div>
+									<TogglePill bind:checked={formNewRepoAutoUpdate} />
+								</div>
+								{#if formNewRepoAutoUpdate}
+									<CronEditor
+										value={formNewRepoAutoUpdateCron}
+										onchange={(cron) => formNewRepoAutoUpdateCron = cron}
+									/>
+								{/if}
+
+								<!-- Webhook section -->
+								<div class="flex items-center gap-3 pt-2">
+									<div class="flex items-center gap-2 flex-1">
+										<Webhook class="w-4 h-4 text-muted-foreground" />
+										<Label class="text-sm font-normal">Enable webhook</Label>
+									</div>
+									<TogglePill bind:checked={formNewRepoWebhookEnabled} />
+								</div>
+								{#if formNewRepoWebhookEnabled}
+									<div class="space-y-2">
+										<Label for="new-repo-webhook-secret">Webhook secret (optional)</Label>
+										<div class="flex gap-2">
+											<Input
+												id="new-repo-webhook-secret"
+												bind:value={formNewRepoWebhookSecret}
+												placeholder="Leave empty for no signature verification"
+												class="font-mono text-xs"
+											/>
+											<Tooltip.Root>
+												<Tooltip.Trigger>
+													<Button
+														variant="outline"
+														size="sm"
+														type="button"
+														onclick={() => {
+															const array = new Uint8Array(24);
+															crypto.getRandomValues(array);
+															formNewRepoWebhookSecret = Array.from(array, b => b.toString(16).padStart(2, '0')).join('');
+														}}
+													>
+														<Key class="w-4 h-4" />
+													</Button>
+												</Tooltip.Trigger>
+												<Tooltip.Content>Generate secret</Tooltip.Content>
+											</Tooltip.Root>
+										</div>
+									</div>
+								{/if}
+							</div>
 						</div>
 					{/if}
 				</div>
@@ -882,9 +1217,63 @@
 			{/if}
 
 			<div class="space-y-2">
-				<Label for="compose-path">Compose file path</Label>
-				<Input id="compose-path" bind:value={formComposePath} placeholder="compose.yaml" />
-				<p class="text-xs text-muted-foreground">Path to the compose file within the repository</p>
+				<Label>Compose file path{formComposePaths.length > 1 ? 's' : ''}</Label>
+				{#each formComposePaths as path, i}
+					{@const total = formComposePaths.length}
+					{@const isDragging = gitDragIndex === i}
+					<div
+						class="flex items-center gap-1 {isDragging ? 'opacity-40' : ''}"
+						draggable="true"
+						ondragstart={(e) => gitDragStart(e, i)}
+						ondragover={(e) => gitDragOver(e, i)}
+						ondrop={(e) => e.preventDefault()}
+						ondragend={gitDragEnd}
+					>
+						{#if total > 1}
+							<div class="flex flex-col shrink-0 -space-y-0.5">
+								<button type="button" title="Move up" disabled={i === 0}
+									onclick={() => gitMovePathUp(i)} class="p-0 hover:text-muted-foreground disabled:opacity-30 disabled:cursor-default">
+									<ArrowUp class="w-3 h-3" />
+								</button>
+								<button type="button" title="Move down" disabled={i === total - 1}
+									onclick={() => gitMovePathDown(i)} class="p-0 hover:text-muted-foreground disabled:opacity-30 disabled:cursor-default">
+									<ArrowDown class="w-3 h-3" />
+								</button>
+							</div>
+							<GripVertical class="w-3.5 h-3.5 text-muted-foreground/40 shrink-0 cursor-grab" />
+							<span class="text-2xs text-muted-foreground shrink-0 w-4 text-center">{i + 1}</span>
+						{/if}
+						<Input
+							bind:value={formComposePaths[i]}
+							placeholder={i === 0 ? 'compose.yaml' : 'compose.override.yaml'}
+							class="flex-1"
+							oninput={() => { if (i === 0) formComposePath = formComposePaths[i]; }}
+						/>
+						<Button
+							variant="outline" size="sm"
+							onclick={() => gitBrowseForRow(i)}
+							disabled={formRepoMode === 'existing' ? !formRepositoryId : (!formNewRepoName.trim() || !formNewRepoUrl.trim())}
+							title="Browse repository" class="shrink-0">
+							<FolderOpen class="w-4 h-4" />
+						</Button>
+						{#if total > 1}
+							<Button variant="outline" size="sm"
+									onclick={() => gitRemoveComposePath(i)}
+									class="shrink-0 text-muted-foreground hover:text-destructive" title="Remove">
+								<X class="w-4 h-4" />
+							</Button>
+						{/if}
+					</div>
+				{/each}
+				<Button type="button" variant="ghost" size="sm" onclick={gitAddComposePath}
+					class="text-xs h-auto py-1">
+					+ Add compose file
+				</Button>
+				{#if gitBrowserError}
+					<p class="text-xs text-destructive">{gitBrowserError}</p>
+				{:else}
+					<p class="text-xs text-muted-foreground">Paths are relative to the repository root. Order matters — files are merged left-to-right.</p>
+				{/if}
 			</div>
 
 			<!-- Additional env file for variable substitution -->
@@ -938,126 +1327,6 @@
 				<p class="text-xs text-muted-foreground">Relative to repository root, e.g. <code class="text-xs bg-muted px-1 rounded">.</code> for root</p>
 			</div>
 
-			<!-- Auto-update section -->
-			<div class="space-y-3 p-3 bg-muted/50 rounded-md">
-			<div class="flex items-center gap-3">
-				<div class="flex items-center gap-2 flex-1">
-					<RefreshCw class="w-4 h-4 text-muted-foreground" />
-					<Label class="text-sm font-normal">Enable scheduled sync</Label>
-				</div>
-				<TogglePill bind:checked={formAutoUpdate} />
-			</div>
-				<p class="text-xs text-muted-foreground">
-					Automatically sync repository and redeploy stack if there are changes.
-				</p>
-				{#if formAutoUpdate}
-					<CronEditor
-						value={formAutoUpdateCron}
-						onchange={(cron) => formAutoUpdateCron = cron}
-					/>
-				{/if}
-			</div>
-
-			<!-- Webhook section -->
-			<div class="space-y-3 p-3 bg-muted/50 rounded-md">
-			<div class="flex items-center gap-3">
-				<div class="flex items-center gap-2 flex-1">
-					<Webhook class="w-4 h-4 text-muted-foreground" />
-					<Label class="text-sm font-normal">Enable webhook</Label>
-				</div>
-				<TogglePill bind:checked={formWebhookEnabled} />
-			</div>
-				<p class="text-xs text-muted-foreground">
-					Receive push events from your Git provider to trigger sync and redeploy.
-				</p>
-				{#if formWebhookEnabled}
-					{#if gitStack}
-						<div class="space-y-2">
-							<Label>Webhook URL</Label>
-							<div class="flex gap-2">
-								<Input
-									value={getWebhookUrl(gitStack.id)}
-									readonly
-									class="font-mono text-xs bg-background"
-								/>
-								<Button
-									variant="outline"
-									size="sm"
-									onclick={() => copyWebhookField(getWebhookUrl(gitStack.id), 'url')}
-									title="Copy URL"
-								>
-									{#if copiedWebhookUrl === 'error'}
-										<Tooltip.Root open>
-											<Tooltip.Trigger>
-												<XCircle class="w-4 h-4 text-red-500" />
-											</Tooltip.Trigger>
-											<Tooltip.Content>Copy requires HTTPS</Tooltip.Content>
-										</Tooltip.Root>
-									{:else if copiedWebhookUrl === 'ok'}
-										<Check class="w-4 h-4 text-green-500" />
-									{:else}
-										<Copy class="w-4 h-4" />
-									{/if}
-								</Button>
-							</div>
-						</div>
-					{/if}
-					<div class="space-y-2">
-						<Label for="webhook-secret">Webhook secret (optional)</Label>
-						<div class="flex gap-2">
-							<Input
-								id="webhook-secret"
-								bind:value={formWebhookSecret}
-								placeholder="Leave empty for no signature verification"
-								class="font-mono text-xs"
-							/>
-							{#if gitStack && formWebhookSecret}
-								<Button
-									variant="outline"
-									size="sm"
-									onclick={() => copyWebhookField(formWebhookSecret, 'secret')}
-									title="Copy secret"
-								>
-									{#if copiedWebhookSecret === 'error'}
-										<Tooltip.Root open>
-											<Tooltip.Trigger>
-												<XCircle class="w-4 h-4 text-red-500" />
-											</Tooltip.Trigger>
-											<Tooltip.Content>Copy requires HTTPS</Tooltip.Content>
-										</Tooltip.Root>
-									{:else if copiedWebhookSecret === 'ok'}
-										<Check class="w-4 h-4 text-green-500" />
-									{:else}
-										<Copy class="w-4 h-4" />
-									{/if}
-								</Button>
-							{/if}
-							<Tooltip.Root>
-								<Tooltip.Trigger>
-									<Button
-										variant="outline"
-										size="sm"
-										onclick={() => formWebhookSecret = generateWebhookSecret()}
-									>
-										<Key class="w-4 h-4" />
-									</Button>
-								</Tooltip.Trigger>
-								<Tooltip.Content>Generate secret</Tooltip.Content>
-							</Tooltip.Root>
-						</div>
-					</div>
-					{#if !gitStack}
-						<p class="text-xs text-muted-foreground">
-							The webhook URL will be available after creating the stack.
-						</p>
-					{:else}
-						<p class="text-xs text-muted-foreground">
-							Configure this URL in your Git provider. Secret is used for signature verification.
-						</p>
-					{/if}
-				{/if}
-			</div>
-
 			<!-- Deploy options section -->
 			<div class="space-y-3 p-3 bg-muted/50 rounded-md">
 				<p class="text-xs font-medium text-muted-foreground uppercase tracking-wider">Deploy options</p>
@@ -1098,11 +1367,121 @@
 						<Zap class="w-4 h-4 text-muted-foreground" />
 						<Label class="text-sm font-normal">Force redeployment</Label>
 					</div>
-					<TogglePill bind:checked={formForceRedeploy} />
+					<TogglePill bind:checked={formForceRedeploy} onchange={() => { if (!formForceRedeploy) { formStackWebhookEnabled = false; formStackWebhookSecret = ''; } }} />
 				</div>
 				<p class="text-xs text-muted-foreground">
 					Always redeploy the stack on webhook or scheduled sync, even if no git changes are detected.
 				</p>
+				{#if formForceRedeploy}
+				<div class="space-y-3 ml-6 p-3 bg-muted/50 rounded-md">
+					<div class="flex items-center gap-3">
+						<div class="flex items-center gap-2 flex-1">
+							<Webhook class="w-4 h-4 text-muted-foreground" />
+							<Label class="text-sm font-normal">Enable stack webhook</Label>
+						</div>
+						<TogglePill bind:checked={formStackWebhookEnabled} />
+					</div>
+					<p class="text-xs text-muted-foreground">
+						Call this webhook to force redeploy <strong>this stack only</strong>. The repository-level webhook redeploys all linked stacks with force redeployment enabled.
+					</p>
+					{#if formStackWebhookEnabled}
+						{#if gitStack}
+							<div class="space-y-2">
+								<Label>Stack webhook URL</Label>
+								<div class="flex gap-2">
+									<Input
+										value={`${typeof window !== 'undefined' ? window.location.origin : ''}/api/git/stacks/${gitStack.id}/webhook`}
+										readonly
+										class="font-mono text-xs bg-background"
+									/>
+									<Button
+										variant="outline"
+										size="sm"
+										onclick={async () => {
+											const result = await copyToClipboard(`${window.location.origin}/api/git/stacks/${gitStack.id}/webhook`);
+											copiedStackWebhookUrl = result ? 'ok' : 'error';
+											setTimeout(() => copiedStackWebhookUrl = '', 2000);
+										}}
+										title="Copy URL"
+									>
+										{#if copiedStackWebhookUrl === 'error'}
+											<Tooltip.Root open>
+												<Tooltip.Trigger><XCircle class="w-4 h-4 text-red-500" /></Tooltip.Trigger>
+												<Tooltip.Content>Copy requires HTTPS</Tooltip.Content>
+											</Tooltip.Root>
+										{:else if copiedStackWebhookUrl === 'ok'}
+											<Check class="w-4 h-4 text-green-500" />
+										{:else}
+											<Copy class="w-4 h-4" />
+										{/if}
+									</Button>
+								</div>
+							</div>
+						{:else}
+							<p class="text-xs text-muted-foreground">
+								The stack webhook URL will be available after creating the stack.
+							</p>
+						{/if}
+						<div class="space-y-2">
+							<Label for="stack-webhook-secret">Webhook secret (optional)</Label>
+							<div class="flex gap-2">
+								<Input
+									id="stack-webhook-secret"
+									bind:value={formStackWebhookSecret}
+									placeholder="Leave empty for no signature verification"
+									class="font-mono text-xs"
+								/>
+								{#if gitStack && formStackWebhookSecret}
+									<Button
+										variant="outline"
+										size="sm"
+										onclick={async () => {
+											const result = await copyToClipboard(formStackWebhookSecret);
+											copiedStackWebhookSecret = result ? 'ok' : 'error';
+											setTimeout(() => copiedStackWebhookSecret = '', 2000);
+										}}
+										title="Copy secret"
+									>
+										{#if copiedStackWebhookSecret === 'error'}
+											<Tooltip.Root open>
+												<Tooltip.Trigger><XCircle class="w-4 h-4 text-red-500" /></Tooltip.Trigger>
+												<Tooltip.Content>Copy requires HTTPS</Tooltip.Content>
+											</Tooltip.Root>
+										{:else if copiedStackWebhookSecret === 'ok'}
+											<Check class="w-4 h-4 text-green-500" />
+										{:else}
+											<Copy class="w-4 h-4" />
+										{/if}
+									</Button>
+								{/if}
+								<Tooltip.Root>
+									<Tooltip.Trigger>
+										<Button
+											variant="outline"
+											size="sm"
+											onclick={() => {
+												const arr = new Uint8Array(32);
+												crypto.getRandomValues(arr);
+												formStackWebhookSecret = Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
+											}}
+										>
+											<Key class="w-4 h-4" />
+										</Button>
+									</Tooltip.Trigger>
+									<Tooltip.Content>Generate secret</Tooltip.Content>
+								</Tooltip.Root>
+							</div>
+							<p class="text-xs text-muted-foreground">
+								{#if gitStack}
+									Configure this URL in your Git provider or CI/CD pipeline. Secret is used for signature verification.
+								{:else}
+									Secret will be saved when you create the stack.
+								{/if}
+							</p>
+						</div>
+					{/if}
+				</div>
+				{/if}
 			</div>
 
 			<!-- Deploy now option (only for new stacks) -->
@@ -1241,5 +1620,73 @@
 				OK
 			</Button>
 		</div>
+	</Dialog.Content>
+</Dialog.Root>
+
+<!-- Git repository filesystem browser -->
+<!-- Opens when user clicks Browse next to the compose file path field -->
+<FilesystemBrowser
+	bind:open={showGitRepoBrowser}
+	title="Select compose file(s)"
+	icon={FolderGit2}
+	description="Select one or more compose files from the repository"
+	selectFilter={/\.ya?ml$/i}
+	selectMode="file"
+	apiUrl={gitBrowserApiUrl}
+	bind:rootPath={gitBrowserRootPath}
+	bind:cloningMessage={gitBrowserCloningMessage}
+	onSelect={gitBrowseForRowIndex !== null ? gitHandleRowBrowseSelect : ((path, name) => handleGitMultiBrowseSelect([{ path, name }]))}
+	multiSelect={gitBrowseForRowIndex === null}
+	onSelectMany={gitBrowseForRowIndex === null ? handleGitMultiBrowseSelect : undefined}
+	onClose={() => {
+		showGitRepoBrowser = false;
+		gitBrowserCloningMessage = undefined;
+		gitBrowseForRowIndex = null;
+	}}
+/>
+
+<!-- Cloning Progress Dialog for newly added repo inside Stack creation -->
+<Dialog.Root open={cloneStatus === 'cloning' || cloneStatus === 'error'} onOpenChange={(v) => { if (!v) { cloneStatus = 'idle'; stopPolling(); } }}>
+	<Dialog.Content class="max-w-lg">
+		{#if cloneStatus === 'cloning'}
+			<!-- ── Cloning state ── -->
+			<Dialog.Header>
+				<Dialog.Title class="flex items-center gap-2">
+					<GitFork class="w-5 h-5" />
+					Cloning repository…
+				</Dialog.Title>
+				<Dialog.Description>
+					Please wait while the repository is being cloned. This may take a moment.
+				</Dialog.Description>
+			</Dialog.Header>
+			<div class="flex flex-col items-center justify-center gap-4 py-10">
+				<Loader2 class="w-10 h-10 animate-spin text-muted-foreground" />
+				<p class="text-sm text-muted-foreground">Cloning from <span class="font-mono text-foreground">{formNewRepoUrl}</span>…</p>
+			</div>
+		{:else if cloneStatus === 'error'}
+			<!-- ── Error state ── -->
+			<Dialog.Header>
+				<Dialog.Title class="flex items-center gap-2 text-destructive">
+					<XCircle class="w-5 h-5" />
+					Clone failed
+				</Dialog.Title>
+				<Dialog.Description>
+					The repository was saved but could not be cloned. Check the error below.
+				</Dialog.Description>
+			</Dialog.Header>
+			<div class="rounded-md border border-destructive/40 bg-destructive/5 p-4 my-2">
+				<p class="text-sm font-medium text-destructive mb-1">Git error</p>
+				<pre class="text-xs text-destructive/90 whitespace-pre-wrap break-all font-mono">{cloneError}</pre>
+			</div>
+			<p class="text-xs text-muted-foreground">
+				You can fix the URL or credentials to retry, or delete it to start over.
+			</p>
+			<Dialog.Footer class="gap-2 flex-col sm:flex-row">
+				<Button variant="destructive" onclick={deleteRepositoryAndClose}>
+					Delete repository
+				</Button>
+				<Button variant="outline" onclick={() => { cloneStatus = 'idle'; stopPolling(); }}>Close</Button>
+			</Dialog.Footer>
+		{/if}
 	</Dialog.Content>
 </Dialog.Root>

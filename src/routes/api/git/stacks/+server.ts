@@ -12,9 +12,9 @@ import {
 } from '$lib/server/db';
 import { deployGitStack } from '$lib/server/git';
 import { authorize } from '$lib/server/authorize';
-import { registerSchedule } from '$lib/server/scheduler';
 import { auditGitStack } from '$lib/server/audit';
 import { createJobResponse } from '$lib/server/sse';
+import { registerSchedule } from '$lib/server/scheduler';
 
 // Stack name validation: Docker Compose requires lowercase; must start with a
 // letter or number, and contain only lowercase letters, numbers, hyphens, underscores
@@ -93,9 +93,17 @@ export const POST: RequestHandler = async (event) => {
 					name: repoName,
 					url: data.url,
 					branch: data.branch || 'main',
-					credentialId: data.credentialId || null
+					credentialId: data.credentialId || null,
+					autoUpdate: data.autoUpdate || false,
+					autoUpdateSchedule: data.autoUpdateSchedule || undefined,
+					autoUpdateCron: data.autoUpdate ? (data.autoUpdateCron || '0 3 * * *') : undefined,
+					webhookEnabled: data.webhookEnabled || false,
+					webhookSecret: data.webhookEnabled ? (data.webhookSecret || null) : null
 				});
 				repositoryId = repo.id;
+				if (repo.autoUpdate) {
+					await registerSchedule(repo.id, 'git_repository_sync', null);
+				}
 			} catch (error: any) {
 				if (error.message?.includes('UNIQUE constraint failed')) {
 					return json({ error: 'A repository with this name already exists' }, { status: 400 });
@@ -115,17 +123,15 @@ export const POST: RequestHandler = async (event) => {
 			environmentId: data.environmentId || null,
 			repositoryId: repositoryId,
 			composePath: data.composePath || 'compose.yaml',
+			composePaths: data.composePaths || null,
 			envFilePath: data.envFilePath || null,
-			autoUpdate: data.autoUpdate || false,
-			autoUpdateSchedule: data.autoUpdateSchedule || 'daily',
-			autoUpdateCron: data.autoUpdateCron || '0 3 * * *',
-			webhookEnabled: data.webhookEnabled || false,
-			webhookSecret: data.webhookSecret || null,
 			contextDir: data.contextDir || null,
 			buildOnDeploy: data.buildOnDeploy ?? false,
 			noBuildCache: data.noBuildCache ?? false,
 			repullImages: data.repullImages ?? false,
-			forceRedeploy: data.forceRedeploy ?? false
+			forceRedeploy: data.forceRedeploy ?? false,
+			webhookEnabled: data.forceRedeploy ? (data.webhookEnabled || false) : false,
+			webhookSecret: (data.forceRedeploy && data.webhookEnabled) ? (data.webhookSecret || null) : null
 		});
 
 		// Create stack_sources entry so the stack appears in the list immediately
@@ -136,11 +142,6 @@ export const POST: RequestHandler = async (event) => {
 			gitRepositoryId: repositoryId,
 			gitStackId: gitStack.id
 		});
-
-		// Register schedule with croner if auto-update is enabled
-		if (gitStack.autoUpdate && gitStack.autoUpdateCron) {
-			await registerSchedule(gitStack.id, 'git_stack_sync', gitStack.environmentId);
-		}
 
 		// Audit log
 		await auditGitStack(event, 'create', gitStack.id, gitStack.stackName, gitStack.environmentId);

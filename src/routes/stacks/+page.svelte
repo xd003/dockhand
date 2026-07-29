@@ -54,7 +54,7 @@
 	// rate-limited), with the error text for the tooltip — session-only (#1255).
 	let failedUpdateCheckIds = $state<Set<string>>(new Set());
 	let failedUpdateCheckErrors = $state<Map<string, string>>(new Map());
-	let stackSources = $state<Record<string, { sourceType: string; composePath?: string | null; repository?: any; gitStack?: any }>>({});
+	let stackSources = $state<Record<string, { sourceType: string; composePath?: string | null; composePaths?: string | null; repository?: any; gitStack?: any }>>({});
 	let stackEnvVarCounts = $state<Record<string, number>>({});
 	let gitStacks = $state<any[]>([]);
 	let gitRepositories = $state<any[]>([]);
@@ -1800,14 +1800,19 @@
 				{:else if column.id === 'location'}
 					{#if source.composePath}
 						{@const dirPath = source.composePath.replace(/\/[^/]+$/, '')}
+						{@const paths = source.composePaths ? (() => { try { return JSON.parse(source.composePaths); } catch { return [source.composePath]; } })() : [source.composePath]}
+						{@const extraCount = paths.length - 1}
 						<Tooltip.Root>
 							<Tooltip.Trigger class="w-full text-left">
 								<span class="text-xs text-muted-foreground block truncate">
 									{dirPath}
+									{#if extraCount > 0}
+										<span class="text-blue-500 ml-1">+{extraCount} more</span>
+									{/if}
 								</span>
 							</Tooltip.Trigger>
 							<Tooltip.Content class="max-w-md">
-								<code class="text-xs">{source.composePath}</code>
+								<code class="text-xs">{paths.join(', ')}</code>
 							</Tooltip.Content>
 						</Tooltip.Root>
 					{:else}
@@ -2625,6 +2630,14 @@
 		editingGitStack = null;
 	}}
 	onSaved={fetchStacks}
+	onRepositoryCreated={async () => {
+		try {
+			const reposRes = await fetch('/api/git/repositories');
+			gitRepositories = await reposRes.json();
+		} catch {
+			// Non-fatal — dropdown may not reflect the new repo immediately
+		}
+	}}
 />
 
 <ImportStackModal

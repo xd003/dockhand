@@ -1,9 +1,11 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getGitRepository } from '$lib/server/db';
-import { deployFromRepository } from '$lib/server/git';
+import { deployFromRepositoryWithFanOut } from '$lib/server/git';
+import { auditGitRepository } from '$lib/server/audit';
 
-export const POST: RequestHandler = async ({ params }) => {
+export const POST: RequestHandler = async (event) => {
+	const { params } = event;
 	try {
 		const id = parseInt(params.id);
 		if (isNaN(id)) {
@@ -15,7 +17,11 @@ export const POST: RequestHandler = async ({ params }) => {
 			return json({ error: 'Repository not found' }, { status: 404 });
 		}
 
-		const result = await deployFromRepository(id);
+		// Deploy from repository using fan-out logic
+		const result = await deployFromRepositoryWithFanOut(id);
+		await auditGitRepository(event, 'deploy', id, repository.name, {
+			result: result.success ? 'deployed' : 'failed'
+		});
 		return json(result);
 	} catch (error: any) {
 		console.error('Failed to deploy from git repository:', error);

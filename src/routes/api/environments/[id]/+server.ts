@@ -223,10 +223,6 @@ export const DELETE: RequestHandler = async (event) => {
 		// Clean up git stacks for this environment
 		const gitStacks = await getGitStacksForEnvironmentOnly(id);
 		for (const stack of gitStacks) {
-			// Unregister schedule if auto-update was enabled
-			if (stack.autoUpdate) {
-				unregisterSchedule(stack.id, 'git_stack_sync');
-			}
 			// Delete git stack files from filesystem
 			await deleteGitStackFiles(stack.id, stack.stackName, stack.environmentId);
 			// Delete git stack from database

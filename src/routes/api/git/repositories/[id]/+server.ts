@@ -7,10 +7,12 @@ import {
 	getGitCredentials,
 	getGitStacksByRepositoryId
 } from '$lib/server/db';
-import { deleteRepositoryFiles, deleteGitStackFiles } from '$lib/server/git';
+import { deleteRepositoryFiles, deleteGitStackFiles, renameRepositoryFiles, syncRepositoryExclusive } from '$lib/server/git';
+import { createJob, completeJob, failJob } from '$lib/server/jobs';
 import { authorize } from '$lib/server/authorize';
 import { auditGitRepository } from '$lib/server/audit';
 import { computeAuditDiff } from '$lib/utils/diff';
+import { registerSchedule, unregisterSchedule } from '$lib/server/scheduler';
 
 export const GET: RequestHandler = async ({ params, cookies }) => {
 	const auth = await authorize(cookies);
@@ -65,13 +67,17 @@ export const PUT: RequestHandler = async (event) => {
 			}
 		}
 
-		// Update only the basic repository fields
-		// Deployment-specific config (composePath, autoUpdate, webhook) now belongs to git_stacks
+		// Update repository fields
 		const repository = await updateGitRepository(id, {
 			name: data.name,
 			url: data.url,
 			branch: data.branch,
-			credentialId: data.credentialId
+			credentialId: data.credentialId,
+			autoUpdate: data.autoUpdate,
+			autoUpdateSchedule: data.autoUpdateSchedule,
+			autoUpdateCron: data.autoUpdateCron,
+			webhookEnabled: data.webhookEnabled,
+			webhookSecret: data.webhookSecret
 		});
 
 		if (!repository) {
@@ -84,7 +90,40 @@ export const PUT: RequestHandler = async (event) => {
 		// Audit log
 		await auditGitRepository(event, 'update', repository.id, repository.name, diff);
 
-		return json(repository);
+		// Manage schedule if auto-update settings changed
+		if (repository.autoUpdate) {
+			await registerSchedule(repository.id, 'git_repository_sync', null);
+		} else {
+			unregisterSchedule(repository.id, 'git_repository_sync');
+		}
+
+		// Rename on-disk clone if the display name changed (path is name-based)
+		if (existing.name !== repository.name) {
+			renameRepositoryFiles(existing.name, repository.name);
+		}
+
+		// Only re-sync when clone identity changes (URL, branch, or credentials)
+		const needsResync =
+			existing.url !== repository.url ||
+			existing.branch !== repository.branch ||
+			existing.credentialId !== repository.credentialId;
+
+		if (!needsResync) {
+			return json(repository);
+		}
+
+		const job = createJob();
+		syncRepositoryExclusive(id).then((result) => {
+			if (result.success) {
+				completeJob(job, { success: true, commit: result.commit });
+			} else {
+				failJob(job, result.error ?? 'Clone failed');
+			}
+		}).catch((err: unknown) => {
+			failJob(job, err instanceof Error ? err.message : String(err));
+		});
+
+		return json({ ...repository, jobId: job.id });
 	} catch (error: any) {
 		console.error('Failed to update git repository:', error);
 		if (error.message?.includes('UNIQUE constraint failed')) {
@@ -121,7 +160,10 @@ export const DELETE: RequestHandler = async (event) => {
 		}
 
 		// Delete repository clone directory
-		deleteRepositoryFiles(id);
+		deleteRepositoryFiles(repository.name, id);
+		
+		// Unregister schedule
+		unregisterSchedule(id, 'git_repository_sync');
 
 		const deleted = await deleteGitRepository(id);
 		if (!deleted) {

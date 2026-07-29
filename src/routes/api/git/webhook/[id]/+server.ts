@@ -1,7 +1,7 @@
 import { json, text } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getGitRepository } from '$lib/server/db';
-import { deployFromRepository } from '$lib/server/git';
+import { deployFromRepositoryWithFanOut } from '$lib/server/git';
 import { auditGitRepository } from '$lib/server/audit';
 import crypto from 'node:crypto';
 
@@ -68,14 +68,8 @@ export const POST: RequestHandler = async (event) => {
 			}
 		}
 
-		// Optionally check which branch was pushed (for GitHub)
-		// const body = await request.json();
-		// if (body.ref && body.ref !== `refs/heads/${repository.branch}`) {
-		//   return json({ message: 'Push was not to tracked branch, skipping' });
-		// }
-
-		// Deploy from repository
-		const result = await deployFromRepository(id);
+		// Deploy from repository (awaited so the webhook caller gets real success/failure)
+		const result = await deployFromRepositoryWithFanOut(id);
 		await auditGitRepository(event, 'webhook', id, repository.name, {
 			method: 'POST', source, result: result.success ? 'deployed' : 'failed'
 		});
@@ -113,8 +107,8 @@ export const GET: RequestHandler = async (event) => {
 			return json({ error: 'Invalid webhook secret' }, { status: 401 });
 		}
 
-		// Deploy from repository
-		const result = await deployFromRepository(id);
+		// Deploy from repository (awaited so the webhook caller gets real success/failure)
+		const result = await deployFromRepositoryWithFanOut(id);
 		await auditGitRepository(event, 'webhook', id, repository.name, {
 			method: 'GET', source: 'get', result: result.success ? 'deployed' : 'failed'
 		});

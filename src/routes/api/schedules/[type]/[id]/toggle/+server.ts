@@ -5,7 +5,20 @@
 
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { getAutoUpdateSettingById, updateAutoUpdateSettingById, getGitStack, updateGitStack, getEnvUpdateCheckSettings, setEnvUpdateCheckSettings, getImagePruneSettings, setImagePruneSettings, getBackupConfig, updateBackupConfig, getBackupDestination, updateBackupDestination } from '$lib/server/db';
+import {
+	getAutoUpdateSettingById,
+	updateAutoUpdateSettingById,
+	getGitRepository,
+	updateGitRepository,
+	getEnvUpdateCheckSettings,
+	setEnvUpdateCheckSettings,
+	getImagePruneSettings,
+	setImagePruneSettings,
+	getBackupConfig,
+	updateBackupConfig,
+	getBackupDestination,
+	updateBackupDestination
+} from '$lib/server/db';
 import { registerSchedule, unregisterSchedule } from '$lib/server/scheduler';
 import { authorize } from '$lib/server/authorize';
 import { auditBackup, auditBackupDestination } from '$lib/server/audit';
@@ -38,7 +51,6 @@ export const POST: RequestHandler = async (event) => {
 				enabled: newEnabled
 			});
 
-			// Register or unregister schedule with croner
 			if (newEnabled && setting.cronExpression) {
 				await registerSchedule(scheduleId, 'container_update', setting.environmentId);
 			} else {
@@ -46,29 +58,32 @@ export const POST: RequestHandler = async (event) => {
 			}
 
 			return json({ success: true, enabled: newEnabled });
-		} else if (type === 'git_stack_sync') {
-			const stack = await getGitStack(scheduleId);
-			if (!stack) {
+		} else if (type === 'git_repository_sync') {
+			const repo = await getGitRepository(scheduleId);
+			if (!repo) {
 				return json({ error: 'Schedule not found' }, { status: 404 });
 			}
-			const envDenied = await auth.requireEnvAccess(stack.environmentId);
-			if (envDenied) return envDenied;
 
-			const newEnabled = !stack.autoUpdate;
-			await updateGitStack(scheduleId, {
-				autoUpdate: newEnabled
+			const newEnabled = !repo.autoUpdate;
+			await updateGitRepository(scheduleId, {
+				autoUpdate: newEnabled,
+				// Ensure autoUpdateSchedule is set so the schedule stays visible
+				// on the /schedules page even when paused (filtered by IS NOT NULL).
+				autoUpdateSchedule: repo.autoUpdateSchedule || 'custom'
 			});
 
-			// Register or unregister schedule with croner
-			if (newEnabled && stack.autoUpdateCron) {
-				await registerSchedule(scheduleId, 'git_stack_sync', stack.environmentId);
+			if (newEnabled && repo.autoUpdateCron) {
+				await registerSchedule(scheduleId, 'git_repository_sync', null);
 			} else {
-				unregisterSchedule(scheduleId, 'git_stack_sync');
+				unregisterSchedule(scheduleId, 'git_repository_sync');
 			}
 
 			return json({ success: true, enabled: newEnabled });
+		} else if (type === 'git_stack_sync') {
+			return json({
+				error: 'Stack-level git sync schedules have moved to the repository. Configure scheduled sync on the git repository instead.'
+			}, { status: 400 });
 		} else if (type === 'env_update_check') {
-			// scheduleId is environmentId for env update check
 			const envDenied = await auth.requireEnvAccess(scheduleId);
 			if (envDenied) return envDenied;
 			const config = await getEnvUpdateCheckSettings(scheduleId);
@@ -82,7 +97,6 @@ export const POST: RequestHandler = async (event) => {
 				enabled: newEnabled
 			});
 
-			// Register or unregister schedule with croner
 			if (newEnabled && config.cron) {
 				await registerSchedule(scheduleId, 'env_update_check', scheduleId);
 			} else {
@@ -91,7 +105,6 @@ export const POST: RequestHandler = async (event) => {
 
 			return json({ success: true, enabled: newEnabled });
 		} else if (type === 'image_prune') {
-			// scheduleId is environmentId for image prune
 			const envDenied = await auth.requireEnvAccess(scheduleId);
 			if (envDenied) return envDenied;
 			const config = await getImagePruneSettings(scheduleId);
@@ -105,7 +118,6 @@ export const POST: RequestHandler = async (event) => {
 				enabled: newEnabled
 			});
 
-			// Register or unregister schedule with croner
 			if (newEnabled && config.cronExpression) {
 				await registerSchedule(scheduleId, 'image_prune', scheduleId);
 			} else {

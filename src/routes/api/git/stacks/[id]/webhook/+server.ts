@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getGitStack } from '$lib/server/db';
-import { deployGitStack } from '$lib/server/git';
+import { triggerGitStackSyncFromWebhook } from '$lib/server/scheduler';
 import { auditGitStack } from '$lib/server/audit';
 import crypto from 'node:crypto';
 
@@ -43,7 +43,11 @@ export const POST: RequestHandler = async (event) => {
 
 		const gitStack = await getGitStack(id);
 		if (!gitStack) {
-			return json({ error: 'Git stack not found' }, { status: 404 });
+			return json({ error: 'Stack not found' }, { status: 404 });
+		}
+
+		if (!gitStack.forceRedeploy) {
+			return json({ error: 'Force redeployment is not enabled for this stack' }, { status: 403 });
 		}
 
 		if (!gitStack.webhookEnabled) {
@@ -68,14 +72,19 @@ export const POST: RequestHandler = async (event) => {
 			}
 		}
 
-		// Deploy the git stack (syncs and deploys only if there are changes)
-		const result = await deployGitStack(id, { force: false });
+		// Trigger stack-level sync (force redeploy of this stack only)
+		const result = await triggerGitStackSyncFromWebhook(id);
 		await auditGitStack(event, 'webhook', id, gitStack.stackName, gitStack.environmentId, {
-			method: 'POST', source, result: result.skipped ? 'skipped' : result.success ? 'deployed' : 'failed'
+			method: 'POST', source, result: result.success ? 'triggered' : 'failed'
 		});
-		return json(result);
+
+		if (!result.success) {
+			return json(result, { status: 500 });
+		}
+
+		return json({ success: true, message: 'Stack sync triggered' }, { status: 202 });
 	} catch (error: any) {
-		console.error('Webhook error:', error);
+		console.error('Stack webhook error:', error);
 		return json({ success: false, error: error.message }, { status: 500 });
 	}
 };
@@ -91,7 +100,11 @@ export const GET: RequestHandler = async (event) => {
 
 		const gitStack = await getGitStack(id);
 		if (!gitStack) {
-			return json({ error: 'Git stack not found' }, { status: 404 });
+			return json({ error: 'Stack not found' }, { status: 404 });
+		}
+
+		if (!gitStack.forceRedeploy) {
+			return json({ error: 'Force redeployment is not enabled for this stack' }, { status: 403 });
 		}
 
 		if (!gitStack.webhookEnabled) {
@@ -107,14 +120,19 @@ export const GET: RequestHandler = async (event) => {
 			return json({ error: 'Invalid webhook secret' }, { status: 401 });
 		}
 
-		// Deploy the git stack (syncs and deploys only if there are changes)
-		const result = await deployGitStack(id, { force: false });
+		// Trigger stack-level sync (force redeploy of this stack only)
+		const result = await triggerGitStackSyncFromWebhook(id);
 		await auditGitStack(event, 'webhook', id, gitStack.stackName, gitStack.environmentId, {
-			method: 'GET', source: 'get', result: result.skipped ? 'skipped' : result.success ? 'deployed' : 'failed'
+			method: 'GET', source: 'get', result: result.success ? 'triggered' : 'failed'
 		});
-		return json(result);
+
+		if (!result.success) {
+			return json(result, { status: 500 });
+		}
+
+		return json({ success: true, message: 'Stack sync triggered' }, { status: 202 });
 	} catch (error: any) {
-		console.error('Webhook GET error:', error);
+		console.error('Stack webhook GET error:', error);
 		return json({ success: false, error: error.message }, { status: 500 });
 	}
 };

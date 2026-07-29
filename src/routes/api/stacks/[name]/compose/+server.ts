@@ -1,6 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getStackComposeFile, deployStack, saveStackComposeFile } from '$lib/server/stacks';
+import { updateStackSource, getStackSource } from '$lib/server/db';
 import { authorize } from '$lib/server/authorize';
 import { createJobResponse } from '$lib/server/sse';
 
@@ -17,6 +18,7 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 
 	try {
 		const result = await getStackComposeFile(name, envIdNum);
+		const source = await getStackSource(name, envIdNum);
 
 		if (!result.success) {
 			// Return info about what's needed - unified response for all missing compose files
@@ -30,8 +32,10 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 
 		return json({
 			content: result.content,
+			composeContents: result.composeContents ?? null,
 			stackDir: result.stackDir,
 			composePath: result.composePath,
+			composePaths: result.composePaths ?? source?.composePaths ?? null,
 			envPath: result.envPath,
 			suggestedEnvPath: result.suggestedEnvPath
 		});
@@ -56,15 +60,15 @@ export const PUT: RequestHandler = async ({ params, request, url, cookies }) => 
 
 	try {
 		const body = await request.json();
-		const { content, restart = false, composePath, envPath, moveFromDir, oldComposePath, oldEnvPath } = body;
+		const { content, composeContents, restart = false, composePath, composePaths, envPath, moveFromDir, oldComposePath, oldEnvPath } = body;
 
 		if (!content || typeof content !== 'string') {
 			return json({ error: 'Compose file content is required' }, { status: 400 });
 		}
 
 		// Build options object for custom paths, move operation, and file renames
-		const pathOptions = (composePath || envPath !== undefined || moveFromDir || oldComposePath || oldEnvPath)
-			? { composePath, envPath, moveFromDir, oldComposePath, oldEnvPath }
+		const pathOptions = (composePath || composePaths || envPath !== undefined || moveFromDir || oldComposePath || oldEnvPath || composeContents)
+			? { composePath, composePaths, composeContents, envPath, moveFromDir, oldComposePath, oldEnvPath }
 			: undefined;
 
 		if (restart) {
@@ -77,8 +81,18 @@ export const PUT: RequestHandler = async ({ params, request, url, cookies }) => 
 					return json({ error: saveResult.error }, { status: 500 });
 				}
 			}
+			// Update DB with multi-file paths if provided
+			if (composePaths !== undefined) {
+				await updateStackSource(name, envIdNum ?? null, {
+					composePaths: composePaths ?? undefined
+				});
+			}
 			// Get authoritative paths from DB/filesystem for deploy
 			const composeInfo = await getStackComposeFile(name, envIdNum);
+			const deploySource = await getStackSource(name, envIdNum);
+			const deployComposePaths = deploySource?.composePaths
+				? (() => { try { return JSON.parse(deploySource.composePaths); } catch { return undefined; } })()
+				: undefined;
 
 			// Deploy via SSE to keep connection alive during long operations
 			return createJobResponse(async (send) => {
@@ -89,6 +103,7 @@ export const PUT: RequestHandler = async ({ params, request, url, cookies }) => 
 						envId: envIdNum,
 						forceRecreate: true,
 						composePath: composeInfo.composePath || undefined,
+						composePaths: deployComposePaths,
 						envPath: composeInfo.envPath || undefined
 					});
 
@@ -109,6 +124,13 @@ export const PUT: RequestHandler = async ({ params, request, url, cookies }) => 
 
 		if (!result.success) {
 			return json({ error: result.error }, { status: 500 });
+		}
+
+		// Preserve multi-file paths after save (mirrors restart path)
+		if (composePaths !== undefined) {
+			await updateStackSource(name, envIdNum ?? null, {
+				composePaths: composePaths ?? undefined
+			});
 		}
 
 		return json({ success: true });

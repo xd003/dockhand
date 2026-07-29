@@ -207,13 +207,7 @@
 	async function gitBrowseForRow(index: number) {
 		gitBrowserError = null;
 		gitBrowseForRowIndex = index;
-
-		const repoId = formRepoMode === 'existing' ? formRepositoryId : null;
-		if (repoId) {
-			gitBrowserApiUrl = `/api/git/repositories/${repoId}/browse`;
-			gitBrowserRootPath = '';
-			showGitRepoBrowser = true;
-		}
+		await openGitRepoBrowser();
 	}
 
 	function gitHandleRowBrowseSelect(absolutePath: string) {

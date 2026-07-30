@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, rmSync, chmodSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, chmodSync, readFileSync, writeFileSync, renameSync, readdirSync } from 'node:fs';
 import { join, resolve, dirname, basename, relative } from 'node:path';
 import { spawn as nodeSpawn, spawnSync } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
@@ -10,6 +10,8 @@ import {
 	updateGitStack,
 	upsertStackSource,
 	getFullGitStacksByRepositoryId,
+	getSetting,
+	setSetting,
 	type GitRepository,
 	type GitCredential,
 	type GitStackWithRepo
@@ -129,6 +131,64 @@ if (!existsSync(GIT_REPOS_DIR)) {
 
 export function getGitReposDir(): string {
 	return GIT_REPOS_DIR;
+}
+
+/**
+ * Legacy layout stored per-environment clones under git-repos/<envName>/.
+ * Current layout clones once per repository at git-repos/<repoName>/ (shared).
+ */
+function isLegacyEnvGitReposDir(dir: string): boolean {
+	if (!existsSync(dir)) return false;
+	if (existsSync(join(dir, '.git'))) return false;
+	const base = basename(dir);
+	if (base.startsWith('preview-') || base.startsWith('repo-')) return false;
+	return true;
+}
+
+const LEGACY_ENV_GIT_REPOS_MIGRATION_KEY = 'migration:legacy_env_git_repos_v1';
+
+/** Remove a leftover per-environment git-repos directory, if present. */
+export function cleanupLegacyEnvGitReposDir(envName: string): void {
+	const dir = join(GIT_REPOS_DIR, envName);
+	if (dir === GIT_REPOS_DIR || !dir.startsWith(GIT_REPOS_DIR + '/')) return;
+	if (!isLegacyEnvGitReposDir(dir)) return;
+	try {
+		rmSync(dir, { recursive: true, force: true });
+		console.log(`[Git] Removed legacy env-scoped git-repos dir: ${dir}`);
+	} catch (err) {
+		console.warn(`[Git] Failed to remove legacy env-scoped git-repos dir ${dir}:`, err);
+	}
+}
+
+/**
+ * One-time migration: remove per-environment git-repos directories from the old
+ * layout (git-repos/<envName>/). Tracked in settings so it does not run again.
+ */
+export async function migrateLegacyEnvGitRepos(): Promise<void> {
+	if (await getSetting(LEGACY_ENV_GIT_REPOS_MIGRATION_KEY)) return;
+
+	console.log('[Git] Running one-time migration: legacy env-scoped git-repos cleanup...');
+
+	if (!existsSync(GIT_REPOS_DIR)) {
+		await setSetting(LEGACY_ENV_GIT_REPOS_MIGRATION_KEY, true);
+		return;
+	}
+
+	let removed = 0;
+	for (const entry of readdirSync(GIT_REPOS_DIR)) {
+		const dir = join(GIT_REPOS_DIR, entry);
+		if (!isLegacyEnvGitReposDir(dir)) continue;
+		rmSync(dir, { recursive: true, force: true });
+		console.log(`[Git] Removed legacy env-scoped git-repos dir: ${dir}`);
+		removed++;
+	}
+
+	await setSetting(LEGACY_ENV_GIT_REPOS_MIGRATION_KEY, true);
+	console.log(
+		removed > 0
+			? `[Git] Legacy env-scoped git-repos migration complete (${removed} dir(s) removed)`
+			: '[Git] Legacy env-scoped git-repos migration complete (nothing to remove)'
+	);
 }
 
 /**

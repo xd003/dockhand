@@ -5,7 +5,7 @@
  * All lifecycle operations use docker compose commands.
  */
 
-import { existsSync, mkdirSync, rmSync, readdirSync, cpSync, statSync, unlinkSync, renameSync, readFileSync, writeFileSync, realpathSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, readdirSync, cpSync, statSync, unlinkSync, renameSync, readFileSync, writeFileSync, realpathSync, accessSync, constants as fsConstants } from 'node:fs';
 import { join, resolve, dirname, basename, relative, normalize as pathNormalize, sep as pathSep, isAbsolute } from 'node:path';
 import { spawn as nodeSpawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
@@ -26,6 +26,7 @@ import {
 import { isAllowedStackFilename } from './stack-filename';
 import {
 	getEnvironment,
+	getEnvironments,
 	getSecretEnvVarsAsRecord,
 	getNonSecretEnvVarsAsRecord,
 	getStackEnvVars,
@@ -166,8 +167,9 @@ export class ComposeFileNotFoundError extends Error {
 // INTERNAL STATE
 // =============================================================================
 
-// Cache stacks directory
-let _stacksDir: string | null = null;
+// Per-root stacks directory caches (staging vs flat local managed root)
+let _defaultStacksDir: string | null = null;
+let _localStacksDir: string | null = null;
 
 // Per-stack locking mechanism to prevent race conditions during concurrent operations
 const stackLocks = new Map<string, Promise<void>>();
@@ -331,36 +333,128 @@ function redactEnvVarsForLog(vars: Record<string, string>): Record<string, strin
 // UTILITIES
 // =============================================================================
 
+function getDataDir(): string {
+	return process.env.DATA_DIR || './data';
+}
+
+/** True when the Dockhand-managed flat local root env var is set (non-empty). */
+export function isStacksDirEnvSet(): boolean {
+	return !!process.env.STACKS_DIR?.trim();
+}
+
 /**
- * Get the compose stacks directory (always returns absolute path)
+ * Hawser staging root: always $DATA_DIR/stacks (env-scoped leaves).
+ * Creates the directory if missing.
+ */
+export function getDefaultStacksDir(): string {
+	if (_defaultStacksDir) return _defaultStacksDir;
+	_defaultStacksDir = resolve(join(getDataDir(), 'stacks'));
+	if (!existsSync(_defaultStacksDir)) {
+		mkdirSync(_defaultStacksDir, { recursive: true });
+	}
+	return _defaultStacksDir;
+}
+
+/**
+ * Local managed stacks root: STACKS_DIR when set, otherwise the default staging root.
+ * Does not mkdir when STACKS_DIR is set — startup validation requires an existing writable dir.
+ */
+export function getLocalStacksDir(): string {
+	if (!isStacksDirEnvSet()) {
+		return getDefaultStacksDir();
+	}
+	if (_localStacksDir) return _localStacksDir;
+	_localStacksDir = resolve(process.env.STACKS_DIR!);
+	return _localStacksDir;
+}
+
+/**
+ * @deprecated Prefer getDefaultStacksDir() for Hawser staging or getLocalStacksDir() for local managed paths.
  */
 export function getStacksDir(): string {
-	if (_stacksDir) return _stacksDir;
-	const dataDir = process.env.DATA_DIR || './data';
-	// Resolve to absolute path to avoid issues with relative paths in docker compose
-	_stacksDir = resolve(join(dataDir, 'stacks'));
-	if (!existsSync(_stacksDir)) {
-		mkdirSync(_stacksDir, { recursive: true });
+	return getDefaultStacksDir();
+}
+
+export function isHawserConnection(env: { connectionType?: string | null } | null | undefined): boolean {
+	return env?.connectionType === 'hawser-standard' || env?.connectionType === 'hawser-edge';
+}
+
+export function isLocalConnection(env: { connectionType?: string | null } | null | undefined): boolean {
+	if (!env) return true;
+	const ct = env.connectionType;
+	return ct === 'socket' || ct === 'direct' || !ct;
+}
+
+/** Flat STACKS_DIR/<stackName>/ layout applies to socket/direct (and no-env) when STACKS_DIR is set. */
+export async function usesFlatLocalStacksDir(envId?: number | null): Promise<boolean> {
+	if (!isStacksDirEnvSet()) return false;
+	if (envId === undefined || envId === null) return true;
+	const env = await getEnvironment(envId);
+	return isLocalConnection(env);
+}
+
+/** Base path shown to the UI for stack file placement for the given environment. */
+export async function getStacksBasePathForEnv(envId?: number | null): Promise<string> {
+	if (await usesFlatLocalStacksDir(envId)) {
+		return getLocalStacksDir();
 	}
-	return _stacksDir;
+	return getDefaultStacksDir();
+}
+
+/** True when dirPath is under the Hawser staging root ($DATA_DIR/stacks). */
+export function isManagedStagingDir(dirPath: string): boolean {
+	const resolved = resolve(dirPath);
+	const stagingRoot = resolve(getDefaultStacksDir());
+	return resolved === stagingRoot || resolved.startsWith(stagingRoot + pathSep);
+}
+
+/** True when dirPath is under either managed root (staging or flat local STACKS_DIR). */
+export function isManagedStackDir(dirPath: string): boolean {
+	const resolved = resolve(dirPath);
+	if (isManagedStagingDir(resolved)) return true;
+	if (isStacksDirEnvSet()) {
+		const localRoot = resolve(getLocalStacksDir());
+		return resolved === localRoot || resolved.startsWith(localRoot + pathSep);
+	}
+	return false;
+}
+
+function isPathUnderRoot(childPath: string, rootPath: string): boolean {
+	const resolvedChild = resolve(childPath);
+	const resolvedRoot = resolve(rootPath);
+	return resolvedChild === resolvedRoot || resolvedChild.startsWith(resolvedRoot + pathSep);
+}
+
+function remapPathUnderDir(
+	oldDir: string,
+	newDir: string,
+	filePath: string | null | undefined
+): string | null | undefined {
+	if (!filePath) return filePath;
+	const resolved = resolve(filePath);
+	const oldResolved = resolve(oldDir);
+	if (isPathUnderRoot(resolved, oldResolved)) {
+		return join(newDir, relative(oldResolved, resolved));
+	}
+	return filePath;
 }
 
 /**
  * Get stack directory path for a specific environment.
- * New stacks use: $DATA_DIR/stacks/<envName>/<stackName>/
- * Legacy stacks (no env): $DATA_DIR/stacks/<stackName>/
- *
- * Automatically looks up environment name from database.
+ * When STACKS_DIR is set for local envs: STACKS_DIR/<stackName>/ (flat).
+ * Otherwise: $DATA_DIR/stacks/<envName>/<stackName>/ (or legacy flat).
  */
 export async function getStackDir(stackName: string, envId?: number | null): Promise<string> {
-	const stacksDir = getStacksDir();
+	if (await usesFlatLocalStacksDir(envId)) {
+		return join(getLocalStacksDir(), stackName);
+	}
+	const stacksDir = getDefaultStacksDir();
 	if (envId) {
 		const env = await getEnvironment(envId);
 		if (env) {
 			return join(stacksDir, env.name, stackName);
 		}
 	}
-	// Legacy path for stacks without environment
 	return join(stacksDir, stackName);
 }
 
@@ -439,7 +533,36 @@ export async function findStackDir(stackName: string, envId?: number | null): Pr
 		}
 	}
 
-	const stacksDir = getStacksDir();
+	const flatLocal = await usesFlatLocalStacksDir(envId);
+
+	if (flatLocal) {
+		const flatPath = join(getLocalStacksDir(), stackName);
+		if (existsSync(flatPath)) {
+			return flatPath;
+		}
+		// Safety net: pre-migration paths under $DATA_DIR/stacks
+		const defaultStacksDir = getDefaultStacksDir();
+		if (envId) {
+			const env = await getEnvironment(envId);
+			if (env) {
+				const namePath = join(defaultStacksDir, env.name, stackName);
+				if (existsSync(namePath)) {
+					return namePath;
+				}
+			}
+			const idPath = join(defaultStacksDir, String(envId), stackName);
+			if (existsSync(idPath)) {
+				return idPath;
+			}
+		}
+		const legacyPath = join(defaultStacksDir, stackName);
+		if (existsSync(legacyPath)) {
+			return legacyPath;
+		}
+		return null;
+	}
+
+	const stacksDir = getDefaultStacksDir();
 
 	// Look up environment name if we have an ID
 	if (envId) {
@@ -467,6 +590,211 @@ export async function findStackDir(stackName: string, envId?: number | null): Pr
 	}
 
 	return null;
+}
+
+/**
+ * Fail fast at startup when STACKS_DIR is set but missing or not writable.
+ * Does not fall back to DATA_DIR/stacks.
+ */
+export function validateStacksDirAtStartup(): void {
+	const raw = process.env.STACKS_DIR?.trim();
+	if (!raw) return;
+
+	const resolved = resolve(raw);
+	console.log(`[StacksDir] Using STACKS_DIR=${resolved}`);
+
+	if (!existsSync(resolved)) {
+		const message = `[StacksDir] Startup aborted: STACKS_DIR is set to "${raw}" (resolved: ${resolved}) but the directory does not exist. Create and mount it into the Dockhand container before starting.`;
+		console.error(message);
+		throw new Error(message);
+	}
+
+	try {
+		accessSync(resolved, fsConstants.W_OK);
+	} catch {
+		const message = `[StacksDir] Startup aborted: STACKS_DIR is set to "${raw}" (resolved: ${resolved}) but the directory is not writable.`;
+		console.error(message);
+		throw new Error(message);
+	}
+}
+
+function moveStackDirCrossDevice(sourceDir: string, destDir: string): void {
+	mkdirSync(dirname(destDir), { recursive: true });
+	try {
+		renameSync(sourceDir, destDir);
+	} catch (err: any) {
+		if (err?.code !== 'EXDEV') throw err;
+		cpSync(sourceDir, destDir, { recursive: true, force: true });
+		rmSync(sourceDir, { recursive: true, force: true });
+	}
+}
+
+function dirHasContents(dirPath: string): boolean {
+	if (!existsSync(dirPath)) return false;
+	return readdirSync(dirPath).length > 0;
+}
+
+async function updateStackPathsAfterMigration(
+	stackName: string,
+	environmentId: number | null | undefined,
+	oldDir: string,
+	newDir: string
+): Promise<void> {
+	const source = await getStackSource(stackName, environmentId);
+	if (!source) return;
+
+	const oldResolved = resolve(oldDir);
+	const newResolved = resolve(newDir);
+
+	const composePath = remapPathUnderDir(oldResolved, newResolved, source.composePath);
+	const envPath = remapPathUnderDir(oldResolved, newResolved, source.envPath);
+
+	let composePaths: string[] | null | undefined;
+	if (source.composePaths) {
+		try {
+			const parsed = JSON.parse(source.composePaths);
+			if (Array.isArray(parsed)) {
+				composePaths = parsed.map((p: string) => {
+					if (typeof p !== 'string') return p;
+					const abs = isAbsolute(p) ? p : join(oldResolved, p);
+					return remapPathUnderDir(oldResolved, newResolved, abs) ?? p;
+				});
+			}
+		} catch {
+			composePaths = undefined;
+		}
+	}
+
+	const changed =
+		composePath !== source.composePath ||
+		envPath !== source.envPath ||
+		(composePaths && JSON.stringify(composePaths) !== source.composePaths);
+
+	if (!changed) return;
+
+	await upsertStackSource({
+		stackName,
+		environmentId: environmentId ?? null,
+		sourceType: source.sourceType,
+		gitRepositoryId: source.gitRepositoryId,
+		gitStackId: source.gitStackId,
+		composePath: composePath ?? source.composePath,
+		composePaths: composePaths ?? undefined,
+		envPath: envPath ?? source.envPath
+	});
+}
+
+/**
+ * One-time idempotent migration: move local managed stacks from $DATA_DIR/stacks
+ * into flat STACKS_DIR/<stackName>/ when STACKS_DIR is first enabled.
+ */
+export async function migrateLocalStacksToStacksDir(): Promise<void> {
+	if (!isStacksDirEnvSet()) return;
+
+	const localStacksDir = getLocalStacksDir();
+	const defaultStacksDir = getDefaultStacksDir();
+	const environments = await getEnvironments();
+	const localEnvs = environments.filter((env) => isLocalConnection(env));
+
+	type MigrationEntry = {
+		stackName: string;
+		environmentId: number;
+		envName: string;
+		sourceDir: string;
+		destDir: string;
+	};
+
+	const toMigrate: MigrationEntry[] = [];
+	const seenDest = new Map<string, MigrationEntry>();
+
+	for (const env of localEnvs) {
+		const sources = await getStackSources(env.id);
+		for (const source of sources) {
+			const stackName = source.stackName;
+			let sourceDir: string | null = null;
+
+			if (source.composePath) {
+				const customDir = resolve(dirname(source.composePath));
+				if (!isPathUnderRoot(customDir, defaultStacksDir)) {
+					continue;
+				}
+				if (existsSync(customDir)) {
+					sourceDir = customDir;
+				}
+			}
+
+			if (!sourceDir) {
+				const envScoped = join(defaultStacksDir, env.name, stackName);
+				if (existsSync(envScoped)) {
+					sourceDir = resolve(envScoped);
+				}
+			}
+
+			if (!sourceDir) {
+				const legacy = join(defaultStacksDir, stackName);
+				if (existsSync(legacy)) {
+					sourceDir = resolve(legacy);
+				}
+			}
+
+			if (!sourceDir) {
+				const destDir = join(localStacksDir, stackName);
+				if (existsSync(destDir)) {
+					const oldGuess = join(defaultStacksDir, env.name, stackName);
+					await updateStackPathsAfterMigration(stackName, env.id, oldGuess, destDir);
+				}
+				continue;
+			}
+
+			if (isPathUnderRoot(sourceDir, localStacksDir)) {
+				continue;
+			}
+
+			const destDir = join(localStacksDir, stackName);
+			const entry: MigrationEntry = {
+				stackName,
+				environmentId: env.id,
+				envName: env.name,
+				sourceDir,
+				destDir
+			};
+
+			const existing = seenDest.get(stackName);
+			if (existing && existing.sourceDir !== sourceDir) {
+				throw new Error(
+					`[StacksDir] Startup aborted: migration collision — stacks "${stackName}" in environments "${existing.envName}" and "${env.name}" would both move to "${destDir}"`
+				);
+			}
+			seenDest.set(stackName, entry);
+			toMigrate.push(entry);
+		}
+	}
+
+	for (const entry of toMigrate) {
+		const { stackName, environmentId, sourceDir, destDir } = entry;
+
+		if (!existsSync(sourceDir)) {
+			if (existsSync(destDir)) {
+				await updateStackPathsAfterMigration(stackName, environmentId, sourceDir, destDir);
+			}
+			continue;
+		}
+
+		if (existsSync(destDir) && dirHasContents(destDir)) {
+			throw new Error(
+				`[StacksDir] Startup aborted: migration collision — destination "${destDir}" already exists and is non-empty (stack "${stackName}")`
+			);
+		}
+
+		if (existsSync(destDir)) {
+			rmSync(destDir, { recursive: true, force: true });
+		}
+
+		mkdirSync(localStacksDir, { recursive: true });
+		moveStackDirCrossDevice(sourceDir, destDir);
+		console.log(`[StacksDir] Migrated stack "${stackName}" from ${sourceDir} to ${destDir}`);
+		await updateStackPathsAfterMigration(stackName, environmentId, sourceDir, destDir);
+	}
 }
 
 /**
@@ -954,6 +1282,12 @@ export async function saveStackComposeFile(
 	// For creates, use new path; for updates, find existing path first
 	let stackDir: string;
 	if (create) {
+		if (await usesFlatLocalStacksDir(envId)) {
+			const collisionError = await checkFlatLocalStackNameCollision(name, envId);
+			if (collisionError) {
+				return { success: false, error: collisionError };
+			}
+		}
 		stackDir = await getStackDir(name, envId);
 	} else {
 		const existingDir = await findStackDir(name, envId);
@@ -1001,6 +1335,25 @@ export async function saveStackComposeFile(
 	} catch (err: any) {
 		return { success: false, error: `Failed to ${create ? 'create' : 'save'} compose file: ${err.message}` };
 	}
+}
+
+async function checkFlatLocalStackNameCollision(stackName: string, envId?: number | null): Promise<string | null> {
+	const allSources = await getStackSources();
+	const conflict = allSources.find(
+		(s) => s.stackName === stackName && s.environmentId !== envId && s.environmentId != null
+	);
+	if (conflict) {
+		const conflictEnv = conflict.environmentId ? await getEnvironment(conflict.environmentId) : undefined;
+		return `Stack name "${stackName}" is already used by environment "${conflictEnv?.name ?? conflict.environmentId}". With STACKS_DIR set, local stack names must be unique across environments.`;
+	}
+	const flatDir = join(getLocalStacksDir(), stackName);
+	if (existsSync(flatDir)) {
+		const existing = await getStackSource(stackName, envId);
+		if (!existing) {
+			return `Stack directory "${flatDir}" already exists. With STACKS_DIR set, local stack names must be unique across environments.`;
+		}
+	}
+	return null;
 }
 
 // =============================================================================
@@ -2553,7 +2906,7 @@ export async function removeStack(
 			let removalFiles: FileToDelete[] | undefined;
 			if (composeResult.stackDir) {
 				const resolvedStaging = resolve(composeResult.stackDir);
-				if (resolvedStaging.startsWith(resolve(getStacksDir()) + '/')) {
+				if (isManagedStagingDir(resolvedStaging)) {
 					removalFiles = Object.entries(hashDirFiles(resolvedStaging)).map(
 						([path, hash]) => ({ path, hash })
 					);
@@ -2644,20 +2997,15 @@ export async function removeStack(
 		// Only delete files that are within Dockhand's data directory (stacks we created)
 		// Adopted/imported stacks have files outside DATA_DIR and should be preserved
 		const stackSource = await getStackSource(stackName, envId);
-		const stacksDir = getStacksDir();
 
 		// Determine what directory to delete (if any)
 		let stackDir: string | null = null;
 
 		if (stackSource?.composePath) {
-			// Check if the compose path is within Dockhand's stacks directory
 			const customDir = dirname(stackSource.composePath);
 			const resolvedCustomDir = resolve(customDir);
-			const resolvedStacksDir = resolve(stacksDir);
 
-			// Only delete if the directory is within DATA_DIR/stacks/ (files we created)
-			// AND the directory basename matches the stack name exactly (for safety)
-			if (resolvedCustomDir.startsWith(resolvedStacksDir) &&
+			if (isManagedStackDir(resolvedCustomDir) &&
 				basename(resolvedCustomDir) === stackName &&
 				existsSync(customDir)) {
 				stackDir = customDir;

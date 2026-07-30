@@ -12,6 +12,8 @@ import { initCryptoFallback } from '$lib/server/crypto-fallback';
 import { detectHostDataDir } from '$lib/server/host-path';
 import { listContainers, removeContainer } from '$lib/server/docker';
 import { migrateCredentials } from '$lib/server/encryption';
+import { validateStacksDirAtStartup, migrateLocalStacksToStacksDir } from '$lib/server/stacks';
+import { migrateLegacyEnvGitRepos } from '$lib/server/git';
 import { gzipSync } from 'node:zlib';
 import { rmSync, readdirSync, existsSync } from 'fs';
 import { join } from 'path';
@@ -145,6 +147,16 @@ if (!initialized) {
 		setServerStartTime(); // Track when server started
 		initDatabase();
 
+		validateStacksDirAtStartup();
+		const stacksDirReady = migrateLocalStacksToStacksDir().catch((err) => {
+			console.error('[StacksDir] Migration failed:', err);
+			process.exit(1);
+		});
+
+		migrateLegacyEnvGitRepos().catch((err) => {
+			console.error('[Git] Legacy env-scoped git-repos migration failed:', err);
+		});
+
 		// Migrate plain text credentials to encrypted storage.
 		// This also handles key rotation if ENCRYPTION_KEY env var differs from the
 		// key file. Rotation flips the in-memory key while re-encrypting rows, so
@@ -177,7 +189,7 @@ if (!initialized) {
 		// Start background subprocesses and the scheduler only AFTER credential
 		// migration/rotation has settled, so a scheduled backup can't decrypt a
 		// destination password mid-rotation (new key against old-key ciphertext).
-		credentialsReady.then(() => {
+		Promise.all([credentialsReady, stacksDirReady]).then(() => {
 			startSubprocesses().catch(err => {
 				console.error('Failed to start background subprocesses:', err);
 			});
@@ -210,6 +222,9 @@ if (!initialized) {
 		initialized = true;
 	} catch (error) {
 		console.error('Failed to initialize database:', error);
+		if (process.env.STACKS_DIR?.trim()) {
+			process.exit(1);
+		}
 	}
 }
 

@@ -351,7 +351,7 @@ function restorePorts(destination: any, access: { isEnterprise: boolean; canAcce
 			const { tmpdir } = await import('os');
 			const { join, dirname, resolve, sep } = await import('path');
 			const { randomUUID } = await import('crypto');
-			const { getStacksDir } = await import('../stacks');
+			const { getDefaultStacksDir, getLocalStacksDir, isStacksDirEnvSet } = await import('../stacks');
 			// Use `restic restore --include` (not dump→tar): restore writes a
 			// DETERMINISTIC path under the target — <tmp>/metadata/stacks/<name>/
 			// stackfiles/ — so there's no tar-prefix guessing. Mirrors the proven
@@ -379,9 +379,15 @@ function restorePorts(destination: any, access: { isEnterprise: boolean; canAcce
 				// root before any mkdir/rename/rm — a "../.." name must never let a
 				// restore wipe an arbitrary directory.
 				const resolvedTarget = resolve(targetPath);
-				const stacksRoot = resolve(getStacksDir());
-				if (resolvedTarget !== stacksRoot && !resolvedTarget.startsWith(stacksRoot + sep)) {
-					console.log(`[Backup] writeLocalStackFiles: refusing target "${resolvedTarget}" outside the stacks root "${stacksRoot}"`);
+				const allowedRoots = [resolve(getDefaultStacksDir())];
+				if (isStacksDirEnvSet()) {
+					allowedRoots.push(resolve(getLocalStacksDir()));
+				}
+				const underAllowedRoot = allowedRoots.some(
+					(root) => resolvedTarget === root || resolvedTarget.startsWith(root + sep)
+				);
+				if (!underAllowedRoot) {
+					console.log(`[Backup] writeLocalStackFiles: refusing target "${resolvedTarget}" outside allowed stacks roots (${allowedRoots.join(', ')})`);
 					return false;
 				}
 

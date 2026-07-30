@@ -14,7 +14,8 @@ import type { RequestHandler } from './$types';
  * - location: Custom base location path (optional)
  *
  * If location is provided, path will be: {location}/{envName}/{stackName}/
- * Otherwise uses Dockhand's default: $DATA_DIR/stacks/{envName}/{stackName}/
+ * Otherwise uses Dockhand's default via getStackDir (flat STACKS_DIR/<stackName>/
+ * for local envs when STACKS_DIR is set, else $DATA_DIR/stacks/<envName>/<stackName>/).
  */
 export const GET: RequestHandler = async ({ url }) => {
 	const stackName = url.searchParams.get('name');

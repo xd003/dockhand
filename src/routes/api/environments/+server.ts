@@ -10,6 +10,10 @@ import { serializeLabels, parseLabels, MAX_LABELS } from '$lib/utils/label-color
 import { cleanPem } from '$lib/utils/pem';
 import { validateEnvName } from '$lib/utils/env-name';
 import { redactEnvironment } from '$lib/server/environment-redact';
+import {
+	connectionInputFromRequest,
+	findDuplicateDockerEnvironment
+} from '$lib/server/environment-docker-validation';
 
 /**
  * @openapi
@@ -120,6 +124,23 @@ export const POST: RequestHandler = async (event) => {
 
 		// Validate labels
 		const labels = Array.isArray(data.labels) ? data.labels.slice(0, MAX_LABELS) : [];
+
+		const connectionConfig = connectionInputFromRequest({
+			connectionType,
+			socketPath: data.socketPath,
+			host: data.host,
+			port: data.port,
+			protocol: data.protocol,
+			tlsCa: data.tlsCa,
+			tlsCert: data.tlsCert,
+			tlsKey: data.tlsKey,
+			tlsSkipVerify: data.tlsSkipVerify,
+			hawserToken: data.hawserToken
+		});
+		const duplicateCheck = await findDuplicateDockerEnvironment(connectionConfig);
+		if (!duplicateCheck.ok) {
+			return json({ error: duplicateCheck.error }, { status: 409 });
+		}
 
 		const env = await createEnvironment({
 			name: data.name,

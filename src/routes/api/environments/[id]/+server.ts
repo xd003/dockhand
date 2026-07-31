@@ -16,6 +16,11 @@ import { cleanPem } from '$lib/utils/pem';
 import { validateEnvName } from '$lib/utils/env-name';
 import { renameEnvStorage } from '$lib/server/env-rename-core';
 import { invalidateDiskUsage } from '$lib/server/disk-usage-cache';
+import {
+	findDuplicateDockerEnvironment,
+	hasConnectionFieldChanges,
+	mergeConnectionInput
+} from '$lib/server/environment-docker-validation';
 import { unregisterSchedule, unregisterScheduleByFamily } from '$lib/server/scheduler';
 import { closeEdgeConnection } from '$lib/server/hawser';
 import { computeAuditDiff } from '$lib/utils/diff';
@@ -104,6 +109,20 @@ export const PUT: RequestHandler = async (event) => {
 			const nameCheck = validateEnvName(data.name);
 			if (!nameCheck.ok) {
 				return json({ error: nameCheck.reason }, { status: 400 });
+			}
+		}
+
+		// Validate connection uniqueness before any filesystem changes so a
+		// rejected duplicate cannot leave stacks/<env>/ renamed while the DB
+		// still holds the old name.
+		if (hasConnectionFieldChanges(oldEnv, data)) {
+			const connectionConfig = mergeConnectionInput(oldEnv, data);
+			const duplicateCheck = await findDuplicateDockerEnvironment(connectionConfig, {
+				excludeEnvId: id,
+				envIdForEdge: id
+			});
+			if (!duplicateCheck.ok) {
+				return json({ error: duplicateCheck.error }, { status: 409 });
 			}
 		}
 

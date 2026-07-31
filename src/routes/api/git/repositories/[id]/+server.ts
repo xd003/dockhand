@@ -7,7 +7,7 @@ import {
 	getGitCredentials,
 	getGitStacksByRepositoryId
 } from '$lib/server/db';
-import { deleteRepositoryFiles, deleteGitStackFiles, renameRepositoryFiles, syncRepositoryExclusive } from '$lib/server/git';
+import { deleteRepositoryFiles, deleteGitStackFiles, renameRepositoryFiles, syncRepositoryExclusive, findRepoNameSanitizationCollision } from '$lib/server/git';
 import { createJob, completeJob, failJob } from '$lib/server/jobs';
 import { authorize } from '$lib/server/authorize';
 import { auditGitRepository } from '$lib/server/audit';
@@ -65,6 +65,15 @@ export const PUT: RequestHandler = async (event) => {
 			const credential = credentials.find(c => c.id === data.credentialId);
 			if (!credential) {
 				return json({ error: 'Invalid credential ID' }, { status: 400 });
+			}
+		}
+
+		if (typeof data.name === 'string' && data.name !== existing.name) {
+			const nameCollision = await findRepoNameSanitizationCollision(data.name, id);
+			if (nameCollision) {
+				return json({
+					error: `Repository name conflicts with existing repository "${nameCollision}" after filesystem sanitization. Choose a more distinct name.`
+				}, { status: 400 });
 			}
 		}
 

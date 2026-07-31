@@ -12,6 +12,7 @@ import type { ChildProcess } from 'node:child_process';
 import {
 	resolveEffectiveComposeFiles,
 	shouldUseExplicitFFlags,
+	rebaseGitComposePaths,
 	type ResolvedComposeFile
 } from './compose-files';
 import {
@@ -24,6 +25,7 @@ import {
 	type DeletionSkipReason
 } from './git-deletions';
 import { isAllowedStackFilename } from './stack-filename';
+import { isPathInside } from './git-url-safety';
 import {
 	getEnvironment,
 	getEnvironments,
@@ -888,6 +890,8 @@ export interface GetComposeFileResult {
 	suggestedEnvPath?: string;
 	/** Stack source type (internal/git/external), from the stack_sources lookup already done here */
 	sourceType?: StackSourceType;
+	/** Non-fatal warnings (e.g. configured compose files missing on disk) */
+	warnings?: string[];
 }
 
 /**
@@ -969,6 +973,17 @@ export async function getStackComposeFile(
 		try { return existsSync(p); } catch { return false; }
 	});
 
+	// A multi-file stack with one or more configured files missing deploys with the
+	// rest and no error (single-file stacks still fail below). Surface it instead of
+	// dropping silently — log it and carry it in the result so callers can warn.
+	const missingPaths = absolutePaths.filter(p => !existingPaths.includes(p));
+	const warnings = missingPaths.length > 0
+		? [`Configured compose file(s) not found on disk, deploying without them: ${missingPaths.join(', ')}`]
+		: undefined;
+	if (warnings) {
+		console.warn(`[Stack] "${stackName}" (env ${envId ?? 'default'}): ${warnings[0]}`);
+	}
+
 	if (existingPaths.length > 0) {
 		// Read all existing files
 		const composeContents: Record<string, string> = {};
@@ -1007,7 +1022,8 @@ export async function getStackComposeFile(
 			composePath: primaryPath,
 			envPath: source.envPath,
 			suggestedEnvPath,
-			sourceType: source.sourceType
+			sourceType: source.sourceType,
+			warnings
 		};
 	}
 
@@ -1328,7 +1344,10 @@ export async function saveStackComposeFile(
 			for (const [filePath, fileContent] of Object.entries(options.composeContents)) {
 				if (isAbsolute(filePath)) return { success: false, error: 'Absolute paths not allowed for internal stacks' };
 				const resolved = join(stackDir, filePath);
-				if (!resolved.startsWith(stackDir)) return { success: false, error: 'Path traversal not allowed' };
+				// Sep-aware containment: rejects both `..` traversal and sibling-prefix
+				// bypasses (e.g. `../foo2/compose.yaml` vs stackDir `/data/stacks/foo`,
+				// which a bare startsWith check would wrongly allow).
+				if (!isPathInside(resolved, stackDir)) return { success: false, error: 'Path traversal not allowed' };
 				if (resolved === composeFile) continue; // primary already written
 				const fileDir = dirname(resolved);
 				if (!existsSync(fileDir)) mkdirSync(fileDir, { recursive: true });
@@ -1701,8 +1720,9 @@ async function executeLocalCompose(
 			}
 		}
 	} else {
-		// Internal stack without path translation, no multi-file, no exclusions:
-		// omit -f so Docker Compose auto-discovers from cwd (preserves existing optimization)
+		// Single standard compose filename (compose.yaml / docker-compose.yml / …)
+		// without path translation: omit -f so Docker Compose auto-discovers from cwd.
+		// Non-standard names and multi-file sets always take the explicit -f path above.
 	}
 
 	// Always auto-detect .env in compose directory (defaultEnvPath already defined above)
@@ -3226,7 +3246,15 @@ export async function deployStack(options: DeployStackOptions): Promise<StackOpe
 			actualComposePath = composePath;
 			console.log(`${logPrefix} Using custom compose path, workingDir:`, workingDir);
 		} else if (sourceDir && existsSync(sourceDir)) {
-			// Git stack: copy entire source directory to internal stack directory
+			// Git stack: copy selected context directory to internal stack directory.
+			// Enforce STACKS_DIR cross-env uniqueness on first create (same as internal stacks).
+			const existingGitSource = await getStackSource(name, envId);
+			if (!existingGitSource && await usesFlatLocalStacksDir(envId)) {
+				const collisionError = await checkFlatLocalStackNameCollision(name, envId);
+				if (collisionError) {
+					return { success: false, output: '', error: collisionError };
+				}
+			}
 			workingDir = await getStackDir(name, envId);
 
 			// Set actualComposePath using the provided compose filename from git stack config
@@ -3274,12 +3302,14 @@ export async function deployStack(options: DeployStackOptions): Promise<StackOpe
 			// source directory above is copied into workingDir. Rebase every configured
 			// file from the primary compose file's source directory onto the copied
 			// primary path so local `docker compose -f` receives real on-disk paths.
+			// rebaseGitComposePaths validates each entry stays inside the stack
+			// directory, mirroring the single composePath containment check in git.ts.
 			if (actualComposePath && composePaths?.length && !isAbsolute(composePaths[0])) {
-				const sourcePrimaryDir = dirname(composePaths[0]);
-				const copiedPrimaryDir = dirname(actualComposePath);
-				actualComposePaths = composePaths.map((path) =>
-					isAbsolute(path) ? path : join(copiedPrimaryDir, relative(sourcePrimaryDir, path))
-				);
+				try {
+					actualComposePaths = rebaseGitComposePaths(composePaths, dirname(actualComposePath), workingDir);
+				} catch (err: any) {
+					return { success: false, output: '', error: err.message };
+				}
 				console.log(`${logPrefix} Rebased Git compose paths:`, actualComposePaths.join(', '));
 			}
 

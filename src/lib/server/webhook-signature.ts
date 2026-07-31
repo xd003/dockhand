@@ -30,3 +30,15 @@ export function verifyWebhookSignature(payload: string, signature: string | null
 	if (sigBuf.length !== secretBuf.length) return false;
 	return crypto.timingSafeEqual(sigBuf, secretBuf);
 }
+
+/**
+ * Constant-time string equality for secrets (e.g. the GET webhook `secret`
+ * query parameter). Returns false immediately on a length mismatch, otherwise
+ * compares byte-for-byte via timingSafeEqual so the comparison time does not
+ * leak how many leading characters match.
+ */
+export function secureSecretEqual(provided: string | null, expected: string | null): boolean {
+	if (provided === null || expected === null) return false;
+	if (provided.length !== expected.length) return false;
+	return crypto.timingSafeEqual(Buffer.from(provided), Buffer.from(expected));
+}

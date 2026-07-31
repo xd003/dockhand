@@ -767,8 +767,12 @@ export async function triggerGitRepositorySync(repositoryId: number): Promise<{ 
 			return { success: false, error: 'Git repository not found' };
 		}
 
-		// Run in background
-		runGitRepositorySync(repositoryId, repo.name, 'manual');
+		// Run in background. runGitRepositorySync handles deploy errors internally, but
+		// its schedule-execution bookkeeping runs before that try/catch — guard the
+		// fire-and-forget so a bookkeeping failure can never crash the process.
+		runGitRepositorySync(repositoryId, repo.name, 'manual').catch((err) => {
+			console.error(`[Scheduler] Failed to start git repository sync for repo ${repositoryId}:`, err);
+		});
 
 		return { success: true };
 	} catch (error: any) {
@@ -786,8 +790,10 @@ export async function triggerGitRepositorySyncFromWebhook(repositoryId: number):
 			return { success: false, error: 'Git repository not found' };
 		}
 
-		// Run in background
-		runGitRepositorySync(repositoryId, repo.name, 'webhook');
+		// Run in background (see triggerGitRepositorySync for the catch rationale).
+		runGitRepositorySync(repositoryId, repo.name, 'webhook').catch((err) => {
+			console.error(`[Scheduler] Failed to start git repository webhook sync for repo ${repositoryId}:`, err);
+		});
 
 		return { success: true };
 	} catch (error: any) {

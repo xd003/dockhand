@@ -43,41 +43,39 @@ export async function runGitRepositorySync(
 		appendScheduleExecutionLog(execution.id, `[${new Date().toISOString()}] ${message}`);
 	};
 
+	const persistStackDetails = async (
+		status: 'success' | 'failed' | 'skipped',
+		result: { output?: string; stacks?: unknown[]; error?: string },
+		errorMessage?: string
+	) => {
+		await updateScheduleExecution(execution.id, {
+			status,
+			completedAt: new Date().toISOString(),
+			duration: Date.now() - startTime,
+			details: { output: result.output, stacks: result.stacks },
+			...(errorMessage ? { errorMessage } : {})
+		});
+	};
+
 	try {
 		log(`Starting sync for repository: ${repositoryName}`);
 
 		// Deploy from repository with fan-out logic
 		const result = await deployFromRepositoryWithFanOut(repositoryId, log);
 
+		const totalStacks = result.stacks?.length || 0;
+		const deployedStacks = result.stacks?.filter(s => s.status === 'deployed').length || 0;
+		const skippedStacks = result.stacks?.filter(s => s.status === 'skipped').length || 0;
+		const failedStacks = result.stacks?.filter(s => s.status === 'failed').length || 0;
+
+		// deployFromRepositoryWithFanOut returns success:false whenever any stack fails,
+		// so inside result.success failedStacks is always 0 — the "partial failure"
+		// branch was unreachable. Partial failures land in the else below.
 		if (result.success) {
-			const totalStacks = result.stacks?.length || 0;
-			const deployedStacks = result.stacks?.filter(s => s.status === 'deployed').length || 0;
-			const skippedStacks = result.stacks?.filter(s => s.status === 'skipped').length || 0;
-			const failedStacks = result.stacks?.filter(s => s.status === 'failed').length || 0;
+			log(`Sync completed for repository ${repositoryName}. Total stacks: ${totalStacks} (Deployed: ${deployedStacks}, Skipped: ${skippedStacks})`);
 
-			log(`Sync completed for repository ${repositoryName}. Total stacks: ${totalStacks} (Deployed: ${deployedStacks}, Skipped: ${skippedStacks}, Failed: ${failedStacks})`);
-
-			if (failedStacks > 0) {
-				// Partially successful or failed
-				await updateScheduleExecution(execution.id, {
-					status: deployedStacks > 0 ? 'success' : 'failed', // Mark success if at least some deployed, or maybe failed? Let's use 'success' if no throw, but note details
-					completedAt: new Date().toISOString(),
-					duration: Date.now() - startTime,
-					details: { output: result.output, stacks: result.stacks }
-				});
-
-				await sendEventNotification('git_sync_failed', {
-					title: 'Git repository sync finished with errors',
-					message: `Repository "${repositoryName}" sync had ${failedStacks} failed stack(s).`,
-					type: 'warning'
-				});
-			} else if (deployedStacks > 0) {
-				await updateScheduleExecution(execution.id, {
-					status: 'success',
-					completedAt: new Date().toISOString(),
-					duration: Date.now() - startTime,
-					details: { output: result.output, stacks: result.stacks }
-				});
+			if (deployedStacks > 0) {
+				await persistStackDetails('success', result);
 
 				await sendEventNotification('git_sync_success', {
 					title: 'Git repository synced',
@@ -85,13 +83,7 @@ export async function runGitRepositorySync(
 					type: 'success'
 				});
 			} else {
-				// Everything skipped or no stacks
-				await updateScheduleExecution(execution.id, {
-					status: 'skipped',
-					completedAt: new Date().toISOString(),
-					duration: Date.now() - startTime,
-					details: { output: result.output, stacks: result.stacks }
-				});
+				await persistStackDetails('skipped', result);
 
 				await sendEventNotification('git_sync_skipped', {
 					title: 'Git repository sync skipped',
@@ -100,7 +92,21 @@ export async function runGitRepositorySync(
 				});
 			}
 		} else {
-			throw new Error(result.error || 'Deployment failed');
+			// Fan-out finished with one or more stack failures (or a repo-level error).
+			// Always persist per-stack results so the UI keeps the breakdown.
+			log(`Sync finished with errors for repository ${repositoryName}. Total stacks: ${totalStacks} (Deployed: ${deployedStacks}, Skipped: ${skippedStacks}, Failed: ${failedStacks})`);
+
+			await persistStackDetails(
+				deployedStacks > 0 ? 'success' : 'failed',
+				result,
+				result.error || 'Deployment failed'
+			);
+
+			await sendEventNotification('git_sync_failed', {
+				title: 'Git repository sync failed',
+				message: `Repository "${repositoryName}" sync failed: ${result.error || 'Deployment failed'}`,
+				type: 'error'
+			});
 		}
 	} catch (error: any) {
 		log(`Error: ${error.message}`);

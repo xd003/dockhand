@@ -121,6 +121,11 @@ declare global {
 // Initialize database on server start (synchronous with SQLite)
 let initialized = false;
 
+// Resolves once the startup filesystem migrations complete. The HTTP server starts
+// serving as soon as the SvelteKit handle runs, so every request awaits this first —
+// otherwise a request could observe mid-migration state (see the handle below).
+let startupMigrationsReady: Promise<void> = Promise.resolve();
+
 if (!initialized) {
 	try {
 		// Initialize crypto fallback first (detects old kernels and logs status)
@@ -153,9 +158,15 @@ if (!initialized) {
 			process.exit(1);
 		});
 
-		migrateLegacyEnvGitRepos().catch((err) => {
+		const gitReposMigrationReady = migrateLegacyEnvGitRepos().catch((err) => {
 			console.error('[Git] Legacy env-scoped git-repos migration failed:', err);
 		});
+
+		// HTTP requests must never observe mid-migration filesystem state. The server
+		// starts serving as soon as the SvelteKit handle runs, so gate every request on
+		// the startup migrations completing (a no-op await once settled; the scheduler
+		// and subprocesses are already gated on stacksDirReady below).
+		startupMigrationsReady = Promise.allSettled([stacksDirReady, gitReposMigrationReady]).then(() => {});
 
 		// Migrate plain text credentials to encrypted storage.
 		// This also handles key rotation if ENCRYPTION_KEY env var differs from the
@@ -309,6 +320,9 @@ function isStaticAsset(pathname: string): boolean {
 }
 
 export const handle: Handle = async ({ event, resolve }) => {
+	// Wait for startup migrations before serving any request (see above).
+	await startupMigrationsReady;
+
 	// Skip auth for static assets
 	if (isStaticAsset(event.url.pathname)) {
 		return resolve(event);

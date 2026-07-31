@@ -34,6 +34,17 @@ export function assertSafeGitRef(ref: string | null | undefined): void {
 }
 
 /**
+ * True when `child` is `parent` or a descendant. Uses `parent + sep` so a sibling
+ * path that merely shares a string prefix (e.g. `/repos/myrepo2` vs `/repos/myrepo`)
+ * is rejected.
+ */
+export function isPathInside(child: string, parent: string): boolean {
+	const resolvedChild = resolve(child);
+	const resolvedParent = resolve(parent);
+	return resolvedChild === resolvedParent || resolvedChild.startsWith(resolvedParent + sep);
+}
+
+/**
  * Resolve a user-supplied relative path (composePath / envFilePath) INSIDE the clone
  * dir, throwing if it would ESCAPE the clone. Uses resolve-then-containment (like a plain
  * `join` + escape check): an in-repo `..` (e.g. `stacks/../compose.yml`) or a leading `./`
@@ -43,7 +54,7 @@ export function assertSafeGitRef(ref: string | null | undefined): void {
 export function repoFilePath(repoPath: string, userRel: string, label: string): string {
 	if (isAbsolute(userRel)) throw new Error(`${label} must be a relative path (got "${userRel}")`);
 	const abs = resolve(repoPath, userRel);
-	if (abs !== repoPath && !abs.startsWith(repoPath + sep)) {
+	if (!isPathInside(abs, repoPath)) {
 		throw new Error(`${label} must be a path inside the repository (got "${userRel}")`);
 	}
 	return abs;

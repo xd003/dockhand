@@ -2538,7 +2538,9 @@ export async function updateGitStack(id: number, data: Partial<GitStackData> & {
 	if (data.repullImages !== undefined) updateData.repullImages = data.repullImages;
 	if (data.forceRedeploy !== undefined) updateData.forceRedeploy = data.forceRedeploy;
 	if (data.webhookEnabled !== undefined) updateData.webhookEnabled = data.webhookEnabled;
-	if (data.webhookSecret !== undefined) updateData.webhookSecret = data.webhookEnabled ? data.webhookSecret : null;
+	// Only clear the secret when the webhook is EXPLICITLY disabled; a partial PUT
+	// that omits webhookEnabled (or only touches the secret) must not wipe it.
+	if (data.webhookSecret !== undefined) updateData.webhookSecret = data.webhookEnabled === false ? null : data.webhookSecret;
 	if (data.lastSync !== undefined) updateData.lastSync = data.lastSync;
 	if (data.lastCommit !== undefined) updateData.lastCommit = data.lastCommit;
 	if (data.syncStatus !== undefined) updateData.syncStatus = data.syncStatus;

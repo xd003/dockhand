@@ -5,7 +5,7 @@ import {
 	createGitRepository,
 	getGitCredentials
 } from '$lib/server/db';
-import { syncRepositoryExclusive } from '$lib/server/git';
+import { syncRepositoryExclusive, findRepoNameSanitizationCollision } from '$lib/server/git';
 import { createJob, completeJob, failJob } from '$lib/server/jobs';
 import { authorize } from '$lib/server/authorize';
 import { auditGitRepository } from '$lib/server/audit';
@@ -45,6 +45,13 @@ export const POST: RequestHandler = async (event) => {
 
 		if (!data.url || typeof data.url !== 'string') {
 			return json({ error: 'Repository URL is required' }, { status: 400 });
+		}
+
+		const nameCollision = await findRepoNameSanitizationCollision(data.name);
+		if (nameCollision) {
+			return json({
+				error: `Repository name conflicts with existing repository "${nameCollision}" after filesystem sanitization. Choose a more distinct name.`
+			}, { status: 400 });
 		}
 
 		// Validate credential if provided

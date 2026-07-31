@@ -1,9 +1,10 @@
 import { existsSync, mkdirSync, rmSync, chmodSync, readFileSync, writeFileSync, renameSync, readdirSync } from 'node:fs';
-import { join, resolve, dirname, basename, relative } from 'node:path';
+import { join, resolve, dirname, basename, relative, isAbsolute } from 'node:path';
 import { spawn as nodeSpawn, spawnSync } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import {
 	getGitRepository,
+	getGitRepositories,
 	getGitCredential,
 	updateGitRepository,
 	getGitStack,
@@ -19,8 +20,8 @@ import {
 import { deployStack, getStackDir } from './stacks';
 import { sendEventNotification } from './notifications';
 import { buildBasicAuthHeader } from './git-auth';
-import { assertSafeRepoUrl, assertSafeGitRef, repoFilePath } from './git-url-safety';
-import { parseComposePathsColumn } from './compose-files';
+import { assertSafeRepoUrl, assertSafeGitRef, repoFilePath, isPathInside } from './git-url-safety';
+import { parseComposePathsColumn, getStackDiffDirs } from './compose-files';
 import {
 	parseManifest,
 	serializeManifest,
@@ -137,13 +138,24 @@ export function getGitReposDir(): string {
 /**
  * Legacy layout stored per-environment clones under git-repos/<envName>/.
  * Current layout clones once per repository at git-repos/<repoName>/ (shared).
+ *
+ * A legacy env dir is a container for per-repo clones, so it has no .git of its
+ * own but DOES contain at least one nested git repository. Requiring a nested
+ * `.git` (not just "not a repo") keeps an interrupted new-layout clone — whose
+ * repo dir exists without .git yet — from being mistaken for a legacy env dir
+ * and deleted.
  */
 function isLegacyEnvGitReposDir(dir: string): boolean {
 	if (!existsSync(dir)) return false;
 	if (existsSync(join(dir, '.git'))) return false;
 	const base = basename(dir);
 	if (base.startsWith('preview-') || base.startsWith('repo-')) return false;
-	return true;
+	try {
+		return readdirSync(dir, { withFileTypes: true })
+			.some((entry) => entry.isDirectory() && existsSync(join(dir, entry.name, '.git')));
+	} catch {
+		return false;
+	}
 }
 
 const LEGACY_ENV_GIT_REPOS_MIGRATION_KEY = 'migration:legacy_env_git_repos_v1';
@@ -222,6 +234,25 @@ function getRepoPath(repoName: string): string {
 		throw new Error(`Invalid repository name: ${repoName}`);
 	}
 	return join(GIT_REPOS_DIR, sanitized);
+}
+
+/**
+ * True when `candidateName` would share a clone directory with another repository
+ * after sanitization (e.g. "a b" vs "a  b" both become "a_b").
+ */
+export async function findRepoNameSanitizationCollision(
+	candidateName: string,
+	excludeId?: number
+): Promise<string | null> {
+	const candidateKey = sanitizeRepoName(candidateName);
+	const repos = await getGitRepositories();
+	for (const repo of repos) {
+		if (excludeId != null && repo.id === excludeId) continue;
+		if (sanitizeRepoName(repo.name) === candidateKey) {
+			return repo.name;
+		}
+	}
+	return null;
 }
 
 interface GitEnv {
@@ -759,8 +790,12 @@ export async function syncRepository(repoId: number): Promise<SyncResult> {
 		let updated = false;
 		let currentCommit = '';
 
-		if (!existsSync(repoPath)) {
-			// Clone the repository (blobless clone - fetches all commits but blobs on-demand)
+		if (!existsSync(repoPath) || !existsSync(join(repoPath, '.git'))) {
+			// Missing or incomplete clone (e.g. interrupted clone left a directory
+			// without .git) — remove residue and clone fresh.
+			if (existsSync(repoPath)) {
+				rmSync(repoPath, { recursive: true, force: true });
+			}
 			assertSafeGitRef(repo.branch);
 			const repoUrl = buildRepoUrl(repo.url, credential);
 
@@ -779,17 +814,28 @@ export async function syncRepository(repoId: number): Promise<SyncResult> {
 
 			updated = true;
 		} else {
-			// Get current commit before pull
+			// Get current commit before updating
 			const beforeResult = await execGit(['rev-parse', 'HEAD'], repoPath, env);
 			const beforeCommit = beforeResult.stdout;
 
-			// Pull latest changes
-			const result = await execGit(['pull', 'origin', repo.branch], repoPath, env);
-			if (result.code !== 0) {
-				throw new Error(`Git pull failed: ${result.stderr}`);
+			// Fetch + hard-reset to the configured branch. Avoid `git pull`, which can
+			// create merge commits or leave the worktree in a conflicted state when
+			// the configured branch differs from the currently checked-out branch.
+			assertSafeGitRef(repo.branch);
+			const fetchResult = await execGit(['fetch', 'origin', repo.branch], repoPath, env);
+			if (fetchResult.code !== 0) {
+				throw new Error(`Git fetch failed: ${fetchResult.stderr}`);
+			}
+			const checkoutResult = await execGit(
+				['checkout', '-B', repo.branch, `origin/${repo.branch}`],
+				repoPath,
+				env
+			);
+			if (checkoutResult.code !== 0) {
+				throw new Error(`Git checkout failed: ${checkoutResult.stderr}`);
 			}
 
-			// Get commit after pull
+			// Get commit after update
 			const afterResult = await execGit(['rev-parse', 'HEAD'], repoPath, env);
 			const afterCommit = afterResult.stdout;
 
@@ -873,6 +919,12 @@ async function deployFromRepositoryWithFanOutImpl(
 
 	_log(`[Git] Found ${stacks.length} stack(s) linked to this repository.`);
 
+	// Fetch the shared repository clone ONCE for the whole fan-out. Every stack's
+	// syncGitStack would otherwise issue its own sequential `git fetch` against the
+	// same clone. The pre-fetched result is passed into each stack deploy below.
+	_log(`[Git] Syncing shared repository clone once for fan-out...`);
+	const repoSync = await syncRepositoryExclusive(repositoryId);
+
 	const results = [];
 	let hasError = false;
 
@@ -890,25 +942,25 @@ async function deployFromRepositoryWithFanOutImpl(
 
 			// deployGitStack internally computes diffs based on the new commit vs the stack's lastCommit
 			// Concurrent stack-level webhooks coalesce inside deployGitStack (stronger intent wins).
-			const deployResult = await deployGitStack(stack.id, { force: false, ignoreForceRedeploy });
+			const deployResult = await deployGitStack(stack.id, { force: false, ignoreForceRedeploy, repoSync });
 			
 			if (deployResult.success) {
 				if (deployResult.skipped) {
 					_log(`[Git] Stack "${stack.stackName}" was skipped (no changes).`);
-					results.push({ id: stack.id, status: 'skipped' as const });
+					results.push({ id: stack.id, name: stack.stackName, status: 'skipped' as const });
 				} else {
 					_log(`[Git] Stack "${stack.stackName}" was successfully deployed.`);
-					results.push({ id: stack.id, status: 'deployed' as const });
+					results.push({ id: stack.id, name: stack.stackName, status: 'deployed' as const });
 				}
 			} else {
 				_log(`[Git] Stack "${stack.stackName}" failed to deploy: ${deployResult.error}`);
 				hasError = true;
-				results.push({ id: stack.id, status: 'failed' as const, error: deployResult.error });
+				results.push({ id: stack.id, name: stack.stackName, status: 'failed' as const, error: deployResult.error });
 			}
 		} catch (err: any) {
 			_log(`[Git] Stack "${stack.stackName}" threw an error: ${err.message}`);
 			hasError = true;
-			results.push({ id: stack.id, status: 'failed' as const, error: err.message });
+			results.push({ id: stack.id, name: stack.stackName, status: 'failed' as const, error: err.message });
 		}
 	}
 
@@ -1072,6 +1124,9 @@ import {
 type DeployGitStackOpts = {
 	force: boolean;
 	ignoreForceRedeploy: boolean;
+	/** Pre-fetched shared repo sync from the fan-out, so per-stack deploys don't
+	 *  each issue their own sequential `git fetch` on the same clone. */
+	repoSync?: SyncResult | null;
 };
 
 type DeployGitStackResult = {
@@ -1089,7 +1144,7 @@ type FanOutResult = {
 	success: boolean;
 	output?: string;
 	error?: string;
-	stacks?: Array<{ id: number; status: 'deployed' | 'skipped' | 'failed'; error?: string }>;
+	stacks?: Array<{ id: number; name: string; status: 'deployed' | 'skipped' | 'failed'; error?: string }>;
 };
 
 /** Per-stack deploy coalesce slots (repo webhook fan-out ↔ stack webhook). */
@@ -1107,7 +1162,8 @@ const repoFanOutSlots = new Map<number, CoalesceSlot<FanOutOpts, FanOutResult>>(
 function mergeDeployGitStackOpts(a: DeployGitStackOpts, b: DeployGitStackOpts): DeployGitStackOpts {
 	return {
 		force: a.force || b.force,
-		ignoreForceRedeploy: a.ignoreForceRedeploy && b.ignoreForceRedeploy
+		ignoreForceRedeploy: a.ignoreForceRedeploy && b.ignoreForceRedeploy,
+		repoSync: a.repoSync ?? b.repoSync
 	};
 }
 
@@ -1135,7 +1191,7 @@ async function waitForStackDeployIdle(stackId: number): Promise<void> {
 	}
 }
 
-export async function syncGitStack(stackId: number): Promise<SyncResult> {
+export async function syncGitStack(stackId: number, preSyncedRepo?: SyncResult | null): Promise<SyncResult> {
 	// If a coalesced deploy owns this stack, wait for it rather than failing.
 	// (deployGitStack calls syncGitStack while it already holds the slot — that
 	// path is re-entrant via the flag below.)
@@ -1189,8 +1245,10 @@ export async function syncGitStack(stackId: number): Promise<SyncResult> {
 
 		// Sync the shared repository clone. If another stack is already syncing this
 		// repository, wait for that sync to complete and share the result (no duplicate clone).
+		// A repo-level fan-out passes a pre-fetched sync here so the N stacks sharing a
+		// repository issue exactly one `git fetch` instead of N sequential ones.
 		console.log(`${logPrefix} Syncing shared repository clone...`);
-		const repoSyncResult = await syncRepositoryExclusive(gitStack.repositoryId);
+		const repoSyncResult = preSyncedRepo ?? await syncRepositoryExclusive(gitStack.repositoryId);
 		if (!repoSyncResult.success) {
 			throw new Error(`Repository sync failed: ${repoSyncResult.error}`);
 		}
@@ -1207,29 +1265,32 @@ export async function syncGitStack(stackId: number): Promise<SyncResult> {
 		const commitChanged = previousCommit?.substring(0, 7) !== newCommit.substring(0, 7);
 		console.log(`${logPrefix} Previous commit: ${previousCommit || '(none)'}, new commit: ${newCommit.substring(0, 7)}, commit changed: ${commitChanged}`);
 
-		// Check if any files in the compose file's directory have changed
-		// This catches changes to the compose file, env files, and any other referenced files
-		// (e.g., config files, scripts, additional env files)
+		// Check if any files used by the stack have changed. Covers the context
+		// directory plus the directory of every configured compose file and the
+		// env file, so multi-compose stacks redeploy when any of their files change.
 		let changedFiles: string[] = [];
 		if (commitChanged) {
-			// Use contextDir if set, otherwise fall back to compose file's directory
-			const diffDirRelative = gitStack.contextDir || dirname(gitStack.composePath);
-			console.log(`${logPrefix} Checking for changes in directory: ${diffDirRelative || '(root)'}`);
+			const diffDirs = getStackDiffDirs(gitStack);
+			console.log(`${logPrefix} Checking for changes in directories: ${diffDirs.join(', ')}`);
 
-			const diffResult = await getChangedFilesInDir(
-				repoPath,
-				previousCommit,
-				newCommit,
-				diffDirRelative || '.',
-				env
-			);
+			for (const diffDirRelative of diffDirs) {
+				const diffResult = await getChangedFilesInDir(
+					repoPath,
+					previousCommit,
+					newCommit,
+					diffDirRelative || '.',
+					env
+				);
 
-			updated = diffResult.changed;
-			changedFiles = diffResult.files;
-
-			if (diffResult.error) {
-				console.log(`${logPrefix} Diff error: ${diffResult.error}`);
+				if (diffResult.error) {
+					console.log(`${logPrefix} Diff error for "${diffDirRelative}": ${diffResult.error}`);
+				}
+				if (diffResult.changed) {
+					updated = true;
+				}
+				changedFiles = changedFiles.concat(diffResult.files);
 			}
+			changedFiles = [...new Set(changedFiles)];
 
 			if (changedFiles.length > 0) {
 				console.log(`${logPrefix} Changed files (${changedFiles.length}):`);
@@ -1269,13 +1330,13 @@ export async function syncGitStack(stackId: number): Promise<SyncResult> {
 		let composeFileName: string;
 		if (gitStack.contextDir) {
 			const contextDirAbsolute = resolve(repoPath, gitStack.contextDir);
-			// Validate: context dir must be within repo
-			if (!contextDirAbsolute.startsWith(repoPath)) {
+			// Validate: context dir must be within repo (sep-aware; rejects sibling prefix matches)
+			if (!isPathInside(contextDirAbsolute, repoPath)) {
 				throw new Error('Context directory must be within the repository');
 			}
 			// Validate: compose file must be within context directory
 			const relCompose = relative(contextDirAbsolute, composePath);
-			if (relCompose.startsWith('..')) {
+			if (relCompose.startsWith('..') || isAbsolute(relCompose)) {
 				throw new Error('Compose file must be within the context directory');
 			}
 			composeDir = contextDirAbsolute;
@@ -1402,7 +1463,7 @@ async function notifyGitSync(stackName: string, envId: number | null | undefined
 
 export async function deployGitStack(
 	stackId: number,
-	options?: { force?: boolean; ignoreForceRedeploy?: boolean }
+	options?: { force?: boolean; ignoreForceRedeploy?: boolean; repoSync?: SyncResult | null }
 ): Promise<DeployGitStackResult> {
 	// Coalesce concurrent stack deploys (stack webhook ↔ repo fan-out ↔ manual).
 	// Stronger intent wins: force ORs; ignoreForceRedeploy only if all agree.
@@ -1445,7 +1506,7 @@ async function deployGitStackImpl(
 	try {
 		// Sync first
 		console.log(`${logPrefix} Syncing git repository...`);
-		const syncResult = await syncGitStack(stackId);
+		const syncResult = await syncGitStack(stackId, opts.repoSync);
 		if (!syncResult.success) {
 			console.log(`${logPrefix} Sync failed:`, syncResult.error);
 			const failResult = { success: false, error: syncResult.error };
@@ -1545,6 +1606,15 @@ async function deployGitStackImpl(
 				gitStackId: stackId,
 				composePath: resolvedComposePath,
 				composePaths: gitStack.composePaths ? parseComposePathsColumn(gitStack.composePaths) : null
+			});
+		} else if (syncResult.updated && syncResult.commit) {
+			// Sync advanced lastCommit before deploy. Roll it back on deploy failure so
+			// the next scheduled/webhook sync still sees the commit as pending and retries.
+			console.log(`${logPrefix} Deploy failed after sync — rolling back lastCommit to enable retry`);
+			await updateGitStack(stackId, {
+				lastCommit: gitStack.lastCommit ?? null,
+				syncStatus: 'error',
+				syncError: result.error || 'Deploy failed'
 			});
 		}
 
@@ -1670,6 +1740,7 @@ async function deployGitStackWithProgressImpl(
 	const env = await buildGitEnv(credential);
 
 	const totalSteps = 5;
+	let deploySucceeded = false;
 
 	try {
 		// Step 1: Connecting
@@ -1699,18 +1770,21 @@ async function deployGitStackWithProgressImpl(
 		// Normalize to 7-char short hash for comparison (DB stores 7-char, git returns 40-char)
 		const commitChanged = previousCommit?.substring(0, 7) !== newCommit.substring(0, 7);
 
-		// Check if any files in the context/compose directory have changed
+		// Check if any files used by the stack have changed
 		// (for consistency with syncGitStack, though this function always deploys)
 		if (commitChanged) {
-			const diffDir = gitStack.contextDir || dirname(gitStack.composePath);
-			const diffResult = await getChangedFilesInDir(
-				repoPath,
-				previousCommit,
-				newCommit,
-				diffDir || '.',
-				env
-			);
-			updated = diffResult.changed;
+			let diffChanged = false;
+			for (const diffDir of getStackDiffDirs(gitStack)) {
+				const diffResult = await getChangedFilesInDir(
+					repoPath,
+					previousCommit,
+					newCommit,
+					diffDir || '.',
+					env
+				);
+				if (diffResult.changed) diffChanged = true;
+			}
+			updated = diffChanged;
 		} else {
 			updated = false;
 		}
@@ -1733,11 +1807,11 @@ async function deployGitStackWithProgressImpl(
 		let progressComposeFileName: string;
 		if (gitStack.contextDir) {
 			const contextDirAbsolute = resolve(repoPath, gitStack.contextDir);
-			if (!contextDirAbsolute.startsWith(repoPath)) {
+			if (!isPathInside(contextDirAbsolute, repoPath)) {
 				throw new Error('Context directory must be within the repository');
 			}
 			const relCompose = relative(contextDirAbsolute, composePath);
-			if (relCompose.startsWith('..')) {
+			if (relCompose.startsWith('..') || isAbsolute(relCompose)) {
 				throw new Error('Compose file must be within the context directory');
 			}
 			composeDir = contextDirAbsolute;
@@ -1836,6 +1910,7 @@ async function deployGitStackWithProgressImpl(
 		});
 
 		if (result.success) {
+			deploySucceeded = true;
 			// Deletion sync: persist manifest + log per-file change summary.
 			// The change table was already shown before the deploy (#1260);
 			// report only apply-stage divergences from the plan here.
@@ -1881,9 +1956,12 @@ async function deployGitStackWithProgressImpl(
 		return result;
 	} catch (error: any) {
 		cleanupSshKey(credential);
+		// Roll back lastCommit only when deploy did not succeed, so change detection
+		// can retry. Leave lastCommit alone if deploy succeeded and later bookkeeping failed.
 		await updateGitStack(stackId, {
 			syncStatus: 'error',
-			syncError: error.message
+			syncError: error.message,
+			...(deploySucceeded ? {} : { lastCommit: gitStack.lastCommit ?? null })
 		});
 		onProgress({ status: 'error', error: error.message });
 		return { success: false, error: error.message };
@@ -2024,10 +2102,8 @@ export async function readGitStackEnvFile(
 	}
 
 	// Security check: ensure the path doesn't escape the repo
-	const normalizedPath = envFilePath.replace(/\.\./g, '').replace(/^\//, '');
-	const fullPath = join(repoPath, normalizedPath);
-
-	if (!fullPath.startsWith(repoPath)) {
+	const fullPath = resolve(repoPath, envFilePath);
+	if (!isPathInside(fullPath, repoPath)) {
 		return { vars: {}, error: 'Invalid file path' };
 	}
 

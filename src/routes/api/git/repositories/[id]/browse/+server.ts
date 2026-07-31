@@ -1,10 +1,11 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { statSync, readdirSync, existsSync } from 'node:fs';
+import { statSync, readdirSync, existsSync, realpathSync } from 'node:fs';
 import { join, resolve, isAbsolute } from 'node:path';
 import { getGitRepository } from '$lib/server/db';
 import { syncRepositoryExclusive, getRepoClonePath } from '$lib/server/git';
 import { authorize } from '$lib/server/authorize';
+import { isPathInside } from '$lib/server/git-url-safety';
 
 interface FileEntry {
 	name: string;
@@ -65,31 +66,42 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 		targetPath = join(repoRoot, requestedPath);
 	}
 
-	// Resolve to eliminate any `..` components, then guard against traversal
+	// Resolve to eliminate any `..` components, then guard against traversal.
+	// Use realpath so a symlink inside the clone cannot escape to a sibling repo
+	// or host path; use sep-aware containment so `/repos/myrepo2` is not treated
+	// as inside `/repos/myrepo`.
 	const resolvedTarget = resolve(targetPath);
-	if (!resolvedTarget.startsWith(repoRoot)) {
-		return json({ error: 'Access denied: path is outside repository root' }, { status: 403 });
-	}
-
 	if (!existsSync(resolvedTarget)) {
 		return json({ error: `Path not found: ${resolvedTarget}` }, { status: 404 });
 	}
 
-	const stat = statSync(resolvedTarget);
+	let realRoot: string;
+	let realTarget: string;
+	try {
+		realRoot = realpathSync(repoRoot);
+		realTarget = realpathSync(resolvedTarget);
+	} catch {
+		return json({ error: 'Access denied: unable to resolve path' }, { status: 403 });
+	}
+	if (!isPathInside(realTarget, realRoot)) {
+		return json({ error: 'Access denied: path is outside repository root' }, { status: 403 });
+	}
+
+	const stat = statSync(realTarget);
 	if (!stat.isDirectory()) {
 		return json({ error: `Not a directory: ${resolvedTarget}` }, { status: 400 });
 	}
 
 	try {
 		const entries: FileEntry[] = [];
-		const dirEntries = readdirSync(resolvedTarget, { withFileTypes: true });
+		const dirEntries = readdirSync(realTarget, { withFileTypes: true });
 
 		for (const entry of dirEntries) {
 			// Hide the .git directory from the browser
 			if (entry.name === '.git') continue;
 
 			try {
-				const fullPath = join(resolvedTarget, entry.name);
+				const fullPath = join(realTarget, entry.name);
 				const entryStat = statSync(fullPath);
 
 				entries.push({
@@ -113,10 +125,10 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 		});
 
 		return json({
-			path: resolvedTarget,
+			path: realTarget,
 			// Expose the root so the client can compute relative paths
-			repoRoot,
-			parent: resolvedTarget === repoRoot ? null : resolve(resolvedTarget, '..'),
+			repoRoot: realRoot,
+			parent: realTarget === realRoot ? null : resolve(realTarget, '..'),
 			entries
 		});
 	} catch (error) {

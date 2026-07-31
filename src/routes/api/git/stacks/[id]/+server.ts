@@ -83,7 +83,13 @@ export const PUT: RequestHandler = async (event) => {
 			repullImages: data.repullImages,
 			forceRedeploy: data.forceRedeploy,
 			webhookEnabled: data.forceRedeploy === false ? false : data.webhookEnabled,
-			webhookSecret: (data.forceRedeploy !== false && data.webhookEnabled) ? data.webhookSecret : null
+			// Partial PUT: only touch the secret when it was actually supplied, and only
+			// clear it when the webhook is explicitly being disabled (either directly or
+			// via forceRedeploy=false). Passing undefined lets updateGitStack skip the
+			// column entirely, so an omitted field can never wipe the stored secret.
+			webhookSecret: data.webhookSecret !== undefined
+				? data.webhookSecret
+				: (data.webhookEnabled === false || data.forceRedeploy === false ? null : undefined)
 		});
 
 		// If stack name changed, update related records

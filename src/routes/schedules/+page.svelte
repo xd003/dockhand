@@ -1206,7 +1206,7 @@
 				<div class="flex flex-wrap items-center gap-2">
 					{#if schedule.type === 'container_update'}
 						<CircleArrowUp class="w-4 h-4 text-green-500 glow-green shrink-0" />
-					{:else if schedule.type === 'git_repository_sync' || schedule.type === 'git_stack_sync'}
+					{:else if schedule.type === 'git_repository_sync'}
 						<GitBranch class="w-4 h-4 text-emerald-500 shrink-0" />
 					{:else if schedule.type === 'env_update_check'}
 						{#if schedule.autoUpdate}
@@ -1247,7 +1247,7 @@
 								{:else}
 									Check & auto-update
 								{/if}
-							{:else if schedule.type === 'git_repository_sync' || schedule.type === 'git_stack_sync'}
+							{:else if schedule.type === 'git_repository_sync'}
 								Git repository sync
 							{:else if schedule.type === 'env_update_check'}
 								{#if schedule.autoUpdate && schedule.envHasScanning && schedule.vulnerabilityCriteria}

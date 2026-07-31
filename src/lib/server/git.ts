@@ -1134,6 +1134,10 @@ type DeployGitStackResult = {
 	output?: string;
 	error?: string;
 	skipped?: boolean;
+	/** Set when containers are running the new code but post-deploy bookkeeping
+	 *  (manifest / stack_sources) failed. lastCommit is rolled back so the next
+	 *  trigger retries the idempotent `docker compose up` and bookkeeping. */
+	warning?: string;
 };
 
 type FanOutOpts = {
@@ -1577,36 +1581,60 @@ async function deployGitStackImpl(
 		if (result.error) console.log(`${logPrefix} Error:`, result.error);
 
 		if (result.success) {
-			// Deletion sync: persist manifest + log per-file change summary
-			if (syncResult.previousManifest && syncResult.newFiles && syncResult.newCommitFull && syncResult.deletionPlan) {
-				await finalizeDeletionSync({
-					stackId,
-					logPrefix,
-					previousManifest: syncResult.previousManifest,
-					newCommitFull: syncResult.newCommitFull,
-					newFiles: syncResult.newFiles,
-					plan: syncResult.deletionPlan,
-					applyResult: result.deletion
+			// Post-deploy bookkeeping: persist manifest + stack_sources.
+			// Invariant: lastCommit advanced ⇒ manifest/stack_sources are current.
+			// If bookkeeping fails the containers are already running the new code, so
+			// we return success:true (honest) but include a warning and roll lastCommit
+			// back so the next trigger re-runs the idempotent deploy + retries bookkeeping.
+			try {
+				if (syncResult.previousManifest && syncResult.newFiles && syncResult.newCommitFull && syncResult.deletionPlan) {
+					await finalizeDeletionSync({
+						stackId,
+						logPrefix,
+						previousManifest: syncResult.previousManifest,
+						newCommitFull: syncResult.newCommitFull,
+						newFiles: syncResult.newFiles,
+						plan: syncResult.deletionPlan,
+						applyResult: result.deletion
+					});
+				}
+
+				// Record the stack source with resolved compose path for consistency
+				const stackDir = await getStackDir(gitStack.stackName, gitStack.environmentId);
+				const resolvedComposePath = syncResult.composeFileName
+					? join(stackDir, syncResult.composeFileName)
+					: undefined;
+
+				console.log(`${logPrefix} Resolved compose path for stack_sources:`, resolvedComposePath);
+
+				await upsertStackSource({
+					stackName: gitStack.stackName,
+					environmentId: gitStack.environmentId,
+					sourceType: 'git',
+					gitRepositoryId: gitStack.repositoryId,
+					gitStackId: stackId,
+					composePath: resolvedComposePath,
+					composePaths: gitStack.composePaths ? parseComposePathsColumn(gitStack.composePaths) : null
 				});
+			} catch (bookkeepingErr: any) {
+				// Containers are running the new code — report deploy as successful.
+				// Roll back lastCommit so the next webhook/schedule trigger re-runs the
+				// idempotent `docker compose up` and retries bookkeeping (self-healing).
+				const bookkeepingMsg = bookkeepingErr instanceof Error ? bookkeepingErr.message : String(bookkeepingErr);
+				console.error(`${logPrefix} Post-deploy bookkeeping failed (containers are running): ${bookkeepingMsg}`);
+				try {
+					await updateGitStack(stackId, {
+						lastCommit: gitStack.lastCommit ?? null,
+						syncStatus: 'error',
+						syncError: `Deploy succeeded but bookkeeping failed: ${bookkeepingMsg}`
+					});
+				} catch (rollbackErr: any) {
+					console.error(`${logPrefix} lastCommit rollback also failed:`, rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr));
+				}
+				const warningResult = { success: true as const, output: result.output, warning: bookkeepingMsg };
+				await notifyGitSync(gitStack.stackName, gitStack.environmentId, warningResult);
+				return warningResult;
 			}
-
-			// Record the stack source with resolved compose path for consistency
-			const stackDir = await getStackDir(gitStack.stackName, gitStack.environmentId);
-			const resolvedComposePath = syncResult.composeFileName
-				? join(stackDir, syncResult.composeFileName)
-				: undefined;
-
-			console.log(`${logPrefix} Resolved compose path for stack_sources:`, resolvedComposePath);
-
-			await upsertStackSource({
-				stackName: gitStack.stackName,
-				environmentId: gitStack.environmentId,
-				sourceType: 'git',
-				gitRepositoryId: gitStack.repositoryId,
-				gitStackId: stackId,
-				composePath: resolvedComposePath,
-				composePaths: gitStack.composePaths ? parseComposePathsColumn(gitStack.composePaths) : null
-			});
 		} else if (syncResult.updated && syncResult.commit) {
 			// Sync advanced lastCommit before deploy. Roll it back on deploy failure so
 			// the next scheduled/webhook sync still sees the commit as pending and retries.
@@ -1717,7 +1745,7 @@ export async function deployGitStackWithProgress(
 async function deployGitStackWithProgressImpl(
 	stackId: number,
 	onProgress: ProgressCallback
-): Promise<{ success: boolean; output?: string; error?: string }> {
+): Promise<{ success: boolean; output?: string; error?: string; warning?: string }> {
 	const gitStack = await getGitStack(stackId);
 	if (!gitStack) {
 		onProgress({ status: 'error', error: 'Git stack not found' });
@@ -1911,44 +1939,67 @@ async function deployGitStackWithProgressImpl(
 
 		if (result.success) {
 			deploySucceeded = true;
-			// Deletion sync: persist manifest + log per-file change summary.
-			// The change table was already shown before the deploy (#1260);
-			// report only apply-stage divergences from the plan here.
-			await finalizeDeletionSync({
-				stackId,
-				logPrefix,
-				previousManifest: deletionData.previousManifest,
-				newCommitFull: newCommit,
-				newFiles: deletionData.newFiles,
-				plan: deletionData.plan,
-				applyResult: result.deletion
-			});
-
-			const applySkips = (result.deletion?.skipped ?? []).filter((s) => s.reason !== 'already-absent');
-			for (const skip of applySkips) {
-				onProgress({
-					status: 'deploying',
-					message: `Kept "${skip.path}" — ${skipReasonMessage(skip.reason)}`,
-					step: 5,
-					totalSteps
+			// Post-deploy bookkeeping: persist manifest + stack_sources.
+			// Invariant: lastCommit advanced ⇒ manifest/stack_sources are current.
+			// Mirrors deployGitStackImpl: bookkeeping failure rolls back lastCommit so
+			// the next trigger retries the idempotent deploy + bookkeeping (self-healing).
+			try {
+				// Deletion sync: persist manifest + log per-file change summary.
+				// The change table was already shown before the deploy (#1260);
+				// report only apply-stage divergences from the plan here.
+				await finalizeDeletionSync({
+					stackId,
+					logPrefix,
+					previousManifest: deletionData.previousManifest,
+					newCommitFull: newCommit,
+					newFiles: deletionData.newFiles,
+					plan: deletionData.plan,
+					applyResult: result.deletion
 				});
+
+				const applySkips = (result.deletion?.skipped ?? []).filter((s) => s.reason !== 'already-absent');
+				for (const skip of applySkips) {
+					onProgress({
+						status: 'deploying',
+						message: `Kept "${skip.path}" — ${skipReasonMessage(skip.reason)}`,
+						step: 5,
+						totalSteps
+					});
+				}
+
+				// Record the stack source with resolved compose path for consistency
+				const stackDir = await getStackDir(gitStack.stackName, gitStack.environmentId);
+				const resolvedComposePath = join(stackDir, progressComposeFileName);
+
+				await upsertStackSource({
+					stackName: gitStack.stackName,
+					environmentId: gitStack.environmentId,
+					sourceType: 'git',
+					gitRepositoryId: gitStack.repositoryId,
+					gitStackId: stackId,
+					composePath: resolvedComposePath,
+					composePaths: gitStack.composePaths ? parseComposePathsColumn(gitStack.composePaths) : null
+				});
+
+				onProgress({ status: 'complete', message: `Successfully deployed ${gitStack.stackName}` });
+			} catch (bookkeepingErr: any) {
+				// Containers are running the new code — report deploy as successful.
+				// Roll back lastCommit so the next trigger re-runs the idempotent deploy
+				// and retries bookkeeping (self-healing). Same rule as deployGitStackImpl.
+				const bookkeepingMsg = bookkeepingErr instanceof Error ? bookkeepingErr.message : String(bookkeepingErr);
+				console.error(`${logPrefix} Post-deploy bookkeeping failed (containers are running): ${bookkeepingMsg}`);
+				try {
+					await updateGitStack(stackId, {
+						lastCommit: gitStack.lastCommit ?? null,
+						syncStatus: 'error',
+						syncError: `Deploy succeeded but bookkeeping failed: ${bookkeepingMsg}`
+					});
+				} catch (rollbackErr: any) {
+					console.error(`${logPrefix} lastCommit rollback also failed:`, rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr));
+				}
+				onProgress({ status: 'complete', message: `Deployed ${gitStack.stackName} (metadata update pending retry)` });
+				return { success: true, output: result.output, warning: bookkeepingMsg };
 			}
-
-			// Record the stack source with resolved compose path for consistency
-			const stackDir = await getStackDir(gitStack.stackName, gitStack.environmentId);
-			const resolvedComposePath = join(stackDir, progressComposeFileName);
-
-			await upsertStackSource({
-				stackName: gitStack.stackName,
-				environmentId: gitStack.environmentId,
-				sourceType: 'git',
-				gitRepositoryId: gitStack.repositoryId,
-				gitStackId: stackId,
-				composePath: resolvedComposePath,
-				composePaths: gitStack.composePaths ? parseComposePathsColumn(gitStack.composePaths) : null
-			});
-
-			onProgress({ status: 'complete', message: `Successfully deployed ${gitStack.stackName}` });
 		} else {
 			throw new Error(result.error || 'Failed to deploy stack');
 		}
@@ -1956,8 +2007,10 @@ async function deployGitStackWithProgressImpl(
 		return result;
 	} catch (error: any) {
 		cleanupSshKey(credential);
-		// Roll back lastCommit only when deploy did not succeed, so change detection
-		// can retry. Leave lastCommit alone if deploy succeeded and later bookkeeping failed.
+		// Roll back lastCommit when deploy itself failed, so the next trigger retries.
+		// When deploy succeeded and bookkeeping failed, the bookkeeping catch above
+		// already handled the rollback and returned early — this path is only reached
+		// for pre-deploy failures (sync errors, compose file not found, etc.).
 		await updateGitStack(stackId, {
 			syncStatus: 'error',
 			syncError: error.message,

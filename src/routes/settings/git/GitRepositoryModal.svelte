@@ -6,11 +6,13 @@
 	import * as Select from '$lib/components/ui/select';
 	import { Label } from '$lib/components/ui/label';
 	import { Input } from '$lib/components/ui/input';
-	import { Loader2, GitBranch, KeyRound, Lock, Key, Globe, Play, CheckCircle2, XCircle, GitFork, RefreshCw, Webhook, Check, Copy } from 'lucide-svelte';
-	import * as Tooltip from '$lib/components/ui/tooltip';
+	import { Loader2, GitBranch, KeyRound, Lock, Key, Globe, Play, CheckCircle2, XCircle, GitFork, RefreshCw, Webhook } from 'lucide-svelte';
 	import { TogglePill } from '$lib/components/ui/toggle-pill';
 	import CronEditor from '$lib/components/cron-editor.svelte';
+	import WebhookSecretInput from '$lib/components/WebhookSecretInput.svelte';
+	import WebhookUrlCopyField from '$lib/components/WebhookUrlCopyField.svelte';
 	import { focusFirstInput } from '$lib/utils';
+	import { ensureWebhookSecret, webhookSecretValidationError } from '$lib/utils/webhook-secret';
 
 	interface GitCredential {
 		id: number;
@@ -46,7 +48,7 @@
 	let formBranch = $state('main');
 	let formCredentialId = $state<number | null>(null);
 	let formError = $state('');
-	let formErrors = $state<{ name?: string; url?: string }>({});
+	let formErrors = $state<{ name?: string; url?: string; webhookSecret?: string }>({});
 	let formSaving = $state(false);
 
 	let formAutoUpdate = $state(false);
@@ -54,30 +56,8 @@
 	let formWebhookEnabled = $state(false);
 	let formWebhookSecret = $state('');
 
-	let copiedWebhookUrl = $state<'ok' | 'error' | null>(null);
-	let copiedWebhookSecret = $state<'ok' | 'error' | null>(null);
-
-	function generateWebhookSecret(): string {
-		const array = new Uint8Array(24);
-		crypto.getRandomValues(array);
-		return Array.from(array, b => b.toString(16).padStart(2, '0')).join('');
-	}
-
 	function getWebhookUrl(repoId: number): string {
 		return `${window.location.origin}/api/git/webhook/${repoId}`;
-	}
-
-	async function copyWebhookField(text: string, type: 'url' | 'secret') {
-		const { copyToClipboard } = await import('$lib/utils/clipboard');
-		const ok = await copyToClipboard(text);
-		const state = ok ? 'ok' : 'error';
-		if (type === 'url') {
-			copiedWebhookUrl = state;
-			setTimeout(() => copiedWebhookUrl = null, 2000);
-		} else {
-			copiedWebhookSecret = state;
-			setTimeout(() => copiedWebhookSecret = null, 2000);
-		}
 	}
 
 	// Test state
@@ -131,8 +111,6 @@
 		}
 		formError = '';
 		formErrors = {};
-		copiedWebhookUrl = null;
-		copiedWebhookSecret = null;
 		testResult = null;
 		cloneStatus = 'idle';
 		cloneError = '';
@@ -242,7 +220,12 @@
 			formErrors.url = 'Repository URL is required';
 		}
 
-		if (formErrors.name || formErrors.url) {
+		const webhookSecretError = webhookSecretValidationError(formWebhookEnabled, formWebhookSecret);
+		if (webhookSecretError) {
+			formErrors.webhookSecret = webhookSecretError;
+		}
+
+		if (formErrors.name || formErrors.url || formErrors.webhookSecret) {
 			return;
 		}
 
@@ -256,7 +239,7 @@
 				branch: formBranch || 'main',
 				credentialId: formCredentialId,
 				autoUpdate: formAutoUpdate,
-				autoUpdateSchedule: formAutoUpdate ? (repository?.autoUpdateSchedule || 'custom') : undefined,
+				autoUpdateSchedule: formAutoUpdate ? 'custom' : undefined,
 				autoUpdateCron: formAutoUpdateCron,
 				webhookEnabled: formWebhookEnabled,
 				webhookSecret: formWebhookEnabled ? formWebhookSecret : null
@@ -527,87 +510,25 @@
 							<Webhook class="w-4 h-4 text-muted-foreground" />
 							<Label class="text-sm font-normal">Enable webhook</Label>
 						</div>
-						<TogglePill bind:checked={formWebhookEnabled} />
+						<TogglePill
+							bind:checked={formWebhookEnabled}
+							onchange={(enabled) => { formWebhookSecret = ensureWebhookSecret(enabled, formWebhookSecret); }}
+						/>
 					</div>
 					<p class="text-xs text-muted-foreground">
 						Receive push events from your Git provider to trigger sync and redeploy.
 					</p>
 					{#if formWebhookEnabled}
 						{#if repository}
-							<div class="space-y-2">
-								<Label>Webhook URL</Label>
-								<div class="flex gap-2">
-									<Input
-										value={getWebhookUrl(repository.id)}
-										readonly
-										class="font-mono text-xs bg-background"
-									/>
-									<Button
-										variant="outline"
-										size="sm"
-										onclick={() => copyWebhookField(getWebhookUrl(repository.id), 'url')}
-										title="Copy URL"
-									>
-										{#if copiedWebhookUrl === 'error'}
-											<Tooltip.Root open>
-												<Tooltip.Trigger>
-													<XCircle class="w-4 h-4 text-red-500" />
-												</Tooltip.Trigger>
-												<Tooltip.Content>Copy requires HTTPS</Tooltip.Content>
-											</Tooltip.Root>
-										{:else if copiedWebhookUrl === 'ok'}
-											<Check class="w-4 h-4 text-green-500" />
-										{:else}
-											<Copy class="w-4 h-4" />
-										{/if}
-									</Button>
-								</div>
-							</div>
+							<WebhookUrlCopyField url={getWebhookUrl(repository.id)} />
 						{/if}
-						<div class="space-y-2">
-							<Label for="webhook-secret">Webhook secret (optional)</Label>
-							<div class="flex gap-2">
-								<Input
-									id="webhook-secret"
-									bind:value={formWebhookSecret}
-									placeholder="Leave empty for no signature verification"
-									class="font-mono text-xs"
-								/>
-								{#if repository && formWebhookSecret}
-									<Button
-										variant="outline"
-										size="sm"
-										onclick={() => copyWebhookField(formWebhookSecret, 'secret')}
-										title="Copy secret"
-									>
-										{#if copiedWebhookSecret === 'error'}
-											<Tooltip.Root open>
-												<Tooltip.Trigger>
-													<XCircle class="w-4 h-4 text-red-500" />
-												</Tooltip.Trigger>
-												<Tooltip.Content>Copy requires HTTPS</Tooltip.Content>
-											</Tooltip.Root>
-										{:else if copiedWebhookSecret === 'ok'}
-											<Check class="w-4 h-4 text-green-500" />
-										{:else}
-											<Copy class="w-4 h-4" />
-										{/if}
-									</Button>
-								{/if}
-								<Tooltip.Root>
-									<Tooltip.Trigger>
-										<Button
-											variant="outline"
-											size="sm"
-											onclick={() => formWebhookSecret = generateWebhookSecret()}
-										>
-											<Key class="w-4 h-4" />
-										</Button>
-									</Tooltip.Trigger>
-									<Tooltip.Content>Generate secret</Tooltip.Content>
-								</Tooltip.Root>
-							</div>
-						</div>
+						<WebhookSecretInput
+							id="webhook-secret"
+							bind:value={formWebhookSecret}
+							error={formErrors.webhookSecret}
+							showCopy={!!repository}
+							oninput={() => formErrors.webhookSecret = undefined}
+						/>
 						{#if !repository}
 							<p class="text-xs text-muted-foreground">
 								The webhook URL will be available after creating the repository.

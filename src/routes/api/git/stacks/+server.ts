@@ -15,6 +15,7 @@ import { authorize } from '$lib/server/authorize';
 import { auditGitStack } from '$lib/server/audit';
 import { createJobResponse } from '$lib/server/sse';
 import { registerSchedule } from '$lib/server/scheduler';
+import { WEBHOOK_SECRET_REQUIRED_ERROR } from '$lib/utils/webhook-secret';
 
 // Stack name validation: Docker Compose requires lowercase; must start with a
 // letter or number, and contain only lowercase letters, numbers, hyphens, underscores
@@ -66,6 +67,11 @@ export const POST: RequestHandler = async (event) => {
 		const existing = await getStackSource(trimmedStackName, data.environmentId || null);
 		if (existing) {
 			return json({ error: 'A stack with this name already exists on this environment' }, { status: 409 });
+		}
+
+		// A secret is mandatory when the webhook is enabled.
+		if (data.webhookEnabled && !data.webhookSecret?.trim()) {
+			return json({ error: WEBHOOK_SECRET_REQUIRED_ERROR }, { status: 400 });
 		}
 
 		// Either repositoryId or new repo details (url, branch) must be provided

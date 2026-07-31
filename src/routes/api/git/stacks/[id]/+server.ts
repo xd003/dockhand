@@ -6,6 +6,7 @@ import { authorize } from '$lib/server/authorize';
 import { auditGitStack } from '$lib/server/audit';
 import { computeAuditDiff } from '$lib/utils/diff';
 import { createJobResponse } from '$lib/server/sse';
+import { WEBHOOK_SECRET_REQUIRED_ERROR } from '$lib/utils/webhook-secret';
 
 // Stack name validation: must start with alphanumeric, can contain alphanumeric, hyphens, underscores
 const STACK_NAME_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
@@ -60,6 +61,14 @@ export const PUT: RequestHandler = async (event) => {
 				return json({ error: 'Stack name must start with a letter or number, and contain only letters, numbers, hyphens, and underscores' }, { status: 400 });
 			}
 			data.stackName = trimmedStackName;
+		}
+
+		// A secret is mandatory when the webhook is enabled.
+		// Evaluate the effective post-update state (PUT is partial).
+		const effWebhookEnabled = data.webhookEnabled !== undefined ? data.webhookEnabled : existing.webhookEnabled;
+		const effWebhookSecret = data.webhookSecret !== undefined ? data.webhookSecret : existing.webhookSecret;
+		if (effWebhookEnabled && !effWebhookSecret?.trim()) {
+			return json({ error: WEBHOOK_SECRET_REQUIRED_ERROR }, { status: 400 });
 		}
 
 		const oldStackName = existing.stackName;
@@ -182,8 +191,10 @@ export const DELETE: RequestHandler = async (event) => {
 		// Delete the stack_sources record to free up the stack name
 		await deleteStackSource(existing.stackName, existing.environmentId);
 
-		// Delete all env var overrides for this stack (all environments)
-		await deleteStackEnvVars(existing.stackName);
+		// Delete this stack's env var overrides ON THIS ENVIRONMENT ONLY. The same
+		// stack name can be deployed to multiple environments independently (per-env
+		// rows), so an unscoped delete would wipe another environment's vars/secrets.
+		await deleteStackEnvVars(existing.stackName, existing.environmentId);
 
 		// Delete from database
 		await deleteGitStack(id);

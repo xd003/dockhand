@@ -10,6 +10,7 @@ import { createJob, completeJob, failJob } from '$lib/server/jobs';
 import { authorize } from '$lib/server/authorize';
 import { auditGitRepository } from '$lib/server/audit';
 import { registerSchedule } from '$lib/server/scheduler';
+import { WEBHOOK_SECRET_REQUIRED_ERROR } from '$lib/utils/webhook-secret';
 
 export const GET: RequestHandler = async ({ url, cookies }) => {
 	const auth = await authorize(cookies);
@@ -53,6 +54,11 @@ export const POST: RequestHandler = async (event) => {
 			if (!credential) {
 				return json({ error: 'Invalid credential ID' }, { status: 400 });
 			}
+		}
+
+		// A secret is mandatory when the webhook is enabled.
+		if (data.webhookEnabled && !data.webhookSecret?.trim()) {
+			return json({ error: WEBHOOK_SECRET_REQUIRED_ERROR }, { status: 400 });
 		}
 
 		// Create repository with basic fields and new sync/webhook settings

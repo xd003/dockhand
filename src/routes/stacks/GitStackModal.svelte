@@ -13,18 +13,17 @@
 	import BackupPanel from '../containers/BackupPanel.svelte';
 	import { volumesForStack, type VolumeInfo } from '$lib/utils/mounts';
 	import { fetchBackupExecutions } from '$lib/utils/backup';
-	import { copyToClipboard } from '$lib/utils/clipboard';
 	import CronEditor from '$lib/components/cron-editor.svelte';
 	import StackEnvVarsPanel from '$lib/components/StackEnvVarsPanel.svelte';
 	import { type EnvVar, type ValidationResult } from '$lib/components/StackEnvVarsEditor.svelte';
 	import { toast } from 'svelte-sonner';
 	import { focusFirstInput } from '$lib/utils';
 	import { readJobResponse } from '$lib/utils/sse-fetch';
-	import { useSidebar } from '$lib/components/ui/sidebar/context.svelte';
 	import FilesystemBrowser from './FilesystemBrowser.svelte';
+	import WebhookSecretInput from '$lib/components/WebhookSecretInput.svelte';
+	import WebhookUrlCopyField from '$lib/components/WebhookUrlCopyField.svelte';
+	import { ensureWebhookSecret, webhookSecretValidationError } from '$lib/utils/webhook-secret';
 
-	// Get sidebar state to adjust modal positioning
-	const sidebar = useSidebar();
 
 	// localStorage key for persisted split ratio
 	const STORAGE_KEY_SPLIT = 'dockhand-git-stack-modal-split';
@@ -247,13 +246,11 @@
 	let formForceRedeploy = $state(false);
 	let formStackWebhookEnabled = $state(false);
 	let formStackWebhookSecret = $state('');
-	let copiedStackWebhookUrl = $state<'' | 'ok' | 'error'>('');
-	let copiedStackWebhookSecret = $state<'' | 'ok' | 'error'>('');
 	let formDeployNow = $state(false);
 	let formError = $state('');
 	let formSaving = $state(false);
 	let showExistsWarning = $state(false);
-	let errors = $state<{ stackName?: string; repository?: string; repoName?: string; repoUrl?: string }>({});
+	let errors = $state<{ stackName?: string; repository?: string; repoName?: string; repoUrl?: string; newRepoWebhookSecret?: string; stackWebhookSecret?: string }>({});
 
 	// Stack name validation: must start with alphanumeric, can contain alphanumeric, hyphens, underscores
 	const STACK_NAME_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
@@ -608,8 +605,6 @@
 			formForceRedeploy = false;
 			formStackWebhookEnabled = false;
 			formStackWebhookSecret = '';
-			copiedStackWebhookUrl = '';
-			copiedStackWebhookSecret = '';
 			formDeployNow = false;
 		}
 	}
@@ -639,6 +634,22 @@
 
 		if (formRepoMode === 'new' && !formNewRepoUrl.trim()) {
 			errors.repoUrl = 'Repository URL is required';
+			hasErrors = true;
+		}
+
+		const newRepoWebhookSecretError = formRepoMode === 'new'
+			? webhookSecretValidationError(formNewRepoWebhookEnabled, formNewRepoWebhookSecret)
+			: undefined;
+		if (newRepoWebhookSecretError) {
+			errors.newRepoWebhookSecret = newRepoWebhookSecretError;
+			hasErrors = true;
+		}
+
+		const stackWebhookSecretError = formForceRedeploy
+			? webhookSecretValidationError(formStackWebhookEnabled, formStackWebhookSecret)
+			: undefined;
+		if (stackWebhookSecretError) {
+			errors.stackWebhookSecret = stackWebhookSecretError;
 			hasErrors = true;
 		}
 
@@ -896,7 +907,7 @@
 
 <Dialog.Root bind:open onOpenChange={(isOpen) => { if (isOpen) focusFirstInput(); }}>
 	<Dialog.Content
-		class="max-w-none h-[95vh] flex flex-col p-0 gap-0 shadow-xl border-zinc-200 dark:border-zinc-700 {sidebar.state === 'collapsed' ? 'w-[calc(100vw-6rem)] ml-[1.5rem]' : 'w-[calc(100vw-12rem)] ml-[4.5rem]'}"
+		class="max-w-none w-[calc(100vw-4rem)] h-[95vh] flex flex-col p-0 gap-0 shadow-xl border-zinc-200 dark:border-zinc-700"
 		showCloseButton={false}
 	>
 		<Dialog.Header class="px-5 py-3 border-b border-zinc-200 dark:border-zinc-700 flex-shrink-0">
@@ -1142,37 +1153,18 @@
 										<Webhook class="w-4 h-4 text-muted-foreground" />
 										<Label class="text-sm font-normal">Enable webhook</Label>
 									</div>
-									<TogglePill bind:checked={formNewRepoWebhookEnabled} />
+									<TogglePill
+										bind:checked={formNewRepoWebhookEnabled}
+										onchange={(enabled) => { formNewRepoWebhookSecret = ensureWebhookSecret(enabled, formNewRepoWebhookSecret); }}
+									/>
 								</div>
 								{#if formNewRepoWebhookEnabled}
-									<div class="space-y-2">
-										<Label for="new-repo-webhook-secret">Webhook secret (optional)</Label>
-										<div class="flex gap-2">
-											<Input
-												id="new-repo-webhook-secret"
-												bind:value={formNewRepoWebhookSecret}
-												placeholder="Leave empty for no signature verification"
-												class="font-mono text-xs"
-											/>
-											<Tooltip.Root>
-												<Tooltip.Trigger>
-													<Button
-														variant="outline"
-														size="sm"
-														type="button"
-														onclick={() => {
-															const array = new Uint8Array(24);
-															crypto.getRandomValues(array);
-															formNewRepoWebhookSecret = Array.from(array, b => b.toString(16).padStart(2, '0')).join('');
-														}}
-													>
-														<Key class="w-4 h-4" />
-													</Button>
-												</Tooltip.Trigger>
-												<Tooltip.Content>Generate secret</Tooltip.Content>
-											</Tooltip.Root>
-										</div>
-									</div>
+									<WebhookSecretInput
+										id="new-repo-webhook-secret"
+										bind:value={formNewRepoWebhookSecret}
+										error={errors.newRepoWebhookSecret}
+										oninput={() => errors.newRepoWebhookSecret = undefined}
+									/>
 								{/if}
 							</div>
 						</div>
@@ -1373,106 +1365,39 @@
 							<Webhook class="w-4 h-4 text-muted-foreground" />
 							<Label class="text-sm font-normal">Enable stack webhook</Label>
 						</div>
-						<TogglePill bind:checked={formStackWebhookEnabled} />
+						<TogglePill
+							bind:checked={formStackWebhookEnabled}
+							onchange={(enabled) => { formStackWebhookSecret = ensureWebhookSecret(enabled, formStackWebhookSecret); }}
+						/>
 					</div>
 					<p class="text-xs text-muted-foreground">
 						Call this webhook to force redeploy <strong>this stack only</strong>. The repository-level webhook redeploys all linked stacks with force redeployment enabled.
 					</p>
 					{#if formStackWebhookEnabled}
 						{#if gitStack}
-							<div class="space-y-2">
-								<Label>Stack webhook URL</Label>
-								<div class="flex gap-2">
-									<Input
-										value={`${typeof window !== 'undefined' ? window.location.origin : ''}/api/git/stacks/${gitStack.id}/webhook`}
-										readonly
-										class="font-mono text-xs bg-background"
-									/>
-									<Button
-										variant="outline"
-										size="sm"
-										onclick={async () => {
-											const result = await copyToClipboard(`${window.location.origin}/api/git/stacks/${gitStack.id}/webhook`);
-											copiedStackWebhookUrl = result ? 'ok' : 'error';
-											setTimeout(() => copiedStackWebhookUrl = '', 2000);
-										}}
-										title="Copy URL"
-									>
-										{#if copiedStackWebhookUrl === 'error'}
-											<Tooltip.Root open>
-												<Tooltip.Trigger><XCircle class="w-4 h-4 text-red-500" /></Tooltip.Trigger>
-												<Tooltip.Content>Copy requires HTTPS</Tooltip.Content>
-											</Tooltip.Root>
-										{:else if copiedStackWebhookUrl === 'ok'}
-											<Check class="w-4 h-4 text-green-500" />
-										{:else}
-											<Copy class="w-4 h-4" />
-										{/if}
-									</Button>
-								</div>
-							</div>
+							<WebhookUrlCopyField
+								url={`${typeof window !== 'undefined' ? window.location.origin : ''}/api/git/stacks/${gitStack.id}/webhook`}
+								label="Stack webhook URL"
+							/>
 						{:else}
 							<p class="text-xs text-muted-foreground">
 								The stack webhook URL will be available after creating the stack.
 							</p>
 						{/if}
-						<div class="space-y-2">
-							<Label for="stack-webhook-secret">Webhook secret (optional)</Label>
-							<div class="flex gap-2">
-								<Input
-									id="stack-webhook-secret"
-									bind:value={formStackWebhookSecret}
-									placeholder="Leave empty for no signature verification"
-									class="font-mono text-xs"
-								/>
-								{#if gitStack && formStackWebhookSecret}
-									<Button
-										variant="outline"
-										size="sm"
-										onclick={async () => {
-											const result = await copyToClipboard(formStackWebhookSecret);
-											copiedStackWebhookSecret = result ? 'ok' : 'error';
-											setTimeout(() => copiedStackWebhookSecret = '', 2000);
-										}}
-										title="Copy secret"
-									>
-										{#if copiedStackWebhookSecret === 'error'}
-											<Tooltip.Root open>
-												<Tooltip.Trigger><XCircle class="w-4 h-4 text-red-500" /></Tooltip.Trigger>
-												<Tooltip.Content>Copy requires HTTPS</Tooltip.Content>
-											</Tooltip.Root>
-										{:else if copiedStackWebhookSecret === 'ok'}
-											<Check class="w-4 h-4 text-green-500" />
-										{:else}
-											<Copy class="w-4 h-4" />
-										{/if}
-									</Button>
-								{/if}
-								<Tooltip.Root>
-									<Tooltip.Trigger>
-										<Button
-											variant="outline"
-											size="sm"
-											onclick={() => {
-												const arr = new Uint8Array(32);
-												crypto.getRandomValues(arr);
-												formStackWebhookSecret = Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
-											}}
-										>
-											<Key class="w-4 h-4" />
-										</Button>
-									</Tooltip.Trigger>
-									<Tooltip.Content>Generate secret</Tooltip.Content>
-								</Tooltip.Root>
-							</div>
-							<p class="text-xs text-muted-foreground">
-								{#if gitStack}
-									Configure this URL in your Git provider or CI/CD pipeline. Secret is used for signature verification.
-								{:else}
-									Secret will be saved when you create the stack.
-								{/if}
-							</p>
-						</div>
+						<WebhookSecretInput
+							id="stack-webhook-secret"
+							bind:value={formStackWebhookSecret}
+							error={errors.stackWebhookSecret}
+							showCopy={!!gitStack}
+							oninput={() => errors.stackWebhookSecret = undefined}
+						/>
+						<p class="text-xs text-muted-foreground">
+							{#if gitStack}
+								Configure this URL in your Git provider or CI/CD pipeline. Secret is used for signature verification.
+							{:else}
+								Secret will be saved when you create the stack.
+							{/if}
+						</p>
 					{/if}
 				</div>
 				{/if}

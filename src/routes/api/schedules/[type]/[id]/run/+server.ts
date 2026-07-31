@@ -10,7 +10,7 @@
 
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { triggerContainerUpdate, triggerGitStackSync, triggerGitRepositorySync, triggerSystemJob, triggerEnvUpdateCheck, triggerImagePrune } from '$lib/server/scheduler';
+import { triggerContainerUpdate, triggerGitRepositorySync, triggerSystemJob, triggerEnvUpdateCheck, triggerImagePrune } from '$lib/server/scheduler';
 import { getBackupConfig, getBackupDestination, getAutoUpdateSettingById, getGitRepository } from '$lib/server/db';
 import { runScheduledBackup } from '$lib/server/scheduler/tasks/backup';
 import { runRepoPrune, runRepoCheck, runRepoVerify } from '$lib/server/scheduler/tasks/repo-maintenance';

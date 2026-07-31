@@ -13,6 +13,7 @@ import { authorize } from '$lib/server/authorize';
 import { auditGitRepository } from '$lib/server/audit';
 import { computeAuditDiff } from '$lib/utils/diff';
 import { registerSchedule, unregisterSchedule } from '$lib/server/scheduler';
+import { WEBHOOK_SECRET_REQUIRED_ERROR } from '$lib/utils/webhook-secret';
 
 export const GET: RequestHandler = async ({ params, cookies }) => {
 	const auth = await authorize(cookies);
@@ -65,6 +66,14 @@ export const PUT: RequestHandler = async (event) => {
 			if (!credential) {
 				return json({ error: 'Invalid credential ID' }, { status: 400 });
 			}
+		}
+
+		// A secret is mandatory when the webhook is enabled.
+		// Evaluate the effective post-update state (PUT is partial).
+		const effWebhookEnabled = data.webhookEnabled !== undefined ? data.webhookEnabled : existing.webhookEnabled;
+		const effWebhookSecret = data.webhookSecret !== undefined ? data.webhookSecret : existing.webhookSecret;
+		if (effWebhookEnabled && !effWebhookSecret?.trim()) {
+			return json({ error: WEBHOOK_SECRET_REQUIRED_ERROR }, { status: 400 });
 		}
 
 		// Update repository fields

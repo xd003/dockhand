@@ -1428,6 +1428,27 @@
           "primaryKey": false,
           "notNull": false
         },
+        "auto_update": {
+          "name": "auto_update",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false,
+          "default": false
+        },
+        "auto_update_schedule": {
+          "name": "auto_update_schedule",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "default": "'daily'"
+        },
+        "auto_update_cron": {
+          "name": "auto_update_cron",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "default": "'0 3 * * *'"
+        },
         "webhook_enabled": {
           "name": "webhook_enabled",
           "type": "boolean",

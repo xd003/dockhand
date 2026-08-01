@@ -1,5 +1,5 @@
 import { json } from '@sveltejs/kit';
-import { listComposeStacks, deployStack, saveStackComposeFile, writeStackEnvFile, writeRawStackEnvFile, saveStackEnvVarsToDb } from '$lib/server/stacks';
+import { listComposeStacks, deployStack, saveStackComposeFile, writeStackEnvFile, writeRawStackEnvFile, saveStackEnvVarsToDb, unmapHawserDisplayComposeOptionsToStaging } from '$lib/server/stacks';
 import { EnvironmentNotFoundError, DockerConnectionError } from '$lib/server/docker';
 import { upsertStackSource, getStackSources } from '$lib/server/db';
 import { authorize } from '$lib/server/authorize';
@@ -101,13 +101,25 @@ export const POST: RequestHandler = async (event) => {
 			return json({ error: 'Compose file content is required' }, { status: 400 });
 		}
 
+		// The create modal shows Hawser paths from the remote host's STACKS_DIR (see
+		// /api/stacks/default-path). Convert those display paths back to Dockhand's
+		// staging paths before any disk writes or deploys, mirroring the edit PUT handler.
+		const pathOptions = (composePath || composePaths || envPath !== undefined || composeContents)
+			? await unmapHawserDisplayComposeOptionsToStaging(name, envIdNum, {
+					composePath,
+					composePaths,
+					composeContents,
+					envPath
+				})
+			: undefined;
+
 		// If start is false, only create the compose file without deploying
 		if (start === false) {
 			const result = await saveStackComposeFile(name, compose, true, envIdNum, {
-				composePath: composePath || undefined,
-				composePaths: composePaths || undefined,
-				composeContents: composeContents || undefined,
-				envPath: envPath || undefined
+				composePath: pathOptions?.composePath || undefined,
+				composePaths: pathOptions?.composePaths || undefined,
+				composeContents: pathOptions?.composeContents || undefined,
+				envPath: pathOptions?.envPath || undefined
 			});
 			if (!result.success) {
 				return json({ error: result.error }, { status: 400 });
@@ -117,7 +129,7 @@ export const POST: RequestHandler = async (event) => {
 			// - rawEnvContent → .env file (non-secrets with comments)
 			// - secrets only → DB (for shell injection at runtime)
 			if (rawEnvContent) {
-				await writeRawStackEnvFile(name, rawEnvContent, envIdNum, envPath || undefined);
+				await writeRawStackEnvFile(name, rawEnvContent, envIdNum, pathOptions?.envPath || undefined);
 			}
 			if (envVars && Array.isArray(envVars) && envVars.length > 0) {
 				const secrets = envVars.filter((v: any) => v.isSecret);
@@ -126,7 +138,7 @@ export const POST: RequestHandler = async (event) => {
 				}
 				// Fallback: if no rawEnvContent, generate .env from non-secret vars
 				if (!rawEnvContent) {
-					await writeStackEnvFile(name, envVars, envIdNum, envPath || undefined);
+					await writeStackEnvFile(name, envVars, envIdNum, pathOptions?.envPath || undefined);
 				}
 			}
 
@@ -135,9 +147,9 @@ export const POST: RequestHandler = async (event) => {
 				stackName: name,
 				environmentId: envIdNum,
 				sourceType: 'internal',
-				composePath: composePath || undefined,
-				composePaths: composePaths || undefined,
-				envPath: envPath || undefined
+				composePath: pathOptions?.composePath || undefined,
+				composePaths: pathOptions?.composePaths || undefined,
+				envPath: pathOptions?.envPath || undefined
 			});
 
 			// Audit log
@@ -148,9 +160,9 @@ export const POST: RequestHandler = async (event) => {
 
 		// ALWAYS save compose file first - deployStack expects it to exist
 		const saveResult = await saveStackComposeFile(name, compose, true, envIdNum, {
-			composePath: composePath || undefined,
-			composeContents: composeContents || undefined,
-			envPath: envPath || undefined
+			composePath: pathOptions?.composePath || undefined,
+			composeContents: pathOptions?.composeContents || undefined,
+			envPath: pathOptions?.envPath || undefined
 		});
 		if (!saveResult.success) {
 			return json({ error: saveResult.error }, { status: 400 });
@@ -159,7 +171,7 @@ export const POST: RequestHandler = async (event) => {
 		// Save environment variables BEFORE deploying so they're available during start
 		if (rawEnvContent || (envVars && Array.isArray(envVars) && envVars.length > 0)) {
 			if (rawEnvContent) {
-				await writeRawStackEnvFile(name, rawEnvContent, envIdNum, envPath || undefined);
+				await writeRawStackEnvFile(name, rawEnvContent, envIdNum, pathOptions?.envPath || undefined);
 			}
 			if (envVars && Array.isArray(envVars) && envVars.length > 0) {
 				const secrets = envVars.filter((v: any) => v.isSecret);
@@ -168,7 +180,7 @@ export const POST: RequestHandler = async (event) => {
 				}
 				// Fallback: if no rawEnvContent, generate .env from non-secret vars
 				if (!rawEnvContent) {
-					await writeStackEnvFile(name, envVars, envIdNum, envPath || undefined);
+					await writeStackEnvFile(name, envVars, envIdNum, pathOptions?.envPath || undefined);
 				}
 			}
 		}
@@ -178,9 +190,9 @@ export const POST: RequestHandler = async (event) => {
 			stackName: name,
 			environmentId: envIdNum,
 			sourceType: 'internal',
-			composePath: composePath || undefined,
-			composePaths: composePaths || undefined,
-			envPath: envPath || undefined
+			composePath: pathOptions?.composePath || undefined,
+			composePaths: pathOptions?.composePaths || undefined,
+			envPath: pathOptions?.envPath || undefined
 		});
 
 		// Deploy via SSE to keep connection alive during long operations
@@ -190,9 +202,9 @@ export const POST: RequestHandler = async (event) => {
 					name,
 					compose,
 					envId: envIdNum,
-					composePath: composePath || undefined,
-					composePaths: composePaths || undefined,
-					envPath: envPath || undefined
+					composePath: pathOptions?.composePath || undefined,
+					composePaths: pathOptions?.composePaths || undefined,
+					envPath: pathOptions?.envPath || undefined
 				});
 
 				if (!result.success) {

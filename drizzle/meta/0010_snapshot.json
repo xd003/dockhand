@@ -1499,6 +1499,30 @@
           "notNull": false,
           "autoincrement": false
         },
+        "auto_update": {
+          "name": "auto_update",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false,
+          "default": false
+        },
+        "auto_update_schedule": {
+          "name": "auto_update_schedule",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false,
+          "default": "'daily'"
+        },
+        "auto_update_cron": {
+          "name": "auto_update_cron",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false,
+          "default": "'0 3 * * *'"
+        },
         "webhook_enabled": {
           "name": "webhook_enabled",
           "type": "integer",

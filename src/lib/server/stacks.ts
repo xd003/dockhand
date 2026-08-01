@@ -47,7 +47,12 @@ import {
 import { unregisterSchedule } from './scheduler';
 import { sendEventNotification } from './notifications';
 import { deleteGitStackFiles, parseEnvFileContent } from './git';
-import { remapPathsFromStagingToRemote } from './stacks-display-paths';
+import {
+	remapComposeContentsFromRemoteToStaging,
+	remapComposeContentsFromStagingToRemote,
+	remapPathsFromRemoteToStaging,
+	remapPathsFromStagingToRemote
+} from './stacks-display-paths';
 import { isPathUnderRoot } from './path-utils';
 import { cleanPem } from '$lib/utils/pem';
 import { rewriteComposeVolumePaths, getHostDataDir } from './host-path';
@@ -788,43 +793,20 @@ export async function migrateLocalStacksToStacksDir(): Promise<void> {
 	}
 }
 
-/**
- * For Hawser environments, compose paths in the DB point at Dockhand's staging copy
- * ($DATA_DIR/stacks/<env>/<stack>/). Deployed files live on the remote host under the
- * Hawser agent's STACKS_DIR/<stackName>/.
- */
-export async function remapHawserStagingDisplayPaths(
+async function resolveHawserStackDirPair(
 	stackName: string,
-	environmentId: number | null | undefined,
-	paths: { composePath: string | null; composePaths: string[] },
+	environmentId: number,
 	env?: { connectionType?: string | null } | null,
 	hints?: { workingDir: string | null; configFiles: string[] | null } | null
-): Promise<{ composePath: string | null; composePaths: string[] }> {
-	if (!paths.composePath && paths.composePaths.length === 0) return paths;
-	if (environmentId == null) return paths;
-
+): Promise<{ stagingStackDir: string; remoteStackDir: string } | null> {
 	const resolvedEnv = env ?? (await getEnvironment(environmentId));
-	if (!isHawserConnection(resolvedEnv)) return paths;
+	if (!isHawserConnection(resolvedEnv)) return null;
 
 	const stagingStackDir = resolve(
 		(await findStackDir(stackName, environmentId)) ?? (await getStackDir(stackName, environmentId))
 	);
 
-	const pathList =
-		paths.composePaths.length > 0
-			? paths.composePaths
-			: paths.composePath
-				? [paths.composePath]
-				: [];
-
-	const usesStaging = pathList.some((p) => {
-		const resolved = resolve(p);
-		return isPathUnderRoot(resolved, stagingStackDir) || isManagedStagingDir(dirname(resolved));
-	});
-	if (!usesStaging) return paths;
-
 	let remoteStackDir: string | null = null;
-
 	const pathHints = hints ?? (await getStackPathHints(stackName, environmentId));
 	if (pathHints.workingDir) {
 		remoteStackDir = pathHints.workingDir;
@@ -840,13 +822,131 @@ export async function remapHawserStagingDisplayPaths(
 		}
 	}
 
-	if (!remoteStackDir) return paths;
+	if (!remoteStackDir) return null;
+	return { stagingStackDir, remoteStackDir: resolve(remoteStackDir) };
+}
+
+/**
+ * For Hawser environments, compose paths in the DB point at Dockhand's staging copy
+ * ($DATA_DIR/stacks/<env>/<stack>/). Deployed files live on the remote host under the
+ * Hawser agent's STACKS_DIR/<stackName>/.
+ */
+export async function remapHawserStagingDisplayPaths(
+	stackName: string,
+	environmentId: number | null | undefined,
+	paths: { composePath: string | null; composePaths: string[] },
+	env?: { connectionType?: string | null } | null,
+	hints?: { workingDir: string | null; configFiles: string[] | null } | null
+): Promise<{ composePath: string | null; composePaths: string[] }> {
+	if (!paths.composePath && paths.composePaths.length === 0) return paths;
+	if (environmentId == null) return paths;
+
+	const pathList =
+		paths.composePaths.length > 0
+			? paths.composePaths
+			: paths.composePath
+				? [paths.composePath]
+				: [];
+
+	const pair = await resolveHawserStackDirPair(stackName, environmentId, env, hints);
+	if (!pair) return paths;
+
+	const { stagingStackDir, remoteStackDir } = pair;
+	const usesStaging = pathList.some((p) => {
+		const resolved = resolve(p);
+		return isPathUnderRoot(resolved, stagingStackDir) || isManagedStagingDir(dirname(resolved));
+	});
+	if (!usesStaging) return paths;
 
 	const remapped = remapPathsFromStagingToRemote(stagingStackDir, remoteStackDir, pathList);
 	return {
 		composePath: remapped[0] ?? null,
 		composePaths: remapped
 	};
+}
+
+/**
+ * Remap composeContents keys from staging paths to Hawser remote display paths.
+ */
+export async function remapHawserStagingDisplayComposeContents(
+	stackName: string,
+	environmentId: number | null | undefined,
+	composeContents: Record<string, string> | null | undefined,
+	env?: { connectionType?: string | null } | null,
+	hints?: { workingDir: string | null; configFiles: string[] | null } | null
+): Promise<Record<string, string> | null | undefined> {
+	if (!composeContents || environmentId == null) return composeContents;
+
+	const pair = await resolveHawserStackDirPair(stackName, environmentId, env, hints);
+	if (!pair) return composeContents;
+
+	return remapComposeContentsFromStagingToRemote(
+		pair.stagingStackDir,
+		pair.remoteStackDir,
+		composeContents
+	);
+}
+
+/**
+ * Convert Hawser display paths from the UI back to Dockhand staging paths for disk writes.
+ */
+export async function unmapHawserDisplayComposeOptionsToStaging(
+	stackName: string,
+	environmentId: number | null | undefined,
+	options: {
+		composePath?: string;
+		composePaths?: string[] | null;
+		composeContents?: Record<string, string>;
+		envPath?: string;
+		moveFromDir?: string;
+		oldComposePath?: string;
+		oldEnvPath?: string;
+	}
+): Promise<typeof options> {
+	if (!options || environmentId == null) return options;
+
+	const pair = await resolveHawserStackDirPair(stackName, environmentId);
+	if (!pair) return options;
+
+	const { stagingStackDir, remoteStackDir } = pair;
+	const result = { ...options };
+
+	if (options.composePath) {
+		result.composePath = remapPathsFromRemoteToStaging(stagingStackDir, remoteStackDir, [
+			options.composePath
+		])[0];
+	}
+	if (options.composePaths) {
+		result.composePaths = remapPathsFromRemoteToStaging(
+			stagingStackDir,
+			remoteStackDir,
+			options.composePaths
+		);
+	}
+	if (options.composeContents) {
+		result.composeContents = remapComposeContentsFromRemoteToStaging(
+			stagingStackDir,
+			remoteStackDir,
+			options.composeContents
+		);
+	}
+	if (options.envPath) {
+		result.envPath = remapPathsFromRemoteToStaging(stagingStackDir, remoteStackDir, [
+			options.envPath
+		])[0];
+	}
+	if (options.oldComposePath) {
+		result.oldComposePath = remapPathsFromRemoteToStaging(stagingStackDir, remoteStackDir, [
+			options.oldComposePath
+		])[0];
+	}
+	if (options.oldEnvPath) {
+		result.oldEnvPath = remapPathsFromRemoteToStaging(stagingStackDir, remoteStackDir, [
+			options.oldEnvPath
+		])[0];
+	}
+
+	return result;
 }
 
 /**

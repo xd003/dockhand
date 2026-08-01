@@ -72,6 +72,7 @@
 	let editingStackName = $state('');
 	let stackModalReadonly = $state(false);
 	let stackModalGitInfo = $state<{ commit?: string; url?: string; branch?: string } | null>(null);
+	let stackModalSource = $state<{ sourceType: string; repository?: { url?: string; branch?: string } | null; gitStack?: { lastCommit?: string | null } | null } | null>(null);
 	let editingGitStack = $state<any>(null);
 	let envId = $state<number | null>(null);
 
@@ -1088,6 +1089,8 @@
 	function editStack(name: string) {
 		editingStackName = name;
 		stackModalReadonly = false;
+		stackModalSource = getStackSource(name);
+		stackModalGitInfo = null;
 		showEditModal = true;
 	}
 
@@ -1095,6 +1098,7 @@
 		editingStackName = name;
 		stackModalReadonly = true;
 		const src = getStackSource(name);
+		stackModalSource = src;
 		stackModalGitInfo = {
 			commit: src?.gitStack?.lastCommit || undefined,
 			url: src?.repository?.url || undefined,
@@ -2643,11 +2647,13 @@
 	stackName={editingStackName}
 	readonly={stackModalReadonly}
 	gitInfo={stackModalGitInfo}
+	stackSource={stackModalSource}
 	onClose={() => {
 		showEditModal = false;
 		editingStackName = '';
 		stackModalReadonly = false;
 		stackModalGitInfo = null;
+		stackModalSource = null;
 	}}
 	onSuccess={fetchStacks}
 />

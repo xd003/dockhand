@@ -548,7 +548,7 @@
 	</div>
 	{/if}
 	<!-- Content area -->
-	<div bind:this={contentAreaRef} class="flex-1 overflow-auto {hideHeader ? '' : 'px-4 py-3'}">
+	<div bind:this={contentAreaRef} class="flex-1 overflow-auto {hideHeader ? 'pt-2.5' : 'px-4 py-3'}">
 		{#if viewMode === 'form'}
 			<StackEnvVarsEditor
 				bind:variables

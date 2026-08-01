@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { dirname } from 'node:path';
-import { getStackComposeFile, deployStack, saveStackComposeFile, remapHawserStagingDisplayPaths } from '$lib/server/stacks';
+import { getStackComposeFile, deployStack, saveStackComposeFile, remapHawserStagingDisplayPaths, remapHawserStagingDisplayComposeContents, unmapHawserDisplayComposeOptionsToStaging } from '$lib/server/stacks';
 import { updateStackSource, getStackSource } from '$lib/server/db';
 import { authorize } from '$lib/server/authorize';
 import { createJobResponse } from '$lib/server/sse';
@@ -50,6 +50,11 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 			composePath: result.composePath ?? null,
 			composePaths: Array.isArray(composePathsList) ? composePathsList : []
 		});
+		const displayComposeContents = await remapHawserStagingDisplayComposeContents(
+			name,
+			envIdNum,
+			result.composeContents ?? null
+		);
 		let displayStackDir = result.stackDir;
 		if (displayPaths.composePath) {
 			displayStackDir = dirname(displayPaths.composePath);
@@ -57,7 +62,7 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 
 		return json({
 			content: result.content,
-			composeContents: result.composeContents ?? null,
+			composeContents: displayComposeContents ?? null,
 			stackDir: displayStackDir,
 			composePath: displayPaths.composePath,
 			composePaths: displayPaths.composePaths.length > 0 ? displayPaths.composePaths : null,
@@ -92,9 +97,13 @@ export const PUT: RequestHandler = async ({ params, request, url, cookies }) => 
 		}
 
 		// Build options object for custom paths, move operation, and file renames
-		const pathOptions = (composePath || composePaths || envPath !== undefined || moveFromDir || oldComposePath || oldEnvPath || composeContents)
-			? { composePath, composePaths, composeContents, envPath, moveFromDir, oldComposePath, oldEnvPath }
-			: undefined;
+		let pathOptions: Parameters<typeof unmapHawserDisplayComposeOptionsToStaging>[2] | undefined =
+			(composePath || composePaths || envPath !== undefined || moveFromDir || oldComposePath || oldEnvPath || composeContents)
+				? { composePath, composePaths, composeContents, envPath, moveFromDir, oldComposePath, oldEnvPath }
+				: undefined;
+		if (pathOptions) {
+			pathOptions = await unmapHawserDisplayComposeOptionsToStaging(name, envIdNum, pathOptions);
+		}
 
 		if (restart) {
 			// Deploy with docker compose up -d --force-recreate
@@ -106,10 +115,10 @@ export const PUT: RequestHandler = async ({ params, request, url, cookies }) => 
 					return json({ error: saveResult.error }, { status: 500 });
 				}
 			}
-			// Update DB with multi-file paths if provided
+			// Update DB with multi-file paths if provided (unmapped to staging paths)
 			if (composePaths !== undefined) {
 				await updateStackSource(name, envIdNum ?? null, {
-					composePaths: composePaths ?? undefined
+					composePaths: pathOptions?.composePaths ?? undefined
 				});
 			}
 			// Get authoritative paths from DB/filesystem for deploy
@@ -152,7 +161,7 @@ export const PUT: RequestHandler = async ({ params, request, url, cookies }) => 
 		// Preserve multi-file paths after save (mirrors restart path)
 		if (composePaths !== undefined) {
 			await updateStackSource(name, envIdNum ?? null, {
-				composePaths: composePaths ?? undefined
+				composePaths: pathOptions?.composePaths ?? undefined
 			});
 		}
 

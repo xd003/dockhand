@@ -7,7 +7,8 @@
 	import CodeEditor, { type VariableMarker } from '$lib/components/CodeEditor.svelte';
 	import StackEnvVarsPanel from '$lib/components/StackEnvVarsPanel.svelte';
 	import { type EnvVar, type ValidationResult } from '$lib/components/StackEnvVarsEditor.svelte';
-	import { Layers, Save, Play, Code, GitGraph, GitBranch, GitCommitHorizontal, Github, Loader2, AlertCircle, X, Sun, Moon, TriangleAlert, GripVertical, FolderOpen, Copy, Check, XCircle, MapPin, ArrowRight, ArrowUp, ArrowDown, Info, Box, FolderSync, Archive, Lock, FileText } from 'lucide-svelte';
+	import { Layers, Save, Play, Code, GitGraph, GitBranch, GitCommitHorizontal, Github, Loader2, AlertCircle, X, Sun, Moon, TriangleAlert, GripVertical, FolderOpen, Copy, Check, XCircle, MapPin, ArrowRight, ArrowUp, ArrowDown, Info, Box, FolderSync, Archive, Lock, FileText, FileCode, ExternalLink } from 'lucide-svelte';
+	import GitSourceBadge from './GitSourceBadge.svelte';
 	import BackupPanel from '../containers/BackupPanel.svelte';
 	import { volumesForStack, type VolumeInfo } from '$lib/utils/mounts';
 	import { fetchBackupExecutions } from '$lib/utils/backup';
@@ -39,11 +40,12 @@
 		initialStackName?: string; // Pre-fill stack name (for library deploy)
 		readonly?: boolean; // View compose content without allowing local changes
 		gitInfo?: { commit?: string; url?: string; branch?: string } | null; // Git provenance for read-only git stacks
+		stackSource?: { sourceType: string; repository?: { url?: string; branch?: string } | null; gitStack?: { lastCommit?: string | null } | null } | null;
 		onClose: () => void;
 		onSuccess: () => void; // Called after create or save
 	}
 
-	let { open = $bindable(), mode: propMode, stackName: propStackName = '', initialCompose, initialStackName, readonly = false, gitInfo = null, onClose, onSuccess }: Props = $props();
+	let { open = $bindable(), mode: propMode, stackName: propStackName = '', initialCompose, initialStackName, readonly = false, gitInfo = null, stackSource = null, onClose, onSuccess }: Props = $props();
 
 	let gitCommitCopied = $state<'ok' | 'error' | null>(null);
 
@@ -1625,10 +1627,20 @@
 					<div class="min-w-0">
 						<Dialog.Title class="flex flex-wrap items-center gap-2 text-base font-semibold text-zinc-800 dark:text-zinc-100">
 							{displayName}
-							{#if $currentEnvironment}
-								<span class="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-amber-600 dark:text-amber-400">
-									{$currentEnvironment.name}
-								</span>
+							{#if mode === 'edit' && stackSource}
+								{#if stackSource.sourceType === 'git'}
+									<GitSourceBadge source={stackSource} showTooltip={false} />
+								{:else if stackSource.sourceType === 'internal'}
+									<span class="inline-flex items-center gap-1 rounded-sm bg-blue-100 px-1.5 py-0.5 text-[11px] font-medium text-blue-800 shadow-sm dark:bg-blue-900 dark:text-blue-200">
+										<FileCode class="h-3 w-3" />
+										Internal
+									</span>
+								{:else}
+									<span class="inline-flex items-center gap-1 rounded-sm bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-800 shadow-sm dark:bg-gray-800 dark:text-gray-200">
+										<ExternalLink class="h-3 w-3" />
+										Untracked
+									</span>
+								{/if}
 							{/if}
 						</Dialog.Title>
 						<Dialog.Description class="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
@@ -1887,7 +1899,7 @@
 										</div>
 									{/if}
 
-									{#if workingComposePaths.length > 1}
+									{#if workingComposePaths.length > 0}
 										<div class="flex gap-0.5 overflow-x-auto border-b border-zinc-200 dark:border-zinc-700" role="tablist" aria-label="Compose files">
 											{#each workingComposePaths as path, i}
 												<div
@@ -1916,7 +1928,7 @@
 										</div>
 									{/if}
 
-									<div class="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-zinc-200 bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900/40 {workingComposePaths.length > 1 ? 'rounded-t-none border-t-0' : ''}">
+									<div class="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-zinc-200 bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900/40 {workingComposePaths.length > 0 ? 'rounded-t-none border-t-0' : ''}">
 										{#if open}
 											{#if loadError}
 												<div class="flex h-full flex-col items-center justify-center px-8 text-center">

@@ -48,6 +48,7 @@ import { unregisterSchedule } from './scheduler';
 import { sendEventNotification } from './notifications';
 import { deleteGitStackFiles, parseEnvFileContent } from './git';
 import { remapPathsFromStagingToRemote } from './stacks-display-paths';
+import { isPathUnderRoot } from './path-utils';
 import { cleanPem } from '$lib/utils/pem';
 import { rewriteComposeVolumePaths, getHostDataDir } from './host-path';
 import { getOrderValue } from './container-labels';

@@ -85,6 +85,14 @@ export const PUT: RequestHandler = async (event) => {
 			return json({ error: WEBHOOK_SECRET_REQUIRED_ERROR }, { status: 400 });
 		}
 
+		const effAutoUpdate = data.autoUpdate ?? existing.autoUpdate;
+		const effAutoUpdateSchedule = effAutoUpdate
+			? (data.autoUpdateSchedule ?? existing.autoUpdateSchedule ?? null)
+			: null;
+		const effAutoUpdateCron = effAutoUpdate
+			? (data.autoUpdateCron ?? existing.autoUpdateCron ?? null)
+			: null;
+
 		// Update repository fields
 		const repository = await updateGitRepository(id, {
 			name: data.name,
@@ -92,8 +100,8 @@ export const PUT: RequestHandler = async (event) => {
 			branch: data.branch,
 			credentialId: data.credentialId,
 			autoUpdate: data.autoUpdate,
-			autoUpdateSchedule: data.autoUpdateSchedule,
-			autoUpdateCron: data.autoUpdateCron,
+			autoUpdateSchedule: effAutoUpdateSchedule,
+			autoUpdateCron: effAutoUpdateCron,
 			webhookEnabled: data.webhookEnabled,
 			webhookSecret: data.webhookSecret
 		});

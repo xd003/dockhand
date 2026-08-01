@@ -420,24 +420,13 @@ export function isManagedStackDir(dirPath: string): boolean {
 	return false;
 }
 
-function isPathUnderRoot(childPath: string, rootPath: string): boolean {
-	const resolvedChild = resolve(childPath);
-	const resolvedRoot = resolve(rootPath);
-	return resolvedChild === resolvedRoot || resolvedChild.startsWith(resolvedRoot + pathSep);
-}
-
 function remapPathUnderDir(
 	oldDir: string,
 	newDir: string,
 	filePath: string | null | undefined
 ): string | null | undefined {
 	if (!filePath) return filePath;
-	const resolved = resolve(filePath);
-	const oldResolved = resolve(oldDir);
-	if (isPathUnderRoot(resolved, oldResolved)) {
-		return join(newDir, relative(oldResolved, resolved));
-	}
-	return filePath;
+	return remapPathsFromStagingToRemote(oldDir, newDir, [filePath])[0];
 }
 
 /**

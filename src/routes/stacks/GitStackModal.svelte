@@ -23,6 +23,7 @@
 	import WebhookSecretInput from '$lib/components/WebhookSecretInput.svelte';
 	import WebhookUrlCopyField from '$lib/components/WebhookUrlCopyField.svelte';
 	import { ensureWebhookSecret, webhookSecretValidationError } from '$lib/utils/webhook-secret';
+	import { startJobPolling, type JobPollingHandle } from '$lib/utils/job-polling';
 
 
 	// localStorage key for persisted split ratio
@@ -283,10 +284,11 @@
 	let cloneStatus = $state<'idle' | 'cloning' | 'success' | 'error'>('idle');
 	let cloneError = $state<string | null>(null);
 	let cloningRepoId = $state<number | null>(null);
-	let pollTimer: ReturnType<typeof setInterval> | null = null;
+	let pollHandle: JobPollingHandle | null = null;
 
 	function stopPolling() {
-		if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+		pollHandle?.stop();
+		pollHandle = null;
 	}
 
 	async function deleteRepositoryAndClose() {
@@ -303,18 +305,10 @@
 		cloningRepoId = null;
 	}
 
-	async function pollJob(jobId: string, repoId: number) {
-		try {
-			const res = await fetch(`/api/jobs/${jobId}`);
-			if (!res.ok) {
-				stopPolling();
-				cloneStatus = 'error';
-				cloneError = 'Could not retrieve clone status. The repository may still be cloning in the background.';
-				return;
-			}
-			const job = await res.json();
-			if (job.status === 'done') {
-				stopPolling();
+	function startPolling(jobId: string, repoId: number) {
+		stopPolling();
+		pollHandle = startJobPolling(jobId, {
+			onDone: () => {
 				cloneStatus = 'success';
 				cloningRepoId = null;
 				onRepositoryCreated?.(); // refresh list
@@ -325,17 +319,18 @@
 				gitBrowserRootPath = '';
 				showGitRepoBrowser = true;
 				cloneStatus = 'idle';
-			} else if (job.status === 'error') {
-				stopPolling();
+			},
+			onError: (error) => {
 				cloneStatus = 'error';
 				// Keep cloningRepoId set so they can delete it
-				cloneError = (job.result as any)?.error ?? 'Clone failed — check the repository URL and credentials.';
+				cloneError = error ?? 'Clone failed — check the repository URL and credentials.';
 				onRepositoryCreated?.();
+			},
+			onUnavailable: () => {
+				cloneStatus = 'error';
+				cloneError = 'Could not retrieve clone status. The repository may still be cloning in the background.';
 			}
-			// status === 'running' → keep polling
-		} catch {
-			// Network error — keep polling silently
-		}
+		});
 	}
 
 	// Track which gitStack was initialized to avoid repeated resets
@@ -856,8 +851,7 @@
 					cloneStatus = 'cloning';
 					cloneError = null;
 					cloningRepoId = repoId;
-					pollJob(data.jobId, repoId);
-					pollTimer = setInterval(() => pollJob(data.jobId, repoId), 1500);
+					startPolling(data.jobId, repoId);
 				}
 			} catch (e) {
 				gitBrowserError = 'Failed to save repository';

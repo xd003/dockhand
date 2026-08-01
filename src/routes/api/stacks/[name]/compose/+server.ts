@@ -5,6 +5,20 @@ import { getStackComposeFile, deployStack, saveStackComposeFile, remapHawserStag
 import { updateStackSource, getStackSource } from '$lib/server/db';
 import { authorize } from '$lib/server/authorize';
 import { createJobResponse } from '$lib/server/sse';
+import { parseComposePathsColumn } from '$lib/server/compose-files';
+
+async function remapDisplayPath(
+	name: string,
+	envId: number | undefined,
+	path: string | null | undefined
+): Promise<string | null | undefined> {
+	if (!path) return path;
+	const remapped = await remapHawserStagingDisplayPaths(name, envId, {
+		composePath: path,
+		composePaths: []
+	});
+	return remapped.composePath ?? path;
+}
 
 // GET /api/stacks/[name]/compose - Get compose file content
 export const GET: RequestHandler = async ({ params, url, cookies }) => {
@@ -23,58 +37,22 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 
 		if (!result.success) {
 			// Return info about what's needed - unified response for all missing compose files
-			let displayComposePath = result.composePath;
-			let displayEnvPath = result.envPath;
-			if (result.composePath) {
-				const remapped = await remapHawserStagingDisplayPaths(name, envIdNum, {
-					composePath: result.composePath,
-					composePaths: []
-				});
-				displayComposePath = remapped.composePath ?? result.composePath;
-				if (result.envPath) {
-					const envRemapped = await remapHawserStagingDisplayPaths(name, envIdNum, {
-						composePath: result.envPath,
-						composePaths: []
-					});
-					displayEnvPath = envRemapped.composePath ?? result.envPath;
-				}
-			}
 			return json({
 				error: result.error,
 				needsFileLocation: result.needsFileLocation || false,
-				composePath: displayComposePath,
-				envPath: displayEnvPath
+				composePath: await remapDisplayPath(name, envIdNum, result.composePath),
+				envPath: await remapDisplayPath(name, envIdNum, result.envPath)
 			}, { status: 404 });
 		}
 
-		const composePathsList = result.composePaths ?? (
-			source?.composePaths
-				? (() => { try { return JSON.parse(source.composePaths); } catch { return []; } })()
-				: []
-		);
+		const composePathsList = result.composePaths ?? parseComposePathsColumn(source?.composePaths);
 		const displayPaths = await remapHawserStagingDisplayPaths(name, envIdNum, {
 			composePath: result.composePath ?? null,
 			composePaths: Array.isArray(composePathsList) ? composePathsList : []
 		});
 		let displayStackDir = result.stackDir;
-		let displayEnvPath = result.envPath;
-		let displaySuggestedEnvPath = result.suggestedEnvPath;
 		if (displayPaths.composePath) {
 			displayStackDir = dirname(displayPaths.composePath);
-		}
-		if (result.envPath) {
-			const envRemapped = await remapHawserStagingDisplayPaths(name, envIdNum, {
-				composePath: result.envPath,
-				composePaths: []
-			});
-			displayEnvPath = envRemapped.composePath ?? result.envPath;
-		}
-		if (result.suggestedEnvPath) {
-			const suggestedRemapped = await remapHawserStagingDisplayPaths(name, envIdNum, {
-				composePath: result.suggestedEnvPath,
-				composePaths: []
-			});
-			displaySuggestedEnvPath = suggestedRemapped.composePath ?? result.suggestedEnvPath;
 		}
 
 		return json({
@@ -83,8 +61,8 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 			stackDir: displayStackDir,
 			composePath: displayPaths.composePath,
 			composePaths: displayPaths.composePaths.length > 0 ? displayPaths.composePaths : null,
-			envPath: displayEnvPath,
-			suggestedEnvPath: displaySuggestedEnvPath
+			envPath: await remapDisplayPath(name, envIdNum, result.envPath),
+			suggestedEnvPath: await remapDisplayPath(name, envIdNum, result.suggestedEnvPath)
 		});
 	} catch (error: any) {
 		console.error(`Error getting compose file for stack ${name}:`, error);
@@ -137,9 +115,7 @@ export const PUT: RequestHandler = async ({ params, request, url, cookies }) => 
 			// Get authoritative paths from DB/filesystem for deploy
 			const composeInfo = await getStackComposeFile(name, envIdNum);
 			const deploySource = await getStackSource(name, envIdNum);
-			const deployComposePaths = deploySource?.composePaths
-				? (() => { try { return JSON.parse(deploySource.composePaths); } catch { return undefined; } })()
-				: undefined;
+			const deployComposePaths = parseComposePathsColumn(deploySource?.composePaths);
 
 			// Deploy via SSE to keep connection alive during long operations
 			return createJobResponse(async (send) => {

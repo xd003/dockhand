@@ -5,7 +5,7 @@ import { join, resolve, isAbsolute } from 'node:path';
 import { getGitRepository } from '$lib/server/db';
 import { syncRepositoryExclusive, getRepoClonePath } from '$lib/server/git';
 import { authorize } from '$lib/server/authorize';
-import { isPathInside } from '$lib/server/git-url-safety';
+import { isPathUnderRoot } from '$lib/server/path-utils';
 
 interface FileEntry {
 	name: string;
@@ -83,7 +83,7 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 	} catch {
 		return json({ error: 'Access denied: unable to resolve path' }, { status: 403 });
 	}
-	if (!isPathInside(realTarget, realRoot)) {
+	if (!isPathUnderRoot(realTarget, realRoot)) {
 		return json({ error: 'Access denied: path is outside repository root' }, { status: 403 });
 	}
 

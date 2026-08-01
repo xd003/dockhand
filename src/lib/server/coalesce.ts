@@ -28,8 +28,7 @@ export async function runCoalesced<TOpts, TResult>(
 	key: number,
 	opts: TOpts,
 	merge: (a: TOpts, b: TOpts) => TOpts,
-	fn: (opts: TOpts) => Promise<TResult>,
-	label: string
+	fn: (opts: TOpts) => Promise<TResult>
 ): Promise<TResult> {
 	for (;;) {
 		const existing = slots.get(key);

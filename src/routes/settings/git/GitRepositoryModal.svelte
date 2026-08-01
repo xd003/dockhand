@@ -13,6 +13,7 @@
 	import WebhookUrlCopyField from '$lib/components/WebhookUrlCopyField.svelte';
 	import { focusFirstInput } from '$lib/utils';
 	import { ensureWebhookSecret, webhookSecretValidationError } from '$lib/utils/webhook-secret';
+	import { startJobPolling, type JobPollingHandle } from '$lib/utils/job-polling';
 
 	interface GitCredential {
 		id: number;
@@ -69,7 +70,7 @@
 	let cloneStatus = $state<CloneStatus>('idle');
 	let cloneError = $state('');
 	let savedRepoId = $state<number | null>(null);
-	let pollTimer: ReturnType<typeof setInterval> | null = null;
+	let pollHandle: JobPollingHandle | null = null;
 
 	const isEditing = $derived(repository !== null);
 
@@ -134,43 +135,27 @@
 	});
 
 	function stopPolling() {
-		if (pollTimer !== null) {
-			clearInterval(pollTimer);
-			pollTimer = null;
-		}
+		pollHandle?.stop();
+		pollHandle = null;
 	}
 
 	function startPolling(jobId: string) {
-		// Poll immediately, then every 1500 ms
-		pollJob(jobId);
-		pollTimer = setInterval(() => pollJob(jobId), 1500);
-	}
-
-	async function pollJob(jobId: string) {
-		try {
-			const res = await fetch(`/api/jobs/${jobId}`);
-			if (!res.ok) {
-				// Job not found or server error — stop polling and show generic error
-				stopPolling();
-				cloneStatus = 'error';
-				cloneError = 'Could not retrieve clone status. The repository may still be cloning in the background — check the status below.';
-				return;
-			}
-			const job = await res.json();
-			if (job.status === 'done') {
-				stopPolling();
+		stopPolling();
+		pollHandle = startJobPolling(jobId, {
+			onDone: () => {
 				cloneStatus = 'success';
 				onSaved(); // refresh list in parent
-			} else if (job.status === 'error') {
-				stopPolling();
+			},
+			onError: (error) => {
 				cloneStatus = 'error';
-				cloneError = (job.result as any)?.error ?? 'Clone failed — check the repository URL and credentials.';
+				cloneError = error ?? 'Clone failed — check the repository URL and credentials.';
 				onSaved(); // refresh list in parent so the repo shows up behind the modal
+			},
+			onUnavailable: () => {
+				cloneStatus = 'error';
+				cloneError = 'Could not retrieve clone status. The repository may still be cloning in the background — check the status below.';
 			}
-			// status === 'running' → keep polling
-		} catch {
-			// Network error — keep polling silently
-		}
+		});
 	}
 
 	async function testRepository() {

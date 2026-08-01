@@ -1,10 +1,5 @@
-import { join, relative, resolve, sep as pathSep } from 'node:path';
-
-function isPathUnderRoot(childPath: string, rootPath: string): boolean {
-	const resolvedChild = resolve(childPath);
-	const resolvedRoot = resolve(rootPath);
-	return resolvedChild === resolvedRoot || resolvedChild.startsWith(resolvedRoot + pathSep);
-}
+import { join, relative, resolve } from 'node:path';
+import { isPathUnderRoot } from './path-utils';
 
 /**
  * Remap absolute paths from Dockhand's Hawser staging dir to the remote host stack dir.

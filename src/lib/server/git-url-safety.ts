@@ -8,7 +8,8 @@
  * git@host:path) passes unchanged, so this is fully backward-compatible.
  */
 
-import { resolve, isAbsolute, sep } from 'node:path';
+import { isAbsolute, resolve } from 'node:path';
+import { isPathUnderRoot } from './path-utils';
 
 export function assertSafeRepoUrl(url: string): void {
 	const u = (url || '').trim();
@@ -34,17 +35,6 @@ export function assertSafeGitRef(ref: string | null | undefined): void {
 }
 
 /**
- * True when `child` is `parent` or a descendant. Uses `parent + sep` so a sibling
- * path that merely shares a string prefix (e.g. `/repos/myrepo2` vs `/repos/myrepo`)
- * is rejected.
- */
-export function isPathInside(child: string, parent: string): boolean {
-	const resolvedChild = resolve(child);
-	const resolvedParent = resolve(parent);
-	return resolvedChild === resolvedParent || resolvedChild.startsWith(resolvedParent + sep);
-}
-
-/**
  * Resolve a user-supplied relative path (composePath / envFilePath) INSIDE the clone
  * dir, throwing if it would ESCAPE the clone. Uses resolve-then-containment (like a plain
  * `join` + escape check): an in-repo `..` (e.g. `stacks/../compose.yml`) or a leading `./`
@@ -54,7 +44,7 @@ export function isPathInside(child: string, parent: string): boolean {
 export function repoFilePath(repoPath: string, userRel: string, label: string): string {
 	if (isAbsolute(userRel)) throw new Error(`${label} must be a relative path (got "${userRel}")`);
 	const abs = resolve(repoPath, userRel);
-	if (!isPathInside(abs, repoPath)) {
+	if (!isPathUnderRoot(abs, repoPath)) {
 		throw new Error(`${label} must be a path inside the repository (got "${userRel}")`);
 	}
 	return abs;

@@ -1,7 +1,7 @@
-import { existsSync, readFileSync } from 'node:fs';
-import { basename, dirname, join, isAbsolute, relative } from 'node:path';
+import { existsSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 
-export const STANDARD_OVERRIDE_MAP: Record<string, string[]> = {
+const STANDARD_OVERRIDE_MAP: Record<string, string[]> = {
 	'compose.yaml': ['compose.override.yaml', 'compose.override.yml'],
 	'compose.yml': ['compose.override.yaml', 'compose.override.yml'],
 	'docker-compose.yaml': ['docker-compose.override.yaml', 'docker-compose.override.yml'],
@@ -20,28 +20,8 @@ export interface ResolveComposeFilesInput {
 	diskExists?: (path: string) => boolean;
 }
 
-export function discoverOverrideCandidates(baseFileName: string): string[] {
+function discoverOverrideCandidates(baseFileName: string): string[] {
 	return STANDARD_OVERRIDE_MAP[baseFileName] ?? [];
-}
-
-export function discoverOverridesOnDisk(
-	dir: string,
-	baseFileName: string,
-	existsFn: (path: string) => boolean = existsSync
-): string | null {
-	const candidates = discoverOverrideCandidates(baseFileName);
-	for (const name of candidates) {
-		const fullPath = join(dir, name);
-		if (existsFn(fullPath)) return fullPath;
-	}
-	return null;
-}
-
-export function isStandardOverrideName(name: string): boolean {
-	for (const candidates of Object.values(STANDARD_OVERRIDE_MAP)) {
-		if (candidates.includes(name)) return true;
-	}
-	return false;
 }
 
 export function parseComposePathsColumn(raw: string | null | undefined): string[] {
@@ -55,10 +35,6 @@ export function parseComposePathsColumn(raw: string | null | undefined): string[
 		return [];
 	}
 	return [];
-}
-
-export function serializeComposePaths(paths: string[]): string {
-	return JSON.stringify(paths);
 }
 
 export function resolveEffectiveComposeFiles(input: ResolveComposeFilesInput): ResolvedComposeFile[] {
@@ -135,31 +111,4 @@ export function shouldUseExplicitFFlags(files: ResolvedComposeFile[]): boolean {
 	if (files.length === 0) return false;
 	if (files.length > 1) return true;
 	return !STANDARD_COMPOSE_BASENAMES.has(basename(files[0].path));
-}
-
-export function remapPaths(oldDir: string, newDir: string, paths: string[]): string[] {
-	const absOld = oldDir.endsWith('/') ? oldDir : oldDir + '/';
-	const absNew = newDir.endsWith('/') ? newDir : newDir + '/';
-	return paths.map((p) => {
-		if (isAbsolute(p) && p.startsWith(absOld)) {
-			return absNew + p.slice(absOld.length);
-		}
-		return p;
-	});
-}
-
-export function dedupePaths(paths: string[]): string[] {
-	const seen = new Set<string>();
-	const result: string[] = [];
-	for (const p of paths) {
-		if (!seen.has(p)) {
-			seen.add(p);
-			result.push(p);
-		}
-	}
-	return result;
-}
-
-export function findComposeOverrideFile(stackDir: string, composeFileName: string): string | null {
-	return discoverOverridesOnDisk(stackDir, composeFileName, existsSync);
 }

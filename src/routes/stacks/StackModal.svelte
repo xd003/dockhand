@@ -1824,11 +1824,11 @@
 												<span class="text-xs font-normal text-muted-foreground">({workingComposePaths.length})</span>
 											{/if}
 										</div>
-										{#if mode === 'edit' && !needsFileLocation}
-											<button type="button" class="flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground" onclick={openChangeLocationBrowser}>
-												<FolderSync class="h-3.5 w-3.5" /> Relocate
-											</button>
-										{/if}
+									{#if mode === 'edit' && !readonly && !needsFileLocation}
+										<button type="button" class="flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground" onclick={openChangeLocationBrowser}>
+											<FolderSync class="h-3.5 w-3.5" /> Relocate
+										</button>
+									{/if}
 									</div>
 
 									{#if !composePathsLocked}

@@ -739,6 +739,27 @@ export async function triggerContainerUpdate(settingId: number): Promise<{ succe
 }
 
 /**
+ * Manually trigger a git stack sync.
+ * Retained for v1 API compatibility — legacy `git_stack_sync` schedules map to
+ * the repository now, but the per-stack task is still used by stack webhooks.
+ */
+export async function triggerGitStackSync(stackId: number): Promise<{ success: boolean; executionId?: number; error?: string }> {
+	try {
+		const stack = await getGitStack(stackId);
+		if (!stack) {
+			return { success: false, error: 'Git stack not found' };
+		}
+
+		// Run in background
+		runGitStackSync(stackId, stack.stackName, stack.environmentId, 'manual');
+
+		return { success: true };
+	} catch (error: any) {
+		return { success: false, error: error.message };
+	}
+}
+
+/**
  * Trigger git stack sync from webhook (called from webhook endpoint).
  */
 export async function triggerGitStackSyncFromWebhook(stackId: number): Promise<{ success: boolean; executionId?: number; error?: string }> {

@@ -832,7 +832,10 @@
 					// Create the repository in the DB (also triggers background clone-on-save)
 					const res = await fetch('/api/git/repositories', {
 						method: 'POST',
-						headers: { 'Content-Type': 'application/json' },
+						headers: {
+							'Content-Type': 'application/json',
+							'X-Dockhand-Async': '1'
+						},
 						body: JSON.stringify({
 							name: formNewRepoName.trim(),
 							url: formNewRepoUrl.trim(),
@@ -1358,6 +1361,7 @@
 						<div class="flex items-center gap-2 flex-1">
 							<Webhook class="w-4 h-4 text-muted-foreground" />
 							<Label class="text-sm font-normal">Enable stack webhook</Label>
+							<span class="text-2xs uppercase tracking-wide text-amber-600 dark:text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded">Legacy</span>
 						</div>
 						<TogglePill
 							bind:checked={formStackWebhookEnabled}
@@ -1366,6 +1370,9 @@
 					</div>
 					<p class="text-xs text-muted-foreground">
 						Call this webhook to force redeploy <strong>this stack only</strong>. The repository-level webhook redeploys all linked stacks with force redeployment enabled.
+					</p>
+					<p class="text-xs text-amber-600 dark:text-amber-400">
+						Legacy: webhooks are configured on the <strong>Git repository</strong>. This endpoint is kept so existing integrations keep working — the repository webhook is enabled automatically when a stack webhook was already configured.
 					</p>
 					{#if formStackWebhookEnabled}
 						{#if gitStack}

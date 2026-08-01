@@ -10,6 +10,7 @@ import {
 	updateAutoUpdateSettingById,
 	getGitRepository,
 	updateGitRepository,
+	getGitStack,
 	getEnvUpdateCheckSettings,
 	setEnvUpdateCheckSettings,
 	getImagePruneSettings,
@@ -80,9 +81,44 @@ export const POST: RequestHandler = async (event) => {
 
 			return json({ success: true, enabled: newEnabled });
 		} else if (type === 'git_stack_sync') {
+			// Deprecated schedule type (v1 API compat): scheduled sync moved from
+			// git stacks to git repositories. Map the stack's id to its repository
+			// so old token scripts keep working (enabled state is now repo-wide).
+			const stack = await getGitStack(scheduleId);
+			if (!stack) {
+				return json({ error: 'Schedule not found' }, { status: 404 });
+			}
+			const envDenied = await auth.requireEnvAccess(stack.environmentId);
+			if (envDenied) return envDenied;
+
+			if (!stack.repositoryId) {
+				return json({ error: 'This stack is no longer linked to a git repository' }, { status: 400 });
+			}
+			const repo = await getGitRepository(stack.repositoryId);
+			if (!repo) {
+				return json({ error: 'The linked git repository no longer exists' }, { status: 400 });
+			}
+
+			const newEnabled = !repo.autoUpdate;
+			await updateGitRepository(stack.repositoryId, {
+				autoUpdate: newEnabled,
+				// Ensure autoUpdateSchedule is set so the schedule stays visible
+				// on the /schedules page even when paused (filtered by IS NOT NULL).
+				autoUpdateSchedule: repo.autoUpdateSchedule || 'custom'
+			});
+
+			if (newEnabled && repo.autoUpdateCron) {
+				await registerSchedule(stack.repositoryId, 'git_repository_sync', null);
+			} else {
+				unregisterSchedule(stack.repositoryId, 'git_repository_sync');
+			}
+
 			return json({
-				error: 'Stack-level git sync schedules have moved to the repository. Configure scheduled sync on the git repository instead.'
-			}, { status: 400 });
+				success: true,
+				enabled: newEnabled,
+				deprecated: true,
+				repositoryId: stack.repositoryId
+			});
 		} else if (type === 'env_update_check') {
 			const envDenied = await auth.requireEnvAccess(scheduleId);
 			if (envDenied) return envDenied;

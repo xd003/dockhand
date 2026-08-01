@@ -2,6 +2,7 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import {
 	getGitRepositories,
+	getGitRepository,
 	createGitRepository,
 	getGitCredentials
 } from '$lib/server/db';
@@ -89,19 +90,42 @@ export const POST: RequestHandler = async (event) => {
 			await registerSchedule(repository.id, 'git_repository_sync', null);
 		}
 
-		// Create a job to track the clone progress so the frontend can poll for the result
-		const job = createJob();
-		syncRepositoryExclusive(repository.id).then((result) => {
-			if (result.success) {
-				completeJob(job, { success: true, commit: result.commit });
-			} else {
-				failJob(job, result.error ?? 'Clone failed');
-			}
-		}).catch((err: unknown) => {
-			failJob(job, err instanceof Error ? err.message : String(err));
-		});
+		// The web UI sends X-Dockhand-Async to get a background clone with live
+		// progress (returns immediately with a jobId to poll). Without the header
+		// the clone runs synchronously and the finished repository is returned,
+		// preserving the legacy contract old API token scripts rely on.
+		const asyncRequested = request.headers.get('x-dockhand-async') === '1';
+		if (asyncRequested) {
+			// Create a job to track the clone progress so the frontend can poll for the result
+			const job = createJob();
+			syncRepositoryExclusive(repository.id).then((result) => {
+				if (result.success) {
+					completeJob(job, { success: true, commit: result.commit });
+				} else {
+					failJob(job, result.error ?? 'Clone failed');
+				}
+			}).catch((err: unknown) => {
+				failJob(job, err instanceof Error ? err.message : String(err));
+			});
 
-		return json({ ...repository, cloneStarted: true, jobId: job.id });
+			return json({ ...repository, cloneStarted: true, jobId: job.id });
+		}
+
+		// Legacy/synchronous contract: wait for the clone to finish so callers
+		// that assumed it was done on return keep working. syncRepositoryExclusive
+		// never throws — failures are reported via the returned SyncResult and
+		// persisted on the repository row (syncStatus/syncError), so the response
+		// always carries the repo in its final state.
+		const syncResult = await syncRepositoryExclusive(repository.id);
+		const refreshed = (await getGitRepository(repository.id)) ?? repository;
+		if (!syncResult.success) {
+			return json({
+				...refreshed,
+				syncStatus: 'error',
+				syncError: syncResult.error ?? 'Clone failed'
+			});
+		}
+		return json(refreshed);
 	} catch (error: any) {
 		console.error('Failed to create git repository:', error);
 		if (error.message?.includes('UNIQUE constraint failed')) {

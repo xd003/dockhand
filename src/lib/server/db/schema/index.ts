@@ -311,6 +311,9 @@ export const gitStacks = sqliteTable('git_stacks', {
 	composePath: text('compose_path').default('docker-compose.yml'), // Primary compose file path (denormalized from composePaths[0])
 	composePaths: text('compose_paths'), // JSON array of ordered compose file paths (repo-relative)
 	envFilePath: text('env_file_path'), // Path to .env file in repository (e.g., ".env", "config/.env.prod")
+	autoUpdate: integer('auto_update', { mode: 'boolean' }).default(false), // Deprecated: kept for downgrade compatibility (0010 is additive)
+	autoUpdateSchedule: text('auto_update_schedule').default('daily'),
+	autoUpdateCron: text('auto_update_cron').default('0 3 * * *'),
 	webhookEnabled: integer('webhook_enabled', { mode: 'boolean' }).default(false),
 	webhookSecret: text('webhook_secret'),
 	contextDir: text('context_dir'), // Working directory relative to repo root (null = compose file's directory)

@@ -4,14 +4,14 @@
  * POST /api/schedules/[type]/[id]/run - Trigger a manual execution
  *
  * Path params:
- *   - type: 'container_update' | 'git_repository_sync' | 'system_cleanup' | 'env_update_check' | 'image_prune' | 'backup' | 'repo_prune' | 'repo_check' | 'repo_verify'
+ *   - type: 'container_update' | 'git_repository_sync' | 'git_stack_sync' | 'system_cleanup' | 'env_update_check' | 'image_prune' | 'backup' | 'repo_prune' | 'repo_check' | 'repo_verify'
  *   - id: schedule ID
  */
 
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { triggerContainerUpdate, triggerGitRepositorySync, triggerSystemJob, triggerEnvUpdateCheck, triggerImagePrune } from '$lib/server/scheduler';
-import { getBackupConfig, getBackupDestination, getAutoUpdateSettingById, getGitRepository } from '$lib/server/db';
+import { triggerContainerUpdate, triggerGitRepositorySync, triggerGitStackSync, triggerSystemJob, triggerEnvUpdateCheck, triggerImagePrune } from '$lib/server/scheduler';
+import { getBackupConfig, getBackupDestination, getAutoUpdateSettingById, getGitRepository, getGitStack } from '$lib/server/db';
 import { runScheduledBackup } from '$lib/server/scheduler/tasks/backup';
 import { runRepoPrune, runRepoCheck, runRepoVerify } from '$lib/server/scheduler/tasks/repo-maintenance';
 import { authorize } from '$lib/server/authorize';
@@ -62,6 +62,15 @@ export const POST: RequestHandler = async ({ params, cookies }) => {
 				scheduleEnvId = null;
 				break;
 			}
+			case 'git_stack_sync': {
+				// Deprecated schedule type (v1 API compat): stack-level sync was
+				// promoted to the repository, but the per-stack task still exists
+				// (used by stack-level webhooks), so keep the old run semantics.
+				const stack = await getGitStack(scheduleId);
+				if (!stack) return json({ error: 'Schedule not found' }, { status: 404 });
+				scheduleEnvId = stack.environmentId;
+				break;
+			}
 			case 'env_update_check':
 			case 'image_prune':
 				scheduleEnvId = scheduleId;
@@ -102,6 +111,9 @@ export const POST: RequestHandler = async ({ params, cookies }) => {
 				break;
 			case 'git_repository_sync':
 				result = await triggerGitRepositorySync(scheduleId);
+				break;
+			case 'git_stack_sync':
+				result = await triggerGitStackSync(scheduleId);
 				break;
 			case 'system_cleanup':
 				result = await triggerSystemJob(id);
@@ -151,7 +163,11 @@ export const POST: RequestHandler = async ({ params, cookies }) => {
 			return json({ error: result.error }, { status: 400 });
 		}
 
-		return json({ success: true, message: 'Schedule triggered successfully' });
+		return json({
+			success: true,
+			message: 'Schedule triggered successfully',
+			deprecated: type === 'git_stack_sync'
+		});
 	} catch (error: any) {
 		console.error('Failed to trigger schedule:', error);
 		return json({ error: error.message }, { status: 500 });

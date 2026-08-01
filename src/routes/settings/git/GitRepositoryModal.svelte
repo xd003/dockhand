@@ -237,7 +237,11 @@
 
 			const response = await fetch(url, {
 				method,
-				headers: { 'Content-Type': 'application/json' },
+				headers: {
+					'Content-Type': 'application/json',
+					// Progress modal + job polling need the background clone
+					...(method === 'POST' ? { 'X-Dockhand-Async': '1' } : {})
+				},
 				body: JSON.stringify(body)
 			});
 

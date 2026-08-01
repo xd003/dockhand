@@ -3,9 +3,15 @@ import type { RequestHandler } from './$types';
 import { getGitRepository } from '$lib/server/db';
 import { deployFromRepositoryWithFanOut } from '$lib/server/git';
 import { auditGitRepository } from '$lib/server/audit';
+import { authorize } from '$lib/server/authorize';
 
 export const POST: RequestHandler = async (event) => {
-	const { params } = event;
+	const { params, cookies } = event;
+	const auth = await authorize(cookies);
+	if (auth.authEnabled && !await auth.can('git', 'edit')) {
+		return json({ error: 'Permission denied' }, { status: 403 });
+	}
+
 	try {
 		const id = parseInt(params.id);
 		if (isNaN(id)) {

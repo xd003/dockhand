@@ -24,6 +24,12 @@ import { assertSafeRepoUrl, assertSafeGitRef, repoFilePath } from './git-url-saf
 import { isPathUnderRoot } from './path-utils';
 import { parseComposePathsColumn } from './compose-files';
 import {
+	fanOutDeployStacks,
+	mergeDeployGitStackOpts,
+	shouldDeployGitStack,
+	type DeployGitStackOpts
+} from '../utils/git-deploy-gating';
+import {
 	parseManifest,
 	serializeManifest,
 	hashDirFiles,
@@ -908,50 +914,9 @@ async function deployFromRepositoryWithFanOutImpl(
 
 	_log(`[Git] Found ${stacks.length} stack(s) linked to this repository.`);
 
-	const results = [];
-	let hasError = false;
-
-	for (const stack of stacks) {
-		_log(`[Git] Evaluating stack "${stack.stackName}"...`);
-		
-		try {
-			// If the stack has its own stack-level webhook enabled, ignore the force-redeploy
-			// behaviour from the repo-level fan-out. The stack should be triggered explicitly
-			// via its own webhook URL instead.
-			const ignoreForceRedeploy = stack.forceRedeploy && stack.webhookEnabled;
-			if (ignoreForceRedeploy) {
-				_log(`[Git] Stack "${stack.stackName}" has a stack-level webhook enabled — ignoring force redeploy from repo webhook. Will only deploy if changes exist.`);
-			}
-
-			// deployGitStack internally computes diffs based on the new commit vs the stack's lastCommit
-			// Concurrent stack-level webhooks coalesce inside deployGitStack (stronger intent wins).
-			const deployResult = await deployGitStack(stack.id, { force: false, ignoreForceRedeploy });
-			
-			if (deployResult.success) {
-				if (deployResult.skipped) {
-					_log(`[Git] Stack "${stack.stackName}" was skipped (no changes).`);
-					results.push({ id: stack.id, name: stack.stackName, status: 'skipped' as const });
-				} else {
-					_log(`[Git] Stack "${stack.stackName}" was successfully deployed.`);
-					results.push({ id: stack.id, name: stack.stackName, status: 'deployed' as const });
-				}
-			} else {
-				_log(`[Git] Stack "${stack.stackName}" failed to deploy: ${deployResult.error}`);
-				hasError = true;
-				results.push({ id: stack.id, name: stack.stackName, status: 'failed' as const, error: deployResult.error });
-			}
-		} catch (err: any) {
-			_log(`[Git] Stack "${stack.stackName}" threw an error: ${err.message}`);
-			hasError = true;
-			results.push({ id: stack.id, name: stack.stackName, status: 'failed' as const, error: err.message });
-		}
-	}
-
-	return {
-		success: !hasError,
-		stacks: results,
-		error: hasError ? 'One or more stacks failed to deploy' : undefined
-	};
+	// Concurrent stack-level webhooks coalesce inside deployGitStack (stronger
+	// intent wins), and stacks with their own webhook are deferred there.
+	return fanOutDeployStacks(stacks, (stackId, opts) => deployGitStack(stackId, opts), _log);
 }
 
 export async function checkForUpdates(repoId: number): Promise<{ hasUpdates: boolean; currentCommit?: string; latestCommit?: string; error?: string }> {
@@ -1104,11 +1069,6 @@ import {
 	type CoalesceSlot
 } from './coalesce';
 
-type DeployGitStackOpts = {
-	force: boolean;
-	ignoreForceRedeploy: boolean;
-};
-
 type DeployGitStackResult = {
 	success: boolean;
 	output?: string;
@@ -1141,19 +1101,6 @@ const stackDeploySlots = new Map<number, CoalesceSlot<DeployGitStackOpts, Deploy
 
 /** Per-repository fan-out coalesce slots (duplicate repo webhooks). */
 const repoFanOutSlots = new Map<number, CoalesceSlot<FanOutOpts, FanOutResult>>();
-
-/**
- * Merge deploy intents: stronger wins.
- * - force if either caller forces
- * - honor forceRedeploy unless ALL callers opt into ignoreForceRedeploy
- *   (stack-level webhook must not lose to repo fan-out)
- */
-function mergeDeployGitStackOpts(a: DeployGitStackOpts, b: DeployGitStackOpts): DeployGitStackOpts {
-	return {
-		force: a.force || b.force,
-		ignoreForceRedeploy: a.ignoreForceRedeploy && b.ignoreForceRedeploy
-	};
-}
 
 function mergeFanOutOpts(a: FanOutOpts, b: FanOutOpts): FanOutOpts {
 	// Prefer the newer caller's logger so its schedule-execution log is populated
@@ -1516,7 +1463,12 @@ async function deployGitStackCore(
 		// Check if there are changes - skip redeploy if no changes and not forced
 		// Note: For new stacks (first deploy), syncResult.updated will be true
 		// forceRedeploy setting overrides the skip logic for webhooks/scheduled syncs
-		const shouldDeploy = force || (!ignoreForceRedeploy && gitStack.forceRedeploy) || syncResult.updated;
+		const shouldDeploy = shouldDeployGitStack({
+			force,
+			ignoreForceRedeploy,
+			forceRedeploy: gitStack.forceRedeploy,
+			updated: syncResult.updated
+		});
 		if (!shouldDeploy) {
 			console.log(`${logPrefix} No changes detected and force=false, forceRedeploy=false, skipping redeploy`);
 			const skippedResult = {

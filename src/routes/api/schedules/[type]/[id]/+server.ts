@@ -10,6 +10,7 @@ import {
 	deleteAutoUpdateSchedule,
 	getGitRepository,
 	updateGitRepository,
+	getGitStack,
 	deleteEnvUpdateCheckSettings,
 	deleteImagePruneSettings,
 	deleteBackupConfig,
@@ -58,10 +59,33 @@ export const DELETE: RequestHandler = async ({ params, cookies }) => {
 			return json({ success: true });
 
 		} else if (type === 'git_stack_sync') {
-			return json({
-				error: 'Stack-level git sync schedules have moved to the repository. Remove scheduled sync from the git repository instead.'
-			}, { status: 400 });
+			// Deprecated schedule type (v1 API compat): scheduled sync moved from
+			// git stacks to git repositories. "Delete" maps to disabling scheduled
+			// sync on the stack's repository (the old per-stack row no longer
+			// drives anything).
+			const stack = await getGitStack(scheduleId);
+			if (!stack) {
+				return json({ error: 'Schedule not found' }, { status: 404 });
+			}
+			const envDenied = await auth.requireEnvAccess(stack.environmentId);
+			if (envDenied) return envDenied;
 
+			if (!stack.repositoryId) {
+				return json({ error: 'This stack is no longer linked to a git repository' }, { status: 400 });
+			}
+			const repo = await getGitRepository(stack.repositoryId);
+			if (!repo) {
+				return json({ error: 'The linked git repository no longer exists' }, { status: 400 });
+			}
+
+			await updateGitRepository(stack.repositoryId, {
+				autoUpdate: false,
+				autoUpdateSchedule: null,
+				autoUpdateCron: null
+			});
+			unregisterSchedule(stack.repositoryId, 'git_repository_sync');
+
+			return json({ success: true, deprecated: true, repositoryId: stack.repositoryId });
 		} else if (type === 'env_update_check') {
 			const envDenied = await auth.requireEnvAccess(scheduleId);
 			if (envDenied) return envDenied;

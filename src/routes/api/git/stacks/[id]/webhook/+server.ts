@@ -65,7 +65,10 @@ export const POST: RequestHandler = async (event) => {
 			return json(result, { status: 500 });
 		}
 
-		return json({ success: true, message: 'Stack sync triggered' }, { status: 202 });
+		// Deprecated compat shim: webhooks moved to the repository
+		// (/api/git/webhook/[id]). Kept so existing external systems keep
+		// working without re-pointing; each stack still verifies its own secret.
+		return json({ success: true, message: 'Stack sync triggered', deprecated: true }, { status: 202 });
 	} catch (error: any) {
 		console.error('Stack webhook error:', error);
 		return json({ success: false, error: error.message }, { status: 500 });
@@ -121,7 +124,9 @@ export const GET: RequestHandler = async (event) => {
 			return json(result, { status: 500 });
 		}
 
-		return json({ success: true, message: 'Stack sync triggered' }, { status: 202 });
+		// Deprecated compat shim (see POST handler): repository webhooks
+		// (/api/git/webhook/[id]) replace this endpoint.
+		return json({ success: true, message: 'Stack sync triggered', deprecated: true }, { status: 202 });
 	} catch (error: any) {
 		console.error('Stack webhook GET error:', error);
 		return json({ success: false, error: error.message }, { status: 500 });

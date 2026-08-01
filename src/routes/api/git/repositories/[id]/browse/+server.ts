@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { statSync, readdirSync, existsSync, realpathSync } from 'node:fs';
-import { join, resolve, isAbsolute, relative, sep } from 'node:path';
+import { join, resolve, isAbsolute } from 'node:path';
 import { getGitRepository } from '$lib/server/db';
 import { syncRepositoryExclusive, getRepoClonePath } from '$lib/server/git';
 import { authorize } from '$lib/server/authorize';
@@ -9,7 +9,6 @@ import { isPathInside } from '$lib/server/git-url-safety';
 
 interface FileEntry {
 	name: string;
-	/** Repo-root-relative path (e.g. "services/web"). Never an absolute host path. */
 	path: string;
 	type: 'file' | 'directory' | 'symlink';
 	size: number;
@@ -25,10 +24,7 @@ interface FileEntry {
  * (so the first browse request is the only one that waits for cloning).
  *
  * The `path` query parameter is optional — defaults to the repository root.
- * It MUST be a repo-root-relative path (e.g. "services/web"); absolute paths
- * are rejected with 400. All paths are validated server-side to stay within
- * the clone root (no directory traversal). The response also uses relative
- * paths throughout so no host filesystem layout is disclosed to the client.
+ * All paths are validated to stay within the clone root (no directory traversal).
  */
 export const GET: RequestHandler = async ({ params, url, cookies }) => {
 	const auth = await authorize(cookies);
@@ -56,25 +52,27 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 		return json({ error: `Failed to sync repository: ${syncResult.error}` }, { status: 500 });
 	}
 
-	// Resolve the requested path (default to repo root).
-	// Only relative paths are accepted from the client — absolute paths are rejected
-	// so the client cannot influence which host directory is read.
+	// Resolve the requested path (default to repo root)
 	const requestedPath = url.searchParams.get('path') || '';
+	let targetPath: string;
 
-	if (requestedPath && isAbsolute(requestedPath)) {
-		return json({ error: 'Invalid path: must be a relative path within the repository' }, { status: 400 });
+	if (!requestedPath || requestedPath === '/') {
+		targetPath = repoRoot;
+	} else if (isAbsolute(requestedPath)) {
+		// Caller passed an absolute path (after receiving repoRoot from a prior response)
+		targetPath = requestedPath;
+	} else {
+		// Relative path — join with repo root
+		targetPath = join(repoRoot, requestedPath);
 	}
 
-	// Join relative path with repo root (empty string → repo root itself).
-	const targetPath = requestedPath ? join(repoRoot, requestedPath) : repoRoot;
-
 	// Resolve to eliminate any `..` components, then guard against traversal.
-	// Use realpathSync so a symlink inside the clone cannot escape to a sibling repo
+	// Use realpath so a symlink inside the clone cannot escape to a sibling repo
 	// or host path; use sep-aware containment so `/repos/myrepo2` is not treated
 	// as inside `/repos/myrepo`.
 	const resolvedTarget = resolve(targetPath);
 	if (!existsSync(resolvedTarget)) {
-		return json({ error: 'Path not found' }, { status: 404 });
+		return json({ error: `Path not found: ${resolvedTarget}` }, { status: 404 });
 	}
 
 	let realRoot: string;
@@ -91,15 +89,7 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 
 	const stat = statSync(realTarget);
 	if (!stat.isDirectory()) {
-		return json({ error: 'Not a directory' }, { status: 400 });
-	}
-
-	// Helper: convert an absolute on-disk path to a repo-root-relative string.
-	// Returns '' for the root itself.
-	function toRelative(absPath: string): string {
-		const rel = relative(realRoot, absPath);
-		// relative() on the same path returns ''; normalize to '' (root sentinel).
-		return rel === '.' ? '' : rel;
+		return json({ error: `Not a directory: ${resolvedTarget}` }, { status: 400 });
 	}
 
 	try {
@@ -116,7 +106,7 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 
 				entries.push({
 					name: entry.name,
-					path: toRelative(fullPath),
+					path: fullPath,
 					type: entry.isDirectory() ? 'directory' : entry.isSymbolicLink() ? 'symlink' : 'file',
 					size: entryStat.size,
 					mtime: entryStat.mtime.toISOString(),
@@ -134,21 +124,11 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 			return a.name.localeCompare(b.name);
 		});
 
-		const currentRelPath = toRelative(realTarget);
-		const isRoot = currentRelPath === '';
-
-		// Compute parent as a relative path; null at the repo root.
-		const parentRelPath = isRoot
-			? null
-			: toRelative(resolve(realTarget, '..'));
-
 		return json({
-			/** Repo-root-relative path of the listed directory. '' means the root. */
-			path: currentRelPath,
-			/** True when the listed directory is the repository root. */
-			isRoot,
-			/** Repo-root-relative path of the parent directory, or null at the root. */
-			parent: parentRelPath,
+			path: realTarget,
+			// Expose the root so the client can compute relative paths
+			repoRoot: realRoot,
+			parent: realTarget === realRoot ? null : resolve(realTarget, '..'),
 			entries
 		});
 	} catch (error) {

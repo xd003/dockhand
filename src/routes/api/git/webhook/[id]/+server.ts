@@ -1,9 +1,9 @@
-import { json } from '@sveltejs/kit';
+import { json, text } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getGitRepository } from '$lib/server/db';
-import { triggerGitRepositorySyncFromWebhook } from '$lib/server/scheduler';
+import { deployFromRepositoryWithFanOut } from '$lib/server/git';
 import { auditGitRepository } from '$lib/server/audit';
-import { verifyWebhookSignature, secureSecretEqual } from '$lib/server/webhook-signature';
+import { verifyWebhookSignature } from '$lib/server/webhook-signature';
 
 function detectSource(request: Request): string {
 	if (request.headers.get('x-hub-signature-256')) return 'github';
@@ -51,18 +51,12 @@ export const POST: RequestHandler = async (event) => {
 			return json({ error: 'Invalid webhook signature' }, { status: 401 });
 		}
 
-		// Trigger the fan-out in the background and return 202 immediately. The run is
-		// tracked as a schedule_executions job (runGitRepositorySync) so the UI has a
-		// record; awaiting the full multi-stack fan-out here would let GitHub/GitLab
-		// retry the webhook on any slow deploy (stack webhooks already return 202).
-		const result = await triggerGitRepositorySyncFromWebhook(id);
+		// Deploy from repository (awaited so the webhook caller gets real success/failure)
+		const result = await deployFromRepositoryWithFanOut(id);
 		await auditGitRepository(event, 'webhook', id, repository.name, {
-			method: 'POST', source, result: result.success ? 'triggered' : 'failed'
+			method: 'POST', source, result: result.success ? 'deployed' : 'failed'
 		});
-		if (!result.success) {
-			return json({ success: false, error: result.error }, { status: 500 });
-		}
-		return json({ success: true, message: 'Repository sync triggered' }, { status: 202 });
+		return json(result);
 	} catch (error: any) {
 		console.error('Webhook error:', error);
 		return json({ success: false, error: error.message }, { status: 500 });
@@ -95,24 +89,21 @@ export const GET: RequestHandler = async (event) => {
 			return json({ error: 'Webhook secret is not configured for this repository' }, { status: 401 });
 		}
 
-		// Verify secret via query parameter for GET requests (constant-time)
+		// Verify secret via query parameter for GET requests
 		const secret = url.searchParams.get('secret');
-		if (!secureSecretEqual(secret, repository.webhookSecret)) {
+		if (secret !== repository.webhookSecret) {
 			await auditGitRepository(event, 'webhook', id, repository.name, {
 				method: 'GET', source: 'get', error: 'invalid_secret'
 			});
 			return json({ error: 'Invalid webhook secret' }, { status: 401 });
 		}
 
-		// Trigger the fan-out in the background and return 202 immediately (see POST).
-		const result = await triggerGitRepositorySyncFromWebhook(id);
+		// Deploy from repository (awaited so the webhook caller gets real success/failure)
+		const result = await deployFromRepositoryWithFanOut(id);
 		await auditGitRepository(event, 'webhook', id, repository.name, {
-			method: 'GET', source: 'get', result: result.success ? 'triggered' : 'failed'
+			method: 'GET', source: 'get', result: result.success ? 'deployed' : 'failed'
 		});
-		if (!result.success) {
-			return json({ success: false, error: result.error }, { status: 500 });
-		}
-		return json({ success: true, message: 'Repository sync triggered' }, { status: 202 });
+		return json(result);
 	} catch (error: any) {
 		console.error('Webhook GET error:', error);
 		return json({ success: false, error: error.message }, { status: 500 });

@@ -21,7 +21,7 @@ import { deployStack, getStackDir } from './stacks';
 import { sendEventNotification } from './notifications';
 import { buildBasicAuthHeader } from './git-auth';
 import { assertSafeRepoUrl, assertSafeGitRef, repoFilePath, isPathInside } from './git-url-safety';
-import { parseComposePathsColumn, getStackDiffDirs } from './compose-files';
+import { parseComposePathsColumn } from './compose-files';
 import {
 	parseManifest,
 	serializeManifest,
@@ -138,24 +138,13 @@ export function getGitReposDir(): string {
 /**
  * Legacy layout stored per-environment clones under git-repos/<envName>/.
  * Current layout clones once per repository at git-repos/<repoName>/ (shared).
- *
- * A legacy env dir is a container for per-repo clones, so it has no .git of its
- * own but DOES contain at least one nested git repository. Requiring a nested
- * `.git` (not just "not a repo") keeps an interrupted new-layout clone — whose
- * repo dir exists without .git yet — from being mistaken for a legacy env dir
- * and deleted.
  */
 function isLegacyEnvGitReposDir(dir: string): boolean {
 	if (!existsSync(dir)) return false;
 	if (existsSync(join(dir, '.git'))) return false;
 	const base = basename(dir);
 	if (base.startsWith('preview-') || base.startsWith('repo-')) return false;
-	try {
-		return readdirSync(dir, { withFileTypes: true })
-			.some((entry) => entry.isDirectory() && existsSync(join(dir, entry.name, '.git')));
-	} catch {
-		return false;
-	}
+	return true;
 }
 
 const LEGACY_ENV_GIT_REPOS_MIGRATION_KEY = 'migration:legacy_env_git_repos_v1';
@@ -919,12 +908,6 @@ async function deployFromRepositoryWithFanOutImpl(
 
 	_log(`[Git] Found ${stacks.length} stack(s) linked to this repository.`);
 
-	// Fetch the shared repository clone ONCE for the whole fan-out. Every stack's
-	// syncGitStack would otherwise issue its own sequential `git fetch` against the
-	// same clone. The pre-fetched result is passed into each stack deploy below.
-	_log(`[Git] Syncing shared repository clone once for fan-out...`);
-	const repoSync = await syncRepositoryExclusive(repositoryId);
-
 	const results = [];
 	let hasError = false;
 
@@ -942,7 +925,7 @@ async function deployFromRepositoryWithFanOutImpl(
 
 			// deployGitStack internally computes diffs based on the new commit vs the stack's lastCommit
 			// Concurrent stack-level webhooks coalesce inside deployGitStack (stronger intent wins).
-			const deployResult = await deployGitStack(stack.id, { force: false, ignoreForceRedeploy, repoSync });
+			const deployResult = await deployGitStack(stack.id, { force: false, ignoreForceRedeploy });
 			
 			if (deployResult.success) {
 				if (deployResult.skipped) {
@@ -1124,9 +1107,6 @@ import {
 type DeployGitStackOpts = {
 	force: boolean;
 	ignoreForceRedeploy: boolean;
-	/** Pre-fetched shared repo sync from the fan-out, so per-stack deploys don't
-	 *  each issue their own sequential `git fetch` on the same clone. */
-	repoSync?: SyncResult | null;
 };
 
 type DeployGitStackResult = {
@@ -1134,10 +1114,6 @@ type DeployGitStackResult = {
 	output?: string;
 	error?: string;
 	skipped?: boolean;
-	/** Set when containers are running the new code but post-deploy bookkeeping
-	 *  (manifest / stack_sources) failed. lastCommit is rolled back so the next
-	 *  trigger retries the idempotent `docker compose up` and bookkeeping. */
-	warning?: string;
 };
 
 type FanOutOpts = {
@@ -1166,8 +1142,7 @@ const repoFanOutSlots = new Map<number, CoalesceSlot<FanOutOpts, FanOutResult>>(
 function mergeDeployGitStackOpts(a: DeployGitStackOpts, b: DeployGitStackOpts): DeployGitStackOpts {
 	return {
 		force: a.force || b.force,
-		ignoreForceRedeploy: a.ignoreForceRedeploy && b.ignoreForceRedeploy,
-		repoSync: a.repoSync ?? b.repoSync
+		ignoreForceRedeploy: a.ignoreForceRedeploy && b.ignoreForceRedeploy
 	};
 }
 
@@ -1195,7 +1170,7 @@ async function waitForStackDeployIdle(stackId: number): Promise<void> {
 	}
 }
 
-export async function syncGitStack(stackId: number, preSyncedRepo?: SyncResult | null): Promise<SyncResult> {
+export async function syncGitStack(stackId: number): Promise<SyncResult> {
 	// If a coalesced deploy owns this stack, wait for it rather than failing.
 	// (deployGitStack calls syncGitStack while it already holds the slot — that
 	// path is re-entrant via the flag below.)
@@ -1249,10 +1224,8 @@ export async function syncGitStack(stackId: number, preSyncedRepo?: SyncResult |
 
 		// Sync the shared repository clone. If another stack is already syncing this
 		// repository, wait for that sync to complete and share the result (no duplicate clone).
-		// A repo-level fan-out passes a pre-fetched sync here so the N stacks sharing a
-		// repository issue exactly one `git fetch` instead of N sequential ones.
 		console.log(`${logPrefix} Syncing shared repository clone...`);
-		const repoSyncResult = preSyncedRepo ?? await syncRepositoryExclusive(gitStack.repositoryId);
+		const repoSyncResult = await syncRepositoryExclusive(gitStack.repositoryId);
 		if (!repoSyncResult.success) {
 			throw new Error(`Repository sync failed: ${repoSyncResult.error}`);
 		}
@@ -1269,32 +1242,29 @@ export async function syncGitStack(stackId: number, preSyncedRepo?: SyncResult |
 		const commitChanged = previousCommit?.substring(0, 7) !== newCommit.substring(0, 7);
 		console.log(`${logPrefix} Previous commit: ${previousCommit || '(none)'}, new commit: ${newCommit.substring(0, 7)}, commit changed: ${commitChanged}`);
 
-		// Check if any files used by the stack have changed. Covers the context
-		// directory plus the directory of every configured compose file and the
-		// env file, so multi-compose stacks redeploy when any of their files change.
+		// Check if any files in the compose file's directory have changed
+		// This catches changes to the compose file, env files, and any other referenced files
+		// (e.g., config files, scripts, additional env files)
 		let changedFiles: string[] = [];
 		if (commitChanged) {
-			const diffDirs = getStackDiffDirs(gitStack);
-			console.log(`${logPrefix} Checking for changes in directories: ${diffDirs.join(', ')}`);
+			// Use contextDir if set, otherwise fall back to compose file's directory
+			const diffDirRelative = gitStack.contextDir || dirname(gitStack.composePath);
+			console.log(`${logPrefix} Checking for changes in directory: ${diffDirRelative || '(root)'}`);
 
-			for (const diffDirRelative of diffDirs) {
-				const diffResult = await getChangedFilesInDir(
-					repoPath,
-					previousCommit,
-					newCommit,
-					diffDirRelative || '.',
-					env
-				);
+			const diffResult = await getChangedFilesInDir(
+				repoPath,
+				previousCommit,
+				newCommit,
+				diffDirRelative || '.',
+				env
+			);
 
-				if (diffResult.error) {
-					console.log(`${logPrefix} Diff error for "${diffDirRelative}": ${diffResult.error}`);
-				}
-				if (diffResult.changed) {
-					updated = true;
-				}
-				changedFiles = changedFiles.concat(diffResult.files);
+			updated = diffResult.changed;
+			changedFiles = diffResult.files;
+
+			if (diffResult.error) {
+				console.log(`${logPrefix} Diff error: ${diffResult.error}`);
 			}
-			changedFiles = [...new Set(changedFiles)];
 
 			if (changedFiles.length > 0) {
 				console.log(`${logPrefix} Changed files (${changedFiles.length}):`);
@@ -1467,7 +1437,7 @@ async function notifyGitSync(stackName: string, envId: number | null | undefined
 
 export async function deployGitStack(
 	stackId: number,
-	options?: { force?: boolean; ignoreForceRedeploy?: boolean; repoSync?: SyncResult | null }
+	options?: { force?: boolean; ignoreForceRedeploy?: boolean }
 ): Promise<DeployGitStackResult> {
 	// Coalesce concurrent stack deploys (stack webhook ↔ repo fan-out ↔ manual).
 	// Stronger intent wins: force ORs; ignoreForceRedeploy only if all agree.
@@ -1510,7 +1480,7 @@ async function deployGitStackImpl(
 	try {
 		// Sync first
 		console.log(`${logPrefix} Syncing git repository...`);
-		const syncResult = await syncGitStack(stackId, opts.repoSync);
+		const syncResult = await syncGitStack(stackId);
 		if (!syncResult.success) {
 			console.log(`${logPrefix} Sync failed:`, syncResult.error);
 			const failResult = { success: false, error: syncResult.error };
@@ -1581,60 +1551,36 @@ async function deployGitStackImpl(
 		if (result.error) console.log(`${logPrefix} Error:`, result.error);
 
 		if (result.success) {
-			// Post-deploy bookkeeping: persist manifest + stack_sources.
-			// Invariant: lastCommit advanced ⇒ manifest/stack_sources are current.
-			// If bookkeeping fails the containers are already running the new code, so
-			// we return success:true (honest) but include a warning and roll lastCommit
-			// back so the next trigger re-runs the idempotent deploy + retries bookkeeping.
-			try {
-				if (syncResult.previousManifest && syncResult.newFiles && syncResult.newCommitFull && syncResult.deletionPlan) {
-					await finalizeDeletionSync({
-						stackId,
-						logPrefix,
-						previousManifest: syncResult.previousManifest,
-						newCommitFull: syncResult.newCommitFull,
-						newFiles: syncResult.newFiles,
-						plan: syncResult.deletionPlan,
-						applyResult: result.deletion
-					});
-				}
-
-				// Record the stack source with resolved compose path for consistency
-				const stackDir = await getStackDir(gitStack.stackName, gitStack.environmentId);
-				const resolvedComposePath = syncResult.composeFileName
-					? join(stackDir, syncResult.composeFileName)
-					: undefined;
-
-				console.log(`${logPrefix} Resolved compose path for stack_sources:`, resolvedComposePath);
-
-				await upsertStackSource({
-					stackName: gitStack.stackName,
-					environmentId: gitStack.environmentId,
-					sourceType: 'git',
-					gitRepositoryId: gitStack.repositoryId,
-					gitStackId: stackId,
-					composePath: resolvedComposePath,
-					composePaths: gitStack.composePaths ? parseComposePathsColumn(gitStack.composePaths) : null
+			// Deletion sync: persist manifest + log per-file change summary
+			if (syncResult.previousManifest && syncResult.newFiles && syncResult.newCommitFull && syncResult.deletionPlan) {
+				await finalizeDeletionSync({
+					stackId,
+					logPrefix,
+					previousManifest: syncResult.previousManifest,
+					newCommitFull: syncResult.newCommitFull,
+					newFiles: syncResult.newFiles,
+					plan: syncResult.deletionPlan,
+					applyResult: result.deletion
 				});
-			} catch (bookkeepingErr: any) {
-				// Containers are running the new code — report deploy as successful.
-				// Roll back lastCommit so the next webhook/schedule trigger re-runs the
-				// idempotent `docker compose up` and retries bookkeeping (self-healing).
-				const bookkeepingMsg = bookkeepingErr instanceof Error ? bookkeepingErr.message : String(bookkeepingErr);
-				console.error(`${logPrefix} Post-deploy bookkeeping failed (containers are running): ${bookkeepingMsg}`);
-				try {
-					await updateGitStack(stackId, {
-						lastCommit: gitStack.lastCommit ?? null,
-						syncStatus: 'error',
-						syncError: `Deploy succeeded but bookkeeping failed: ${bookkeepingMsg}`
-					});
-				} catch (rollbackErr: any) {
-					console.error(`${logPrefix} lastCommit rollback also failed:`, rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr));
-				}
-				const warningResult = { success: true as const, output: result.output, warning: bookkeepingMsg };
-				await notifyGitSync(gitStack.stackName, gitStack.environmentId, warningResult);
-				return warningResult;
 			}
+
+			// Record the stack source with resolved compose path for consistency
+			const stackDir = await getStackDir(gitStack.stackName, gitStack.environmentId);
+			const resolvedComposePath = syncResult.composeFileName
+				? join(stackDir, syncResult.composeFileName)
+				: undefined;
+
+			console.log(`${logPrefix} Resolved compose path for stack_sources:`, resolvedComposePath);
+
+			await upsertStackSource({
+				stackName: gitStack.stackName,
+				environmentId: gitStack.environmentId,
+				sourceType: 'git',
+				gitRepositoryId: gitStack.repositoryId,
+				gitStackId: stackId,
+				composePath: resolvedComposePath,
+				composePaths: gitStack.composePaths ? parseComposePathsColumn(gitStack.composePaths) : null
+			});
 		} else if (syncResult.updated && syncResult.commit) {
 			// Sync advanced lastCommit before deploy. Roll it back on deploy failure so
 			// the next scheduled/webhook sync still sees the commit as pending and retries.
@@ -1745,7 +1691,7 @@ export async function deployGitStackWithProgress(
 async function deployGitStackWithProgressImpl(
 	stackId: number,
 	onProgress: ProgressCallback
-): Promise<{ success: boolean; output?: string; error?: string; warning?: string }> {
+): Promise<{ success: boolean; output?: string; error?: string }> {
 	const gitStack = await getGitStack(stackId);
 	if (!gitStack) {
 		onProgress({ status: 'error', error: 'Git stack not found' });
@@ -1798,21 +1744,18 @@ async function deployGitStackWithProgressImpl(
 		// Normalize to 7-char short hash for comparison (DB stores 7-char, git returns 40-char)
 		const commitChanged = previousCommit?.substring(0, 7) !== newCommit.substring(0, 7);
 
-		// Check if any files used by the stack have changed
+		// Check if any files in the context/compose directory have changed
 		// (for consistency with syncGitStack, though this function always deploys)
 		if (commitChanged) {
-			let diffChanged = false;
-			for (const diffDir of getStackDiffDirs(gitStack)) {
-				const diffResult = await getChangedFilesInDir(
-					repoPath,
-					previousCommit,
-					newCommit,
-					diffDir || '.',
-					env
-				);
-				if (diffResult.changed) diffChanged = true;
-			}
-			updated = diffChanged;
+			const diffDir = gitStack.contextDir || dirname(gitStack.composePath);
+			const diffResult = await getChangedFilesInDir(
+				repoPath,
+				previousCommit,
+				newCommit,
+				diffDir || '.',
+				env
+			);
+			updated = diffResult.changed;
 		} else {
 			updated = false;
 		}
@@ -1939,67 +1882,44 @@ async function deployGitStackWithProgressImpl(
 
 		if (result.success) {
 			deploySucceeded = true;
-			// Post-deploy bookkeeping: persist manifest + stack_sources.
-			// Invariant: lastCommit advanced ⇒ manifest/stack_sources are current.
-			// Mirrors deployGitStackImpl: bookkeeping failure rolls back lastCommit so
-			// the next trigger retries the idempotent deploy + bookkeeping (self-healing).
-			try {
-				// Deletion sync: persist manifest + log per-file change summary.
-				// The change table was already shown before the deploy (#1260);
-				// report only apply-stage divergences from the plan here.
-				await finalizeDeletionSync({
-					stackId,
-					logPrefix,
-					previousManifest: deletionData.previousManifest,
-					newCommitFull: newCommit,
-					newFiles: deletionData.newFiles,
-					plan: deletionData.plan,
-					applyResult: result.deletion
+			// Deletion sync: persist manifest + log per-file change summary.
+			// The change table was already shown before the deploy (#1260);
+			// report only apply-stage divergences from the plan here.
+			await finalizeDeletionSync({
+				stackId,
+				logPrefix,
+				previousManifest: deletionData.previousManifest,
+				newCommitFull: newCommit,
+				newFiles: deletionData.newFiles,
+				plan: deletionData.plan,
+				applyResult: result.deletion
+			});
+
+			const applySkips = (result.deletion?.skipped ?? []).filter((s) => s.reason !== 'already-absent');
+			for (const skip of applySkips) {
+				onProgress({
+					status: 'deploying',
+					message: `Kept "${skip.path}" — ${skipReasonMessage(skip.reason)}`,
+					step: 5,
+					totalSteps
 				});
-
-				const applySkips = (result.deletion?.skipped ?? []).filter((s) => s.reason !== 'already-absent');
-				for (const skip of applySkips) {
-					onProgress({
-						status: 'deploying',
-						message: `Kept "${skip.path}" — ${skipReasonMessage(skip.reason)}`,
-						step: 5,
-						totalSteps
-					});
-				}
-
-				// Record the stack source with resolved compose path for consistency
-				const stackDir = await getStackDir(gitStack.stackName, gitStack.environmentId);
-				const resolvedComposePath = join(stackDir, progressComposeFileName);
-
-				await upsertStackSource({
-					stackName: gitStack.stackName,
-					environmentId: gitStack.environmentId,
-					sourceType: 'git',
-					gitRepositoryId: gitStack.repositoryId,
-					gitStackId: stackId,
-					composePath: resolvedComposePath,
-					composePaths: gitStack.composePaths ? parseComposePathsColumn(gitStack.composePaths) : null
-				});
-
-				onProgress({ status: 'complete', message: `Successfully deployed ${gitStack.stackName}` });
-			} catch (bookkeepingErr: any) {
-				// Containers are running the new code — report deploy as successful.
-				// Roll back lastCommit so the next trigger re-runs the idempotent deploy
-				// and retries bookkeeping (self-healing). Same rule as deployGitStackImpl.
-				const bookkeepingMsg = bookkeepingErr instanceof Error ? bookkeepingErr.message : String(bookkeepingErr);
-				console.error(`${logPrefix} Post-deploy bookkeeping failed (containers are running): ${bookkeepingMsg}`);
-				try {
-					await updateGitStack(stackId, {
-						lastCommit: gitStack.lastCommit ?? null,
-						syncStatus: 'error',
-						syncError: `Deploy succeeded but bookkeeping failed: ${bookkeepingMsg}`
-					});
-				} catch (rollbackErr: any) {
-					console.error(`${logPrefix} lastCommit rollback also failed:`, rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr));
-				}
-				onProgress({ status: 'complete', message: `Deployed ${gitStack.stackName} (metadata update pending retry)` });
-				return { success: true, output: result.output, warning: bookkeepingMsg };
 			}
+
+			// Record the stack source with resolved compose path for consistency
+			const stackDir = await getStackDir(gitStack.stackName, gitStack.environmentId);
+			const resolvedComposePath = join(stackDir, progressComposeFileName);
+
+			await upsertStackSource({
+				stackName: gitStack.stackName,
+				environmentId: gitStack.environmentId,
+				sourceType: 'git',
+				gitRepositoryId: gitStack.repositoryId,
+				gitStackId: stackId,
+				composePath: resolvedComposePath,
+				composePaths: gitStack.composePaths ? parseComposePathsColumn(gitStack.composePaths) : null
+			});
+
+			onProgress({ status: 'complete', message: `Successfully deployed ${gitStack.stackName}` });
 		} else {
 			throw new Error(result.error || 'Failed to deploy stack');
 		}
@@ -2007,10 +1927,8 @@ async function deployGitStackWithProgressImpl(
 		return result;
 	} catch (error: any) {
 		cleanupSshKey(credential);
-		// Roll back lastCommit when deploy itself failed, so the next trigger retries.
-		// When deploy succeeded and bookkeeping failed, the bookkeeping catch above
-		// already handled the rollback and returned early — this path is only reached
-		// for pre-deploy failures (sync errors, compose file not found, etc.).
+		// Roll back lastCommit only when deploy did not succeed, so change detection
+		// can retry. Leave lastCommit alone if deploy succeeded and later bookkeeping failed.
 		await updateGitStack(stackId, {
 			syncStatus: 'error',
 			syncError: error.message,

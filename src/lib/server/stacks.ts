@@ -12,7 +12,6 @@ import type { ChildProcess } from 'node:child_process';
 import {
 	resolveEffectiveComposeFiles,
 	shouldUseExplicitFFlags,
-	rebaseGitComposePaths,
 	type ResolvedComposeFile
 } from './compose-files';
 import {
@@ -25,7 +24,6 @@ import {
 	type DeletionSkipReason
 } from './git-deletions';
 import { isAllowedStackFilename } from './stack-filename';
-import { isPathInside } from './git-url-safety';
 import {
 	getEnvironment,
 	getEnvironments,
@@ -890,8 +888,41 @@ export interface GetComposeFileResult {
 	suggestedEnvPath?: string;
 	/** Stack source type (internal/git/external), from the stack_sources lookup already done here */
 	sourceType?: StackSourceType;
-	/** Non-fatal warnings (e.g. configured compose files missing on disk) */
-	warnings?: string[];
+}
+
+/**
+ * Read compose file contents from absolute paths, including auto-discovered
+ * standard overrides (e.g. compose.override.yaml) adjacent to each base file.
+ */
+function readEffectiveComposeFileContents(absolutePaths: string[]): {
+	composeContents: Record<string, string>;
+	paths: string[];
+	primaryPath: string;
+} | null {
+	if (absolutePaths.length === 0) return null;
+
+	const effectiveFiles = resolveEffectiveComposeFiles({
+		composePaths: absolutePaths.length > 1 ? absolutePaths : undefined,
+		composePath: absolutePaths[0],
+		diskExists: existsSync,
+	});
+
+	const paths = effectiveFiles.map((f) => f.path);
+	const composeContents: Record<string, string> = {};
+
+	for (const p of paths) {
+		try {
+			composeContents[p] = readFileSync(p, 'utf-8');
+		} catch {
+			// Skip unreadable files; primary must remain readable below
+		}
+	}
+
+	const readablePaths = paths.filter((p) => p in composeContents);
+	if (readablePaths.length === 0) return null;
+
+	const primaryPath = readablePaths[0];
+	return { composeContents, paths: readablePaths, primaryPath };
 }
 
 /**
@@ -973,29 +1004,10 @@ export async function getStackComposeFile(
 		try { return existsSync(p); } catch { return false; }
 	});
 
-	// A multi-file stack with one or more configured files missing deploys with the
-	// rest and no error (single-file stacks still fail below). Surface it instead of
-	// dropping silently — log it and carry it in the result so callers can warn.
-	const missingPaths = absolutePaths.filter(p => !existingPaths.includes(p));
-	const warnings = missingPaths.length > 0
-		? [`Configured compose file(s) not found on disk, deploying without them: ${missingPaths.join(', ')}`]
-		: undefined;
-	if (warnings) {
-		console.warn(`[Stack] "${stackName}" (env ${envId ?? 'default'}): ${warnings[0]}`);
-	}
-
 	if (existingPaths.length > 0) {
-		// Read all existing files
-		const composeContents: Record<string, string> = {};
-		for (const p of existingPaths) {
-			try {
-				composeContents[p] = readFileSync(p, 'utf-8');
-			} catch {
-				// Skip files that can't be read; we already know at least one exists
-			}
-		}
+		const readResult = readEffectiveComposeFileContents(existingPaths);
 
-		if (Object.keys(composeContents).length === 0) {
+		if (!readResult) {
 			return {
 				success: false,
 				error: `Compose file(s) exist but could not be read: ${existingPaths.join(', ')}`,
@@ -1004,7 +1016,7 @@ export async function getStackComposeFile(
 			};
 		}
 
-		const primaryPath = existingPaths[0];
+		const { composeContents, paths, primaryPath } = readResult;
 		const primaryDir = dirname(primaryPath);
 
 		// For custom paths, suggest .env next to compose if envPath not set
@@ -1015,15 +1027,14 @@ export async function getStackComposeFile(
 
 		return {
 			success: true,
-			content: composeContents[primaryPath] || Object.values(composeContents)[0],
+			content: composeContents[primaryPath],
 			composeContents,
-			composePaths: existingPaths,
+			composePaths: paths,
 			stackDir: primaryDir,
 			composePath: primaryPath,
 			envPath: source.envPath,
 			suggestedEnvPath,
-			sourceType: source.sourceType,
-			warnings
+			sourceType: source.sourceType
 		};
 	}
 
@@ -1051,19 +1062,20 @@ export async function getStackComposeFile(
 		for (const fileName of composeFileNames) {
 			const actualComposePath = join(stackDir, fileName);
 			if (existsSync(actualComposePath)) {
-				// Check for .env file in the same directory
+				const readResult = readEffectiveComposeFileContents([actualComposePath]);
+				if (!readResult) continue;
+
+				const { composeContents, paths, primaryPath } = readResult;
 				const envFilePath = join(stackDir, '.env');
 				const envExists = existsSync(envFilePath);
 
-				const content = readFileSync(actualComposePath, 'utf-8');
 				return {
 					success: true,
-					content,
-					composeContents: { [actualComposePath]: content },
-					composePaths: [actualComposePath],
+					content: composeContents[primaryPath],
+					composeContents,
+					composePaths: paths,
 					stackDir,
-					// Always return the actual resolved paths for display
-					composePath: actualComposePath,
+					composePath: primaryPath,
 					envPath: envExists ? envFilePath : null,
 					sourceType: source.sourceType
 				};
@@ -1344,10 +1356,7 @@ export async function saveStackComposeFile(
 			for (const [filePath, fileContent] of Object.entries(options.composeContents)) {
 				if (isAbsolute(filePath)) return { success: false, error: 'Absolute paths not allowed for internal stacks' };
 				const resolved = join(stackDir, filePath);
-				// Sep-aware containment: rejects both `..` traversal and sibling-prefix
-				// bypasses (e.g. `../foo2/compose.yaml` vs stackDir `/data/stacks/foo`,
-				// which a bare startsWith check would wrongly allow).
-				if (!isPathInside(resolved, stackDir)) return { success: false, error: 'Path traversal not allowed' };
+				if (!resolved.startsWith(stackDir)) return { success: false, error: 'Path traversal not allowed' };
 				if (resolved === composeFile) continue; // primary already written
 				const fileDir = dirname(resolved);
 				if (!existsSync(fileDir)) mkdirSync(fileDir, { recursive: true });
@@ -3302,14 +3311,12 @@ export async function deployStack(options: DeployStackOptions): Promise<StackOpe
 			// source directory above is copied into workingDir. Rebase every configured
 			// file from the primary compose file's source directory onto the copied
 			// primary path so local `docker compose -f` receives real on-disk paths.
-			// rebaseGitComposePaths validates each entry stays inside the stack
-			// directory, mirroring the single composePath containment check in git.ts.
 			if (actualComposePath && composePaths?.length && !isAbsolute(composePaths[0])) {
-				try {
-					actualComposePaths = rebaseGitComposePaths(composePaths, dirname(actualComposePath), workingDir);
-				} catch (err: any) {
-					return { success: false, output: '', error: err.message };
-				}
+				const sourcePrimaryDir = dirname(composePaths[0]);
+				const copiedPrimaryDir = dirname(actualComposePath);
+				actualComposePaths = composePaths.map((path) =>
+					isAbsolute(path) ? path : join(copiedPrimaryDir, relative(sourcePrimaryDir, path))
+				);
 				console.log(`${logPrefix} Rebased Git compose paths:`, actualComposePaths.join(', '));
 			}
 

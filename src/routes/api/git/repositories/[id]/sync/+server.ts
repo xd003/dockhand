@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getGitRepository } from '$lib/server/db';
-import { syncRepositoryExclusive, checkForUpdates } from '$lib/server/git';
+import { syncRepository, checkForUpdates } from '$lib/server/git';
 
 export const POST: RequestHandler = async ({ params }) => {
 	try {
@@ -15,9 +15,7 @@ export const POST: RequestHandler = async ({ params }) => {
 			return json({ error: 'Repository not found' }, { status: 404 });
 		}
 
-		// Use syncRepositoryExclusive so a manual sync never races an in-flight
-		// schedule/webhook/clone-on-save for the same shared clone directory.
-		const result = await syncRepositoryExclusive(id);
+		const result = await syncRepository(id);
 		return json(result);
 	} catch (error: any) {
 		console.error('Failed to sync git repository:', error);

@@ -3,7 +3,7 @@ import type { RequestHandler } from './$types';
 import { getGitStack } from '$lib/server/db';
 import { triggerGitStackSyncFromWebhook } from '$lib/server/scheduler';
 import { auditGitStack } from '$lib/server/audit';
-import { verifyWebhookSignature, secureSecretEqual } from '$lib/server/webhook-signature';
+import { verifyWebhookSignature } from '$lib/server/webhook-signature';
 
 function detectSource(request: Request): string {
 	if (request.headers.get('x-hub-signature-256')) return 'github';
@@ -102,9 +102,9 @@ export const GET: RequestHandler = async (event) => {
 			return json({ error: 'Webhook secret is not configured for this stack' }, { status: 401 });
 		}
 
-		// Verify secret via query parameter for GET requests (constant-time)
+		// Verify secret via query parameter for GET requests
 		const secret = url.searchParams.get('secret');
-		if (!secureSecretEqual(secret, gitStack.webhookSecret)) {
+		if (secret !== gitStack.webhookSecret) {
 			await auditGitStack(event, 'webhook', id, gitStack.stackName, gitStack.environmentId, {
 				method: 'GET', source: 'get', error: 'invalid_secret'
 			});

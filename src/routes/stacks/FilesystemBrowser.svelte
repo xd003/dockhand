@@ -86,10 +86,6 @@
 	let loading = $state(false);
 	let error = $state<string | null>(null);
 
-	// For the git-repo browse API: true when the listed directory is the repo root.
-	// Used instead of comparing currentPath against an absolute rootPath string.
-	let isAtGitRoot = $state(false);
-
 	// Filter query for quickly narrowing down the file list
 	let filterQuery = $state('');
 
@@ -160,15 +156,10 @@
 			currentPath = data.path;
 			entries = data.entries;
 
-			if (apiUrl) {
-				// Git-repo browse mode: use the isRoot flag from the API (no absolute paths).
-				isAtGitRoot = data.isRoot ?? (data.path === '' || data.path === '/');
-			} else {
-				// Host-filesystem mode: capture repoRoot for backward-compat rootPath binding.
-				if (data.repoRoot && !rootPath) {
-					rootPath = data.repoRoot;
-				}
-				isAtGitRoot = false;
+			// For git-repo browse mode: capture the repo root returned by the API.
+			// This allows the parent to compute relative paths from the absolute clone path.
+			if (apiUrl && data.repoRoot && !rootPath) {
+				rootPath = data.repoRoot;
 			}
 
 			// Clear the cloning spinner on first successful listing
@@ -223,25 +214,12 @@
 	}
 
 	function handleGoUp() {
-		if (currentPath === null) return;
+		if (!currentPath || currentPath === '/') return;
 
-		if (apiUrl) {
-			// Git-repo browse mode: paths are repo-root-relative strings.
-			// '' means root; 'a/b' → parent is 'a'; 'a' → parent is '' (root).
-			if (isAtGitRoot || currentPath === '') return;
-			const slash = currentPath.lastIndexOf('/');
-			const parent = slash === -1 ? '' : currentPath.slice(0, slash);
-			selectedPath = null;
-			selectedName = null;
-			loadDirectory(parent);
-		} else {
-			// Host-filesystem mode: paths are absolute.
-			if (currentPath === '/') return;
-			const parent = currentPath.replace(/\/[^/]+$/, '') || '/';
-			selectedPath = null;
-			selectedName = null;
-			loadDirectory(parent);
-		}
+		const parent = currentPath.replace(/\/[^/]+$/, '') || '/';
+		selectedPath = null;
+		selectedName = null;
+		loadDirectory(parent);
 	}
 
 	function handleConfirm() {
@@ -374,15 +352,11 @@
 		return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 	}
 
-	// In git-repo browse mode, don't allow navigating above the repo root.
-	// Uses isAtGitRoot (from the API's isRoot flag) for the git browse API,
-	// and rootPath comparison for the host-filesystem API (backward-compat).
+	// In git-repo browse mode, don't allow navigating above the repo root
 	const canGoUp = $derived(
-		currentPath !== null &&
-		(apiUrl
-			? !isAtGitRoot
-			: currentPath !== '/' && !(rootPath && currentPath === rootPath)
-		)
+		currentPath &&
+		currentPath !== '/' &&
+		!(rootPath && currentPath === rootPath)
 	);
 
 	// In directory mode, only show directories; otherwise show all.

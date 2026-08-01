@@ -1,8 +1,6 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { dirname, isAbsolute } from 'node:path';
 import { getStackComposeFile, deployStack, saveStackComposeFile } from '$lib/server/stacks';
-import { rebaseGitComposePaths } from '$lib/server/compose-files';
 import { updateStackSource, getStackSource } from '$lib/server/db';
 import { authorize } from '$lib/server/authorize';
 import { createJobResponse } from '$lib/server/sse';
@@ -96,25 +94,6 @@ export const PUT: RequestHandler = async ({ params, request, url, cookies }) => 
 				? (() => { try { return JSON.parse(deploySource.composePaths); } catch { return undefined; } })()
 				: undefined;
 
-			// Git stacks store repo-relative composePaths (e.g. "apps/web/compose.yaml");
-			// deployStack expects real on-disk paths here, else `docker compose -f`
-			// receives repo-relative paths against the stack working dir. Rebase them
-			// onto the primary compose file's on-disk directory (git.ts's deploy path
-			// does the same via deployStack's sourceDir branch). Absolute paths
-			// (internal/adopted stacks) pass through untouched.
-			let rebasedComposePaths = deployComposePaths;
-			if (rebasedComposePaths?.length && composeInfo.composePath && !isAbsolute(rebasedComposePaths[0])) {
-				try {
-					rebasedComposePaths = rebaseGitComposePaths(
-						rebasedComposePaths,
-						dirname(composeInfo.composePath),
-						dirname(composeInfo.composePath)
-					);
-				} catch (rebaseErr: any) {
-					return json({ error: rebaseErr.message || 'Failed to resolve compose file paths' }, { status: 400 });
-				}
-			}
-
 			// Deploy via SSE to keep connection alive during long operations
 			return createJobResponse(async (send) => {
 				try {
@@ -124,7 +103,7 @@ export const PUT: RequestHandler = async ({ params, request, url, cookies }) => 
 						envId: envIdNum,
 						forceRecreate: true,
 						composePath: composeInfo.composePath || undefined,
-						composePaths: rebasedComposePaths,
+						composePaths: deployComposePaths,
 						envPath: composeInfo.envPath || undefined
 					});
 

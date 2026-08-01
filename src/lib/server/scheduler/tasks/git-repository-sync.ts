@@ -68,13 +68,22 @@ export async function runGitRepositorySync(
 		const skippedStacks = result.stacks?.filter(s => s.status === 'skipped').length || 0;
 		const failedStacks = result.stacks?.filter(s => s.status === 'failed').length || 0;
 
-		// deployFromRepositoryWithFanOut returns success:false whenever any stack fails,
-		// so inside result.success failedStacks is always 0 — the "partial failure"
-		// branch was unreachable. Partial failures land in the else below.
 		if (result.success) {
-			log(`Sync completed for repository ${repositoryName}. Total stacks: ${totalStacks} (Deployed: ${deployedStacks}, Skipped: ${skippedStacks})`);
+			log(`Sync completed for repository ${repositoryName}. Total stacks: ${totalStacks} (Deployed: ${deployedStacks}, Skipped: ${skippedStacks}, Failed: ${failedStacks})`);
 
-			if (deployedStacks > 0) {
+			if (failedStacks > 0) {
+				await persistStackDetails(
+					deployedStacks > 0 ? 'success' : 'failed',
+					result,
+					result.error
+				);
+
+				await sendEventNotification('git_sync_failed', {
+					title: 'Git repository sync finished with errors',
+					message: `Repository "${repositoryName}" sync had ${failedStacks} failed stack(s).`,
+					type: 'warning'
+				});
+			} else if (deployedStacks > 0) {
 				await persistStackDetails('success', result);
 
 				await sendEventNotification('git_sync_success', {

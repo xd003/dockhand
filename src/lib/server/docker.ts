@@ -15,6 +15,7 @@ import { createHash } from 'node:crypto';
 import type { Environment } from './db';
 import { getSetting } from './db';
 import { getAdditionalVolumeBinds } from './mount-dedupe';
+import { db, environments, eq } from './db/drizzle.js';
 import { rebaseEnvOntoImage, rebaseLabelsOntoImage, describeEnvRebase, describeLabelRebase, type ImageEnvLabels } from './container-env-merge';
 import { encodeRegistryAuth } from './registry-auth';
 import { isSystemContainer, classifyEmptyDigestImage } from './scheduler/tasks/update-utils';
@@ -4025,7 +4026,7 @@ export async function getHawserInfo(envId: number): Promise<HawserAgentInfo | nu
 }
 
 const HAWSER_INFO_TTL_MS = 60_000;
-const HAWSER_INFO_NEGATIVE_TTL_MS = 15_000;
+const HAWSER_INFO_NEGATIVE_TTL_MS = 3_000;
 const hawserInfoCache = new Map<number, { info: HawserAgentInfo | null; expiresAt: number }>();
 
 /**
@@ -4052,6 +4053,21 @@ async function getHawserInfoCached(envId: number): Promise<HawserAgentInfo | nul
 		} catch (error) {
 			const msg = error instanceof Error ? error.message : String(error);
 			console.warn(`[Hawser] Failed to fetch info for env ${envId} (attempt ${attempt + 1}): ${msg}`);
+		}
+	}
+
+	// Persist the remote stacks dir so display-path resolution survives agent
+	// restarts and doesn't depend on container runtime state (labels) or a
+	// live info round-trip per request.
+	if (info?.stacksDir) {
+		try {
+			await db
+				.update(environments)
+				.set({ hawserStacksDir: info.stacksDir })
+				.where(eq(environments.id, envId));
+		} catch (error) {
+			const msg = error instanceof Error ? error.message : String(error);
+			console.warn(`[Hawser] Failed to persist stacksDir for env ${envId}: ${msg}`);
 		}
 	}
 

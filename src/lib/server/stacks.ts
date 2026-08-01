@@ -45,6 +45,7 @@ import {
 	getStackSourceByComposePath
 } from './db';
 import { unregisterSchedule } from './scheduler';
+import { db, environments, eq } from './db/drizzle.js';
 import { sendEventNotification } from './notifications';
 import { deleteGitStackFiles, parseEnvFileContent } from './git';
 import {
@@ -793,10 +794,12 @@ export async function migrateLocalStacksToStacksDir(): Promise<void> {
 	}
 }
 
+type HawserEnvLike = { connectionType?: string | null; hawserStacksDir?: string | null };
+
 async function resolveHawserStackDirPair(
 	stackName: string,
 	environmentId: number,
-	env?: { connectionType?: string | null } | null,
+	env?: HawserEnvLike | null,
 	hints?: { workingDir: string | null; configFiles: string[] | null } | null
 ): Promise<{ stagingStackDir: string; remoteStackDir: string } | null> {
 	const resolvedEnv = env ?? (await getEnvironment(environmentId));
@@ -814,11 +817,25 @@ async function resolveHawserStackDirPair(
 		remoteStackDir = dirname(pathHints.configFiles[0]);
 	}
 
+	// DB-persisted remote stacksDir (survives agent restarts)
+	if (!remoteStackDir && resolvedEnv?.hawserStacksDir) {
+		remoteStackDir = join(resolvedEnv.hawserStacksDir, stackName);
+	}
+
 	if (!remoteStackDir) {
 		const { getHawserInfo } = await import('./docker.js');
 		const info = await getHawserInfo(environmentId);
 		if (info?.stacksDir) {
 			remoteStackDir = join(info.stacksDir, stackName);
+			try {
+				await db
+					.update(environments)
+					.set({ hawserStacksDir: info.stacksDir })
+					.where(eq(environments.id, environmentId));
+			} catch (error) {
+				const msg = error instanceof Error ? error.message : String(error);
+				console.warn(`[StacksDir] Failed to persist stacksDir for env ${environmentId}: ${msg}`);
+			}
 		}
 	}
 
@@ -835,7 +852,7 @@ export async function remapHawserStagingDisplayPaths(
 	stackName: string,
 	environmentId: number | null | undefined,
 	paths: { composePath: string | null; composePaths: string[] },
-	env?: { connectionType?: string | null } | null,
+	env?: HawserEnvLike | null,
 	hints?: { workingDir: string | null; configFiles: string[] | null } | null
 ): Promise<{ composePath: string | null; composePaths: string[] }> {
 	if (!paths.composePath && paths.composePaths.length === 0) return paths;
@@ -872,7 +889,7 @@ export async function remapHawserStagingDisplayComposeContents(
 	stackName: string,
 	environmentId: number | null | undefined,
 	composeContents: Record<string, string> | null | undefined,
-	env?: { connectionType?: string | null } | null,
+	env?: HawserEnvLike | null,
 	hints?: { workingDir: string | null; configFiles: string[] | null } | null
 ): Promise<Record<string, string> | null | undefined> {
 	if (!composeContents || environmentId == null) return composeContents;
@@ -961,7 +978,7 @@ export async function resolveStackSourceDisplayPathsForEnv(
 		composePaths?: string | null;
 		gitStack?: { contextDir?: string | null; composePath?: string } | null;
 	},
-	env?: { connectionType?: string | null } | null,
+	env?: HawserEnvLike | null,
 	hints?: { workingDir: string | null; configFiles: string[] | null } | null
 ): Promise<{ composePath: string | null; composePaths: string[] }> {
 	const base = resolveStackSourceDisplayPaths(source);

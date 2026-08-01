@@ -42,6 +42,8 @@ export interface EdgeConnection {
 	dockerVersion: string;
 	hostname: string;
 	capabilities: string[];
+	/** Remote agent STACKS_DIR (from hello message) */
+	stacksDir?: string;
 	connectedAt: Date;
 	lastHeartbeat: number;
 	pendingRequests: Map<string, PendingRequest>;
@@ -496,6 +498,7 @@ export function handleEdgeConnection(
 		dockerVersion: hello.dockerVersion,
 		hostname: hello.hostname,
 		capabilities: hello.capabilities,
+		stacksDir: hello.stacksDir,
 		connectedAt: new Date(),
 		lastHeartbeat: Date.now(),
 		pendingRequests: new Map(),
@@ -537,6 +540,7 @@ async function updateEnvironmentStatus(
 				hawserAgentName: connection.agentName,
 				hawserVersion: connection.agentVersion,
 				hawserCapabilities: JSON.stringify(connection.capabilities),
+				hawserStacksDir: connection.stacksDir ?? null,
 				updatedAt: new Date().toISOString()
 			})
 			.where(eq(environments.id, environmentId));
@@ -930,6 +934,8 @@ export interface HelloMessage {
 	dockerVersion: string;
 	hostname: string;
 	capabilities: string[];
+	/** Remote agent STACKS_DIR — host path where compose stacks are written */
+	stacksDir?: string;
 }
 
 export interface WelcomeMessage {

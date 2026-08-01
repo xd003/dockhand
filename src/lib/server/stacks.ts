@@ -47,6 +47,7 @@ import {
 import { unregisterSchedule } from './scheduler';
 import { sendEventNotification } from './notifications';
 import { deleteGitStackFiles, parseEnvFileContent } from './git';
+import { remapPathsFromStagingToRemote } from './stacks-display-paths';
 import { cleanPem } from '$lib/utils/pem';
 import { rewriteComposeVolumePaths, getHostDataDir } from './host-path';
 import { getOrderValue } from './container-labels';
@@ -795,6 +796,106 @@ export async function migrateLocalStacksToStacksDir(): Promise<void> {
 		console.log(`[StacksDir] Migrated stack "${stackName}" from ${sourceDir} to ${destDir}`);
 		await updateStackPathsAfterMigration(stackName, environmentId, sourceDir, destDir);
 	}
+}
+
+/**
+ * For Hawser environments, compose paths in the DB point at Dockhand's staging copy
+ * ($DATA_DIR/stacks/<env>/<stack>/). Deployed files live on the remote host under the
+ * Hawser agent's STACKS_DIR/<stackName>/.
+ */
+export async function remapHawserStagingDisplayPaths(
+	stackName: string,
+	environmentId: number | null | undefined,
+	paths: { composePath: string | null; composePaths: string[] },
+	env?: { connectionType?: string | null } | null,
+	hints?: { workingDir: string | null; configFiles: string[] | null } | null
+): Promise<{ composePath: string | null; composePaths: string[] }> {
+	if (!paths.composePath && paths.composePaths.length === 0) return paths;
+	if (environmentId == null) return paths;
+
+	const resolvedEnv = env ?? (await getEnvironment(environmentId));
+	if (!isHawserConnection(resolvedEnv)) return paths;
+
+	const stagingStackDir = resolve(
+		(await findStackDir(stackName, environmentId)) ?? (await getStackDir(stackName, environmentId))
+	);
+
+	const pathList =
+		paths.composePaths.length > 0
+			? paths.composePaths
+			: paths.composePath
+				? [paths.composePath]
+				: [];
+
+	const usesStaging = pathList.some((p) => {
+		const resolved = resolve(p);
+		return isPathUnderRoot(resolved, stagingStackDir) || isManagedStagingDir(dirname(resolved));
+	});
+	if (!usesStaging) return paths;
+
+	let remoteStackDir: string | null = null;
+
+	const pathHints = hints ?? (await getStackPathHints(stackName, environmentId));
+	if (pathHints.workingDir) {
+		remoteStackDir = pathHints.workingDir;
+	} else if (pathHints.configFiles?.length) {
+		remoteStackDir = dirname(pathHints.configFiles[0]);
+	}
+
+	if (!remoteStackDir) {
+		const { getHawserInfo } = await import('./docker.js');
+		const info = await getHawserInfo(environmentId);
+		if (info?.stacksDir) {
+			remoteStackDir = join(info.stacksDir, stackName);
+		}
+	}
+
+	if (!remoteStackDir) return paths;
+
+	const remapped = remapPathsFromStagingToRemote(stagingStackDir, remoteStackDir, pathList);
+	return {
+		composePath: remapped[0] ?? null,
+		composePaths: remapped
+	};
+}
+
+/**
+ * Resolve stack source compose paths for UI display, including Hawser remote remapping.
+ */
+export async function resolveStackSourceDisplayPathsForEnv(
+	source: {
+		stackName: string;
+		environmentId?: number | null;
+		sourceType: string;
+		composePath?: string | null;
+		composePaths?: string | null;
+		gitStack?: { contextDir?: string | null; composePath?: string } | null;
+	},
+	env?: { connectionType?: string | null } | null,
+	hints?: { workingDir: string | null; configFiles: string[] | null } | null
+): Promise<{ composePath: string | null; composePaths: string[] }> {
+	const base = resolveStackSourceDisplayPaths(source);
+	return remapHawserStagingDisplayPaths(source.stackName, source.environmentId, base, env, hints);
+}
+
+/**
+ * Build a map of compose project name -> path hints from a pre-fetched container
+ * list, so a stacks listing doesn't trigger one container listing per stack.
+ */
+export function buildStackPathHintsMap(
+	containers: any[]
+): Map<string, { workingDir: string | null; configFiles: string[] | null }> {
+	const map = new Map<string, { workingDir: string | null; configFiles: string[] | null }>();
+	for (const container of containers) {
+		const labels = container.labels || {};
+		const project = labels['com.docker.compose.project'];
+		if (!project || map.has(project)) continue;
+		const workingDir = labels['com.docker.compose.project.working_dir'] || null;
+		const configFilesRaw = labels['com.docker.compose.project.config_files'] || null;
+		const configFiles = configFilesRaw ? configFilesRaw.split(',').map((f: string) => f.trim()) : null;
+		map.set(project, { workingDir, configFiles });
+	}
+	return map;
 }
 
 /**
@@ -2468,21 +2569,8 @@ export async function getStackPathHints(
 	configFiles: string[] | null;
 }> {
 	const containers = await getStackContainers(stackName, envId);
-
-	if (containers.length === 0) {
-		return { workingDir: null, configFiles: null };
-	}
-
-	// Get labels from first container (all containers in stack have same project labels)
-	const labels = containers[0].labels || {};
-
-	const workingDir = labels['com.docker.compose.project.working_dir'] || null;
-	const configFilesRaw = labels['com.docker.compose.project.config_files'] || null;
-
-	// Config files can be comma-separated if multiple compose files were used
-	const configFiles = configFilesRaw ? configFilesRaw.split(',').map((f: string) => f.trim()) : null;
-
-	return { workingDir, configFiles };
+	const hints = buildStackPathHintsMap(containers).get(stackName);
+	return hints ?? { workingDir: null, configFiles: null };
 }
 
 /**

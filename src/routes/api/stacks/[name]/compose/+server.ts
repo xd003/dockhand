@@ -1,6 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { getStackComposeFile, deployStack, saveStackComposeFile } from '$lib/server/stacks';
+import { dirname } from 'node:path';
+import { getStackComposeFile, deployStack, saveStackComposeFile, remapHawserStagingDisplayPaths } from '$lib/server/stacks';
 import { updateStackSource, getStackSource } from '$lib/server/db';
 import { authorize } from '$lib/server/authorize';
 import { createJobResponse } from '$lib/server/sse';
@@ -22,22 +23,68 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 
 		if (!result.success) {
 			// Return info about what's needed - unified response for all missing compose files
+			let displayComposePath = result.composePath;
+			let displayEnvPath = result.envPath;
+			if (result.composePath) {
+				const remapped = await remapHawserStagingDisplayPaths(name, envIdNum, {
+					composePath: result.composePath,
+					composePaths: []
+				});
+				displayComposePath = remapped.composePath ?? result.composePath;
+				if (result.envPath) {
+					const envRemapped = await remapHawserStagingDisplayPaths(name, envIdNum, {
+						composePath: result.envPath,
+						composePaths: []
+					});
+					displayEnvPath = envRemapped.composePath ?? result.envPath;
+				}
+			}
 			return json({
 				error: result.error,
 				needsFileLocation: result.needsFileLocation || false,
-				composePath: result.composePath,
-				envPath: result.envPath
+				composePath: displayComposePath,
+				envPath: displayEnvPath
 			}, { status: 404 });
+		}
+
+		const composePathsList = result.composePaths ?? (
+			source?.composePaths
+				? (() => { try { return JSON.parse(source.composePaths); } catch { return []; } })()
+				: []
+		);
+		const displayPaths = await remapHawserStagingDisplayPaths(name, envIdNum, {
+			composePath: result.composePath ?? null,
+			composePaths: Array.isArray(composePathsList) ? composePathsList : []
+		});
+		let displayStackDir = result.stackDir;
+		let displayEnvPath = result.envPath;
+		let displaySuggestedEnvPath = result.suggestedEnvPath;
+		if (displayPaths.composePath) {
+			displayStackDir = dirname(displayPaths.composePath);
+		}
+		if (result.envPath) {
+			const envRemapped = await remapHawserStagingDisplayPaths(name, envIdNum, {
+				composePath: result.envPath,
+				composePaths: []
+			});
+			displayEnvPath = envRemapped.composePath ?? result.envPath;
+		}
+		if (result.suggestedEnvPath) {
+			const suggestedRemapped = await remapHawserStagingDisplayPaths(name, envIdNum, {
+				composePath: result.suggestedEnvPath,
+				composePaths: []
+			});
+			displaySuggestedEnvPath = suggestedRemapped.composePath ?? result.suggestedEnvPath;
 		}
 
 		return json({
 			content: result.content,
 			composeContents: result.composeContents ?? null,
-			stackDir: result.stackDir,
-			composePath: result.composePath,
-			composePaths: result.composePaths ?? source?.composePaths ?? null,
-			envPath: result.envPath,
-			suggestedEnvPath: result.suggestedEnvPath
+			stackDir: displayStackDir,
+			composePath: displayPaths.composePath,
+			composePaths: displayPaths.composePaths.length > 0 ? displayPaths.composePaths : null,
+			envPath: displayEnvPath,
+			suggestedEnvPath: displaySuggestedEnvPath
 		});
 	} catch (error: any) {
 		console.error(`Error getting compose file for stack ${name}:`, error);

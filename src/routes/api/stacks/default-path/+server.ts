@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import { join } from 'path';
-import { getStackDir } from '$lib/server/stacks';
+import { getStackDir, isHawserConnection } from '$lib/server/stacks';
 import { getEnvironment } from '$lib/server/db';
 import type { RequestHandler } from './$types';
 
@@ -28,6 +28,7 @@ export const GET: RequestHandler = async ({ url }) => {
 	}
 
 	let stackDir: string;
+	let source = 'default';
 
 	if (location) {
 		// Custom location: {location}/{envName}/{stackName}/
@@ -43,13 +44,23 @@ export const GET: RequestHandler = async ({ url }) => {
 		}
 	} else {
 		// Dockhand default location
-		stackDir = await getStackDir(stackName, envIdNum);
+		if (envIdNum) {
+			const env = await getEnvironment(envIdNum);
+			if (env && isHawserConnection(env) && env.hawserStacksDir) {
+				stackDir = join(env.hawserStacksDir, stackName);
+				source = 'hawser';
+			} else {
+				stackDir = await getStackDir(stackName, envIdNum);
+			}
+		} else {
+			stackDir = await getStackDir(stackName, envIdNum);
+		}
 	}
 
 	return json({
 		stackDir,
 		composePath: `${stackDir}/compose.yaml`,
 		envPath: `${stackDir}/.env`,
-		source: 'default'
+		source
 	});
 };

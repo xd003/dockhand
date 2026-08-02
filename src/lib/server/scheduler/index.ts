@@ -750,8 +750,12 @@ export async function triggerGitStackSync(stackId: number): Promise<{ success: b
 			return { success: false, error: 'Git stack not found' };
 		}
 
-		// Run in background
-		runGitStackSync(stackId, stack.stackName, stack.environmentId, 'manual');
+		// Run in background; the task itself persists its execution result.
+		// Attach a catch so a failure before the task's own try/catch (e.g.
+		// execution-row creation) is logged instead of crashing the process.
+		runGitStackSync(stackId, stack.stackName, stack.environmentId, 'manual').catch((err) => {
+			console.error(`[Scheduler] runGitStackSync (manual, stack ${stackId}) rejected:`, err);
+		});
 
 		return { success: true };
 	} catch (error: any) {
@@ -769,8 +773,10 @@ export async function triggerGitStackSyncFromWebhook(stackId: number): Promise<{
 			return { success: false, error: 'Git stack not found' };
 		}
 
-		// Run in background
-		runGitStackSync(stackId, stack.stackName, stack.environmentId, 'webhook');
+		// Run in background (see triggerGitStackSync for the catch rationale)
+		runGitStackSync(stackId, stack.stackName, stack.environmentId, 'webhook').catch((err) => {
+			console.error(`[Scheduler] runGitStackSync (webhook, stack ${stackId}) rejected:`, err);
+		});
 
 		return { success: true };
 	} catch (error: any) {
@@ -788,8 +794,10 @@ export async function triggerGitRepositorySync(repositoryId: number): Promise<{ 
 			return { success: false, error: 'Git repository not found' };
 		}
 
-		// Run in background
-		runGitRepositorySync(repositoryId, repo.name, 'manual');
+		// Run in background (see triggerGitStackSync for the catch rationale)
+		runGitRepositorySync(repositoryId, repo.name, 'manual').catch((err) => {
+			console.error(`[Scheduler] runGitRepositorySync (manual, repo ${repositoryId}) rejected:`, err);
+		});
 
 		return { success: true };
 	} catch (error: any) {
@@ -807,8 +815,10 @@ export async function triggerGitRepositorySyncFromWebhook(repositoryId: number):
 			return { success: false, error: 'Git repository not found' };
 		}
 
-		// Run in background
-		runGitRepositorySync(repositoryId, repo.name, 'webhook');
+		// Run in background (see triggerGitStackSync for the catch rationale)
+		runGitRepositorySync(repositoryId, repo.name, 'webhook').catch((err) => {
+			console.error(`[Scheduler] runGitRepositorySync (webhook, repo ${repositoryId}) rejected:`, err);
+		});
 
 		return { success: true };
 	} catch (error: any) {

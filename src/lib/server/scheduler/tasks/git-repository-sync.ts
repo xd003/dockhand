@@ -63,58 +63,53 @@ export async function runGitRepositorySync(
 		// Deploy from repository with fan-out logic
 		const result = await deployFromRepositoryWithFanOut(repositoryId, log);
 
-		const totalStacks = result.stacks?.length || 0;
-		const deployedStacks = result.stacks?.filter(s => s.status === 'deployed').length || 0;
-		const skippedStacks = result.stacks?.filter(s => s.status === 'skipped').length || 0;
-		const failedStacks = result.stacks?.filter(s => s.status === 'failed').length || 0;
+		const stacks = result.stacks ?? [];
+		const totalStacks = stacks.length;
+		const deployedStacks = stacks.filter(s => s.status === 'deployed').length;
+		const skippedStacks = stacks.filter(s => s.status === 'skipped').length;
+		const failedStacks = stacks.filter(s => s.status === 'failed').length;
 
-		if (result.success) {
-			log(`Sync completed for repository ${repositoryName}. Total stacks: ${totalStacks} (Deployed: ${deployedStacks}, Skipped: ${skippedStacks}, Failed: ${failedStacks})`);
-
-			if (failedStacks > 0) {
-				await persistStackDetails(
-					deployedStacks > 0 ? 'success' : 'failed',
-					result,
-					result.error
-				);
-
-				await sendEventNotification('git_sync_failed', {
-					title: 'Git repository sync finished with errors',
-					message: `Repository "${repositoryName}" sync had ${failedStacks} failed stack(s).`,
-					type: 'warning'
-				});
-			} else if (deployedStacks > 0) {
-				await persistStackDetails('success', result);
-
-				await sendEventNotification('git_sync_success', {
-					title: 'Git repository synced',
-					message: `Repository "${repositoryName}" deployed ${deployedStacks} stack(s) successfully.`,
-					type: 'success'
-				});
-			} else {
-				await persistStackDetails('skipped', result);
-
-				await sendEventNotification('git_sync_skipped', {
-					title: 'Git repository sync skipped',
-					message: `Repository "${repositoryName}" sync skipped: no changes detected in ${skippedStacks} stack(s).`,
-					type: 'info'
-				});
-			}
-		} else {
-			// Fan-out finished with one or more stack failures (or a repo-level error).
-			// Always persist per-stack results so the UI keeps the breakdown.
-			log(`Sync finished with errors for repository ${repositoryName}. Total stacks: ${totalStacks} (Deployed: ${deployedStacks}, Skipped: ${skippedStacks}, Failed: ${failedStacks})`);
+		if (failedStacks > 0 || (totalStacks === 0 && !result.success)) {
+			// Any failed stack marks the execution failed — a "success" status
+			// here would hide the breakdown from the schedules UI. Also treat
+			// a repo-level failure with no per-stack results as failed.
+			const partial = deployedStacks > 0;
+			log(`Sync finished with ${partial ? 'partial ' : ''}errors for repository ${repositoryName}. Total stacks: ${totalStacks} (Deployed: ${deployedStacks}, Skipped: ${skippedStacks}, Failed: ${failedStacks})`);
 
 			await persistStackDetails(
-				deployedStacks > 0 ? 'success' : 'failed',
+				'failed',
 				result,
 				result.error || 'Deployment failed'
 			);
 
 			await sendEventNotification('git_sync_failed', {
-				title: 'Git repository sync failed',
-				message: `Repository "${repositoryName}" sync failed: ${result.error || 'Deployment failed'}`,
-				type: 'error'
+				title: partial ? 'Git repository sync finished with errors' : 'Git repository sync failed',
+				message: partial
+					? `Repository "${repositoryName}" deployed ${deployedStacks} stack(s), ${failedStacks} failed.`
+					: `Repository "${repositoryName}" sync failed: ${result.error || `${failedStacks} stack(s) failed`}`,
+				type: partial ? 'warning' : 'error'
+			});
+		} else if (deployedStacks > 0) {
+			log(`Sync completed for repository ${repositoryName}. Total stacks: ${totalStacks} (Deployed: ${deployedStacks}, Skipped: ${skippedStacks}, Failed: ${failedStacks})`);
+
+			await persistStackDetails('success', result);
+
+			await sendEventNotification('git_sync_success', {
+				title: 'Git repository synced',
+				message: `Repository "${repositoryName}" deployed ${deployedStacks} stack(s) successfully.`,
+				type: 'success'
+			});
+		} else {
+			log(`Sync completed for repository ${repositoryName}. Total stacks: ${totalStacks} (Deployed: ${deployedStacks}, Skipped: ${skippedStacks}, Failed: ${failedStacks})`);
+
+			await persistStackDetails('skipped', result);
+
+			await sendEventNotification('git_sync_skipped', {
+				title: 'Git repository sync skipped',
+				message: totalStacks > 0
+					? `Repository "${repositoryName}" sync skipped: no changes detected in ${skippedStacks} stack(s).`
+					: `Repository "${repositoryName}" sync skipped: no stacks are linked to this repository.`,
+				type: 'info'
 			});
 		}
 	} catch (error: any) {

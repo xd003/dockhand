@@ -1,7 +1,6 @@
-import { existsSync, mkdirSync, rmSync, chmodSync, readFileSync, writeFileSync, renameSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, chmodSync, readFileSync, writeFileSync, renameSync, readdirSync, realpathSync } from 'node:fs';
 import { join, resolve, dirname, basename, relative, isAbsolute } from 'node:path';
 import { spawn as nodeSpawn, spawnSync } from 'node:child_process';
-import type { ChildProcess } from 'node:child_process';
 import {
 	getGitRepository,
 	getGitRepositories,
@@ -23,6 +22,8 @@ import { buildBasicAuthHeader } from './git-auth';
 import { assertSafeRepoUrl, assertSafeGitRef, repoFilePath } from './git-url-safety';
 import { isPathUnderRoot } from './path-utils';
 import { parseComposePathsColumn } from './compose-files';
+import { collectProcess } from './process-utils';
+import { redactEnvVarsForLog } from './log-utils';
 import {
 	fanOutDeployStacks,
 	mergeDeployGitStackOpts,
@@ -109,26 +110,6 @@ function getMergedCaBundlePath(): string {
 	return MERGED_CA_BUNDLE_PATH;
 }
 
-/**
- * Collect stdout, stderr and exit code from a spawned process.
- */
-function collectProcess(proc: ChildProcess): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-	return new Promise((resolve, reject) => {
-		const stdoutChunks: Buffer[] = [];
-		const stderrChunks: Buffer[] = [];
-		proc.stdout?.on('data', (chunk: Buffer) => stdoutChunks.push(chunk));
-		proc.stderr?.on('data', (chunk: Buffer) => stderrChunks.push(chunk));
-		proc.on('error', reject);
-		proc.on('close', (code) => {
-			resolve({
-				exitCode: code ?? 1,
-				stdout: Buffer.concat(stdoutChunks).toString(),
-				stderr: Buffer.concat(stderrChunks).toString()
-			});
-		});
-	});
-}
-
 // Directory for storing cloned repositories
 const dataDir = process.env.DATA_DIR || './data';
 const GIT_REPOS_DIR = resolve(process.env.GIT_REPOS_DIR || join(dataDir, 'git-repos'));
@@ -198,17 +179,6 @@ export async function migrateLegacyEnvGitRepos(): Promise<void> {
 			? `[Git] Legacy env-scoped git-repos migration complete (${removed} dir(s) removed)`
 			: '[Git] Legacy env-scoped git-repos migration complete (nothing to remove)'
 	);
-}
-
-/**
- * Redact all env var values for safe logging. Only key names are preserved.
- */
-function redactEnvVarsForLog(vars: Record<string, string>): Record<string, string> {
-	const redacted: Record<string, string> = {};
-	for (const key of Object.keys(vars)) {
-		redacted[key] = '***';
-	}
-	return redacted;
 }
 
 /**
@@ -938,7 +908,10 @@ export async function checkForUpdates(repoId: number): Promise<{ hasUpdates: boo
 		const currentResult = await execGit(['rev-parse', 'HEAD'], repoPath, env);
 		const currentCommit = currentResult.stdout.substring(0, 7);
 
-		// Fetch latest without merging
+		// Fetch latest without merging. Guard the branch like every other
+		// exec path — a stored branch starting with '-' would be parsed as a
+		// git option.
+		assertSafeGitRef(repo.branch);
 		await execGit(['fetch', 'origin', repo.branch], repoPath, env);
 
 		// Get remote commit
@@ -1292,15 +1265,22 @@ export async function syncGitStack(stackId: number, onProgress?: ProgressCallbac
 			console.log(`${logPrefix} Looking for env file at:`, envFilePath);
 			if (existsSync(envFilePath)) {
 				try {
-					console.log(`${logPrefix} Reading env file...`);
-					envFileContent = readFileSync(envFilePath, 'utf-8');
-					envFileVars = parseEnvFileContent(envFileContent, gitStack.stackName);
-					console.log(`${logPrefix} Env file parsed, vars count:`, Object.keys(envFileVars).length);
+					// Realpath containment: a git-tracked symlink pointing outside
+					// the repo must not be followed (host file exfiltration).
+					const realEnvPath = realpathSync(envFilePath);
+					if (!isPathUnderRoot(realEnvPath, realpathSync(repoPath))) {
+						console.warn(`${logPrefix} Configured env file resolves outside the repository — skipping: ${gitStack.envFilePath}`);
+					} else {
+						console.log(`${logPrefix} Reading env file...`);
+						envFileContent = readFileSync(realEnvPath, 'utf-8');
+						envFileVars = parseEnvFileContent(envFileContent, gitStack.stackName);
+						console.log(`${logPrefix} Env file parsed, vars count:`, Object.keys(envFileVars).length);
 
-					// Compute env file path relative to compose directory
-					// This is needed for --env-file flag after files are copied to stack directory
-					envFileName = relative(composeDir, envFilePath);
-					console.log(`${logPrefix} Env filename relative to compose dir:`, envFileName);
+						// Compute env file path relative to compose directory
+						// This is needed for --env-file flag after files are copied to stack directory
+						envFileName = relative(composeDir, envFilePath);
+						console.log(`${logPrefix} Env filename relative to compose dir:`, envFileName);
+					}
 				} catch (err) {
 					// Log but don't fail - env file is optional
 					console.warn(`${logPrefix} Failed to read env file ${gitStack.envFilePath}:`, err);
@@ -1816,7 +1796,10 @@ export async function readGitStackEnvFile(
 		return { vars: {}, error: 'Repository not synced — deploy the stack first to populate the shared clone' };
 	}
 
-	// Security check: ensure the path doesn't escape the repo
+	// Security check: ensure the path doesn't escape the repo. Both lexical
+	// containment (../ traversal) and realpath containment (a git-tracked
+	// symlink pointing outside the repo) are checked, so a malicious repo
+	// cannot exfiltrate host files through the env-file reader.
 	const fullPath = resolve(repoPath, envFilePath);
 	if (!isPathUnderRoot(fullPath, repoPath)) {
 		return { vars: {}, error: 'Invalid file path' };
@@ -1826,8 +1809,18 @@ export async function readGitStackEnvFile(
 		return { vars: {}, error: `File not found: ${envFilePath}` };
 	}
 
+	let realPath: string;
 	try {
-		const content = readFileSync(fullPath, 'utf-8');
+		realPath = realpathSync(fullPath);
+		if (!isPathUnderRoot(realPath, realpathSync(repoPath))) {
+			return { vars: {}, error: 'Invalid file path' };
+		}
+	} catch {
+		return { vars: {}, error: `File not found: ${envFilePath}` };
+	}
+
+	try {
+		const content = readFileSync(realPath, 'utf-8');
 		const vars = parseEnvFileContent(content);
 		return { vars };
 	} catch (error: any) {

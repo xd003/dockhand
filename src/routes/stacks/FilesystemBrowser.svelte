@@ -36,7 +36,8 @@
 		/**
 		 * If set, directory-listing requests are sent to this URL instead of /api/system/files.
 		 * The endpoint must accept a `?path=` query parameter and return the same
-		 * { path, entries: FileEntry[], repoRoot?, parent } shape.
+		 * { path, entries: FileEntry[], parent } shape, with all paths RELATIVE
+		 * to the browse root ('' = root).
 		 * Used for browsing git repository clones without exposing the full host filesystem.
 		 */
 		apiUrl?: string;
@@ -156,11 +157,9 @@
 			currentPath = data.path;
 			entries = data.entries;
 
-			// For git-repo browse mode: capture the repo root returned by the API.
-			// This allows the parent to compute relative paths from the absolute clone path.
-			if (apiUrl && data.repoRoot && !rootPath) {
-				rootPath = data.repoRoot;
-			}
+			// The git browse API returns paths RELATIVE to the repository root
+			// ('' = root), so the host filesystem layout is never exposed.
+			// Navigation and selection use these relative paths directly.
 
 			// Clear the cloning spinner on first successful listing
 			if (cloningMessage) {
@@ -502,7 +501,7 @@
 						</div>
 						<p class="text-red-600 dark:text-red-400 font-medium">Unable to browse files</p>
 						<p class="text-sm text-muted-foreground mt-1">{error}</p>
-						<Button variant="outline" size="sm" class="mt-4" onclick={() => currentPath && loadDirectory(currentPath)}>
+						<Button variant="outline" size="sm" class="mt-4" onclick={() => loadDirectory(currentPath || (apiUrl ? '/' : initialPath))}>
 							Retry
 						</Button>
 					</div>

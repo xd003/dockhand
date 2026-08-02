@@ -30,3 +30,23 @@ export function verifyWebhookSignature(payload: string, signature: string | null
 	if (sigBuf.length !== secretBuf.length) return false;
 	return crypto.timingSafeEqual(sigBuf, secretBuf);
 }
+
+/**
+ * Verify a time-windowed HMAC signature for GET webhook triggers.
+ * Signature is hex HMAC-SHA256 of the unix-seconds timestamp keyed by the
+ * secret, so the secret never travels in the URL (replaces ?secret=).
+ */
+export function verifyQuerySignature(secret: string, ts: string, sig: string | null): boolean {
+	if (!sig) return false;
+
+	const tsNum = Number(ts);
+	if (!Number.isFinite(tsNum) || !/^\d+$/.test(ts)) return false;
+	const ageSec = Math.abs(Date.now() / 1000 - tsNum);
+	if (ageSec > 300) return false; // reject stale/replayed signatures
+
+	const expected = crypto.createHmac('sha256', secret).update(ts).digest('hex');
+	const sigBuf = Buffer.from(sig);
+	const expectedBuf = Buffer.from(expected);
+	if (sigBuf.length !== expectedBuf.length) return false;
+	return crypto.timingSafeEqual(sigBuf, expectedBuf);
+}

@@ -20,8 +20,7 @@ export interface ShouldDeployGitStackInput extends DeployGitStackOpts {
  * Whether a stack should be deployed after a sync:
  * - `force` (manual trigger / stack-level webhook) always deploys
  * - `forceRedeploy` redeploys unless every caller opted into
- *   `ignoreForceRedeploy` (repo-level fan-out defers stacks with their own
- *   webhook so those are triggered explicitly)
+ *   `ignoreForceRedeploy` (reserved for the stack-webhook-vs-fan-out race)
  * - `updated` (the sync found changed files) always deploys
  */
 export function shouldDeployGitStack(input: ShouldDeployGitStackInput): boolean {
@@ -46,9 +45,12 @@ export function mergeDeployGitStackOpts(
 }
 
 /**
- * Repository-level fan-out gating: a stack with its own webhook enabled is
- * excluded from the repository's force-redeploy behaviour and is only
- * redeployed when the sync actually found changes.
+ * Repository-level fan-out gating: a stack with its own webhook enabled
+ * (forceRedeploy + webhookEnabled) is excluded from the repository webhook's
+ * fan-out ENTIRELY — it is only triggered by its own webhook. Deploying it
+ * here as well would double-deploy the stack on a single push that hits both
+ * endpoints (the repo webhook via changes, then the stack webhook's force
+ * redeploy).
  */
 export function repoFanOutDefersStack(stack: {
 	forceRedeploy: boolean;
@@ -65,7 +67,8 @@ export interface FanOutStack {
 }
 
 export type FanOutStackResult =
-	| { id: number; name: string; status: 'deployed' | 'skipped' }
+	| { id: number; name: string; status: 'deployed' }
+	| { id: number; name: string; status: 'skipped'; reason?: 'own-webhook' }
 	| { id: number; name: string; status: 'failed'; error?: string };
 
 export interface FanOutStacksResult {
@@ -76,10 +79,10 @@ export interface FanOutStacksResult {
 
 /**
  * Fan a repository webhook out over its stacks (deployGitStack per stack):
- * - a stack with its own webhook (forceRedeploy + webhookEnabled) is deferred:
- *   it is called with `ignoreForceRedeploy: true` so it only deploys when the
- *   sync found changes — its own webhook is the only force trigger
- * - every other stack is called with `ignoreForceRedeploy: false`, so its
+ * - a stack with its own webhook (forceRedeploy + webhookEnabled) is skipped
+ *   ENTIRELY — it is triggered independently by its own webhook, and deploying
+ *   it from here too would double-deploy the stack on a single push
+ * - every other stack is deployed with `ignoreForceRedeploy: false`, so its
  *   forceRedeploy setting is honored and it redeploys even without changes
  */
 export async function fanOutDeployStacks(
@@ -97,13 +100,14 @@ export async function fanOutDeployStacks(
 	for (const stack of stacks) {
 		_log(`[Git] Evaluating stack "${stack.stackName}"...`);
 
-		try {
-			const ignoreForceRedeploy = repoFanOutDefersStack(stack);
-			if (ignoreForceRedeploy) {
-				_log(`[Git] Stack "${stack.stackName}" has a stack-level webhook enabled — ignoring force redeploy from repo webhook. Will only deploy if changes exist.`);
-			}
+		if (repoFanOutDefersStack(stack)) {
+			_log(`[Git] Stack "${stack.stackName}" has its own webhook (force redeployment enabled) — skipping entirely; it is triggered independently by its own webhook.`);
+			results.push({ id: stack.id, name: stack.stackName, status: 'skipped', reason: 'own-webhook' });
+			continue;
+		}
 
-			const deployResult = await deploy(stack.id, { force: false, ignoreForceRedeploy });
+		try {
+			const deployResult = await deploy(stack.id, { force: false, ignoreForceRedeploy: false });
 
 			if (deployResult.success) {
 				if (deployResult.skipped) {

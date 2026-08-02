@@ -2130,7 +2130,14 @@ export async function updateGitRepository(id: number, data: Partial<GitRepositor
 	if (data.autoUpdateSchedule !== undefined) updateData.autoUpdateSchedule = data.autoUpdateSchedule;
 	if (data.autoUpdateCron !== undefined) updateData.autoUpdateCron = data.autoUpdateCron;
 	if (data.webhookEnabled !== undefined) updateData.webhookEnabled = data.webhookEnabled;
-	if (data.webhookSecret !== undefined) updateData.webhookSecret = data.webhookSecret;
+	// Disabling the webhook clears the stored secret (defense in depth — the
+	// UI also sends null, but an API client disabling with only the flag
+	// should not leave a stale secret behind for a later re-enable).
+	if (data.webhookEnabled === false) {
+		updateData.webhookSecret = null;
+	} else if (data.webhookSecret !== undefined) {
+		updateData.webhookSecret = data.webhookSecret;
+	}
 	if (data.lastSync !== undefined) updateData.lastSync = data.lastSync;
 	if (data.lastCommit !== undefined) updateData.lastCommit = data.lastCommit;
 	if (data.syncStatus !== undefined) updateData.syncStatus = data.syncStatus;
@@ -2530,7 +2537,15 @@ export async function updateGitStack(id: number, data: Partial<GitStackData> & {
 	if (data.stackName !== undefined) updateData.stackName = data.stackName;
 	if (data.repositoryId !== undefined) updateData.repositoryId = data.repositoryId;
 	if (data.composePath !== undefined) updateData.composePath = data.composePath;
-	if (data.composePaths !== undefined) updateData.composePaths = data.composePaths ? JSON.stringify(data.composePaths) : null;
+	if (data.composePaths !== undefined) {
+		updateData.composePaths = data.composePaths && data.composePaths.length > 0 ? JSON.stringify(data.composePaths) : null;
+		// Keep the singular column in sync with the multi-file list (it is
+		// denormalized from composePaths[0]); a client that only sends
+		// composePaths must not leave the two diverged.
+		if (data.composePath === undefined && data.composePaths && data.composePaths.length > 0) {
+			updateData.composePath = data.composePaths[0];
+		}
+	}
 	if (data.envFilePath !== undefined) updateData.envFilePath = data.envFilePath;
 	if (data.contextDir !== undefined) updateData.contextDir = data.contextDir;
 	if (data.buildOnDeploy !== undefined) updateData.buildOnDeploy = data.buildOnDeploy;

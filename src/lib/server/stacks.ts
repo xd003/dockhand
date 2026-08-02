@@ -8,12 +8,13 @@
 import { existsSync, mkdirSync, rmSync, readdirSync, cpSync, statSync, unlinkSync, renameSync, readFileSync, writeFileSync, realpathSync, accessSync, constants as fsConstants } from 'node:fs';
 import { join, resolve, dirname, basename, relative, normalize as pathNormalize, sep as pathSep, isAbsolute } from 'node:path';
 import { spawn as nodeSpawn } from 'node:child_process';
-import type { ChildProcess } from 'node:child_process';
 import {
 	resolveEffectiveComposeFiles,
 	shouldUseExplicitFFlags,
 	type ResolvedComposeFile
 } from './compose-files';
+import { collectProcess } from './process-utils';
+import { redactEnvVarsForLog } from './log-utils';
 import {
 	applyFileDeletions,
 	hashDirFiles,
@@ -42,6 +43,7 @@ import {
 	getPendingContainerUpdates,
 	deleteAutoUpdateSchedule,
 	getAutoUpdateSetting,
+	getStackComposePaths,
 	getStackSourceByComposePath
 } from './db';
 import { unregisterSchedule } from './scheduler';
@@ -245,26 +247,6 @@ function isBinaryContent(bytes: Uint8Array): boolean {
 }
 
 /**
- * Collect stdout/stderr from a child process and wait for it to exit.
- */
-function collectProcess(proc: ChildProcess): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-	return new Promise((resolve, reject) => {
-		const stdoutChunks: Buffer[] = [];
-		const stderrChunks: Buffer[] = [];
-		proc.stdout?.on('data', (chunk: Buffer) => stdoutChunks.push(chunk));
-		proc.stderr?.on('data', (chunk: Buffer) => stderrChunks.push(chunk));
-		proc.on('error', reject);
-		proc.on('close', (code) => {
-			resolve({
-				exitCode: code ?? 1,
-				stdout: Buffer.concat(stdoutChunks).toString(),
-				stderr: Buffer.concat(stderrChunks).toString()
-			});
-		});
-	});
-}
-
-/**
  * Read all files from a directory as a map of relative path -> content.
  * Used to send files to Hawser for remote deployments.
  * Binary files are base64-encoded with a "base64:" prefix to preserve all bytes.
@@ -320,21 +302,6 @@ async function readDirFilesAsMap(dirPath: string): Promise<Record<string, string
 	}
 
 	return files;
-}
-
-// =============================================================================
-// DEBUG UTILITIES
-// =============================================================================
-
-/**
- * Redact all env var values for safe logging. Only key names are preserved.
- */
-function redactEnvVarsForLog(vars: Record<string, string>): Record<string, string> {
-	const redacted: Record<string, string> = {};
-	for (const key of Object.keys(vars)) {
-		redacted[key] = '***';
-	}
-	return redacted;
 }
 
 // =============================================================================
@@ -623,6 +590,31 @@ function moveStackDirCrossDevice(sourceDir: string, destDir: string): void {
 		if (err?.code !== 'EXDEV') throw err;
 		cpSync(sourceDir, destDir, { recursive: true, force: true });
 		rmSync(sourceDir, { recursive: true, force: true });
+	}
+}
+
+/**
+ * Move a stack file via rename, falling back to copy+delete across devices.
+ * Non-EXDEV failures are logged and swallowed, matching the original callers.
+ */
+function moveStackFilePathCrossDevice(sourcePath: string, destPath: string, label: string): void {
+	try {
+		renameSync(sourcePath, destPath);
+		console.log(`[Stack] Moved ${label}: ${sourcePath} -> ${destPath}`);
+	} catch (renameErr: any) {
+		// If rename fails (e.g., cross-filesystem), try copy+delete
+		if (renameErr.code === 'EXDEV') {
+			try {
+				const data = readFileSync(sourcePath);
+				writeFileSync(destPath, data);
+				unlinkSync(sourcePath);
+				console.log(`[Stack] Copied ${label} (cross-fs): ${sourcePath} -> ${destPath}`);
+			} catch (err: any) {
+				console.warn(`[Stack] Failed to copy ${label}: ${err.message}`);
+			}
+		} else {
+			console.warn(`[Stack] Failed to move ${label}: ${renameErr.message}`);
+		}
 	}
 }
 
@@ -1017,19 +1009,7 @@ export function resolveStackSourceDisplayPaths(
 		gitStack?: { contextDir?: string | null; composePath?: string } | null;
 	}
 ): { composePath: string | null; composePaths: string[] } {
-	let rawPaths: string[] = [];
-
-	if (source.composePaths) {
-		try {
-			const parsed = JSON.parse(source.composePaths);
-			if (Array.isArray(parsed) && parsed.length > 0) {
-				rawPaths = parsed;
-			}
-		} catch { /* ignore malformed JSON */ }
-	}
-	if (rawPaths.length === 0 && source.composePath) {
-		rawPaths = [source.composePath];
-	}
+	const rawPaths = getStackComposePaths(source);
 
 	if (rawPaths.length === 0) {
 		return { composePath: null, composePaths: [] };
@@ -1166,21 +1146,8 @@ export async function getStackComposeFile(
 	// Resolve the effective compose paths.
 	// Git stacks store repo-relative paths (e.g. "immich/compose.yaml");
 	// external/adopted stacks store absolute paths.
-	let rawPaths: string[] = [];
-
-	// First, try composePaths (JSON array) from DB
-	if (source.composePaths) {
-		try {
-			const parsed = JSON.parse(source.composePaths);
-			if (Array.isArray(parsed) && parsed.length > 0) {
-				rawPaths = parsed;
-			}
-		} catch { /* ignore malformed JSON */ }
-	}
-	// Fall back to single composePath
-	if (rawPaths.length === 0 && source.composePath) {
-		rawPaths = [source.composePath];
-	}
+	// First, try composePaths (JSON array) from DB, falling back to single composePath.
+	const rawPaths = getStackComposePaths(source);
 
 	// Resolve relative paths against stackDir (needed for git stacks).
 	// For absolute paths (external/adopted stacks), they pass through as-is.
@@ -1363,24 +1330,7 @@ export async function saveStackComposeFile(
 		}
 
 		// Move/rename the compose file to new location
-		try {
-			renameSync(options.oldComposePath, options.composePath);
-			console.log(`[Stack] Moved compose file: ${options.oldComposePath} -> ${options.composePath}`);
-		} catch (renameErr: any) {
-			// If rename fails (e.g., cross-filesystem), try copy+delete
-			if (renameErr.code === 'EXDEV') {
-				try {
-					const data = readFileSync(options.oldComposePath);
-					writeFileSync(options.composePath, data);
-					unlinkSync(options.oldComposePath);
-					console.log(`[Stack] Copied compose file (cross-fs): ${options.oldComposePath} -> ${options.composePath}`);
-				} catch (err: any) {
-					console.warn(`[Stack] Failed to copy compose file: ${err.message}`);
-				}
-			} else {
-				console.warn(`[Stack] Failed to move compose file: ${renameErr.message}`);
-			}
-		}
+		moveStackFilePathCrossDevice(options.oldComposePath, options.composePath, 'compose file');
 	}
 
 	// Handle env file move/rename when path changes
@@ -1399,24 +1349,7 @@ export async function saveStackComposeFile(
 		}
 
 		// Move/rename the env file to new location
-		try {
-			renameSync(options.oldEnvPath, options.envPath);
-			console.log(`[Stack] Moved env file: ${options.oldEnvPath} -> ${options.envPath}`);
-		} catch (renameErr: any) {
-			// If rename fails (e.g., cross-filesystem), try copy+delete
-			if (renameErr.code === 'EXDEV') {
-				try {
-					const data = readFileSync(options.oldEnvPath);
-					writeFileSync(options.envPath, data);
-					unlinkSync(options.oldEnvPath);
-					console.log(`[Stack] Copied env file (cross-fs): ${options.oldEnvPath} -> ${options.envPath}`);
-				} catch (err: any) {
-					console.warn(`[Stack] Failed to copy env file: ${err.message}`);
-				}
-			} else {
-				console.warn(`[Stack] Failed to move env file: ${renameErr.message}`);
-			}
-		}
+		moveStackFilePathCrossDevice(options.oldEnvPath, options.envPath, 'env file');
 	}
 
 	// Move all files from old directory to new directory when path changes

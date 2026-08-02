@@ -1,74 +1,39 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { getGitStack } from '$lib/server/db';
+import { getGitStack, type GitStackWithRepo } from '$lib/server/db';
 import { triggerGitStackSyncFromWebhook } from '$lib/server/scheduler';
 import { auditGitStack } from '$lib/server/audit';
-import { verifyWebhookSignature } from '$lib/server/webhook-signature';
+import { handleGitWebhookRequest, type GitWebhookHandlerOptions } from '$lib/server/git-webhook-handler';
 
-function detectSource(request: Request): string {
-	if (request.headers.get('x-hub-signature-256')) return 'github';
-	if (request.headers.get('x-gitlab-token')) return 'gitlab';
-	return 'unknown';
-}
+const options: GitWebhookHandlerOptions<GitStackWithRepo> = {
+	load: (id) => getGitStack(id),
+	preconditions: (stack) => {
+		if (!stack.forceRedeploy) {
+			return { error: 'Force redeployment is not enabled for this stack', status: 403 };
+		}
+		return null;
+	},
+	audit: async (event, id, stack, meta) => {
+		await auditGitStack(event, 'webhook', id, stack.stackName, stack.environmentId, meta);
+	},
+	trigger: (id) => triggerGitStackSyncFromWebhook(id),
+	invalidIdMessage: 'Invalid stack ID',
+	notFoundMessage: 'Stack not found',
+	webhookDisabledMessage: 'Webhook is not enabled for this stack',
+	secretNotConfiguredMessage: 'Webhook secret is not configured for this stack',
+	successMessage: 'Stack sync triggered',
+	deprecated: true
+};
 
+/**
+ * Stack-level git webhook. See git-webhook-handler.ts for the shared flow.
+ * Deprecated compat shim: webhooks moved to the repository
+ * (/api/git/webhook/[id]). Kept so existing external systems keep
+ * working without re-pointing; each stack still verifies its own secret.
+ */
 export const POST: RequestHandler = async (event) => {
-	const { params, request } = event;
 	try {
-		const id = parseInt(params.id);
-		if (isNaN(id)) {
-			return json({ error: 'Invalid stack ID' }, { status: 400 });
-		}
-
-		const gitStack = await getGitStack(id);
-		if (!gitStack) {
-			return json({ error: 'Stack not found' }, { status: 404 });
-		}
-
-		if (!gitStack.forceRedeploy) {
-			return json({ error: 'Force redeployment is not enabled for this stack' }, { status: 403 });
-		}
-
-		if (!gitStack.webhookEnabled) {
-			return json({ error: 'Webhook is not enabled for this stack' }, { status: 403 });
-		}
-
-		const source = detectSource(request);
-
-		// A secret is mandatory: reject if none is configured.
-		if (!gitStack.webhookSecret) {
-			await auditGitStack(event, 'webhook', id, gitStack.stackName, gitStack.environmentId, {
-				method: 'POST', source, error: 'no_secret_configured'
-			});
-			return json({ error: 'Webhook secret is not configured for this stack' }, { status: 401 });
-		}
-
-		const payload = await request.text();
-		const githubSignature = request.headers.get('x-hub-signature-256');
-		const gitlabToken = request.headers.get('x-gitlab-token');
-
-		const signature = githubSignature || gitlabToken;
-
-		if (!verifyWebhookSignature(payload, signature, gitStack.webhookSecret)) {
-			await auditGitStack(event, 'webhook', id, gitStack.stackName, gitStack.environmentId, {
-				method: 'POST', source, error: 'invalid_signature'
-			});
-			return json({ error: 'Invalid webhook signature' }, { status: 401 });
-		}
-
-		// Trigger stack-level sync (force redeploy of this stack only)
-		const result = await triggerGitStackSyncFromWebhook(id);
-		await auditGitStack(event, 'webhook', id, gitStack.stackName, gitStack.environmentId, {
-			method: 'POST', source, result: result.success ? 'triggered' : 'failed'
-		});
-
-		if (!result.success) {
-			return json(result, { status: 500 });
-		}
-
-		// Deprecated compat shim: webhooks moved to the repository
-		// (/api/git/webhook/[id]). Kept so existing external systems keep
-		// working without re-pointing; each stack still verifies its own secret.
-		return json({ success: true, message: 'Stack sync triggered', deprecated: true }, { status: 202 });
+		return await handleGitWebhookRequest(event, options);
 	} catch (error: any) {
 		console.error('Stack webhook error:', error);
 		return json({ success: false, error: error.message }, { status: 500 });
@@ -77,56 +42,8 @@ export const POST: RequestHandler = async (event) => {
 
 // Also support GET for simple polling/manual triggers
 export const GET: RequestHandler = async (event) => {
-	const { params, url } = event;
 	try {
-		const id = parseInt(params.id);
-		if (isNaN(id)) {
-			return json({ error: 'Invalid stack ID' }, { status: 400 });
-		}
-
-		const gitStack = await getGitStack(id);
-		if (!gitStack) {
-			return json({ error: 'Stack not found' }, { status: 404 });
-		}
-
-		if (!gitStack.forceRedeploy) {
-			return json({ error: 'Force redeployment is not enabled for this stack' }, { status: 403 });
-		}
-
-		if (!gitStack.webhookEnabled) {
-			return json({ error: 'Webhook is not enabled for this stack' }, { status: 403 });
-		}
-
-		// A secret is mandatory (see POST handler). Reject if none is configured.
-		if (!gitStack.webhookSecret) {
-			await auditGitStack(event, 'webhook', id, gitStack.stackName, gitStack.environmentId, {
-				method: 'GET', source: 'get', error: 'no_secret_configured'
-			});
-			return json({ error: 'Webhook secret is not configured for this stack' }, { status: 401 });
-		}
-
-		// Verify secret via query parameter for GET requests
-		const secret = url.searchParams.get('secret');
-		if (secret !== gitStack.webhookSecret) {
-			await auditGitStack(event, 'webhook', id, gitStack.stackName, gitStack.environmentId, {
-				method: 'GET', source: 'get', error: 'invalid_secret'
-			});
-			return json({ error: 'Invalid webhook secret' }, { status: 401 });
-		}
-
-		// Trigger stack-level sync (force redeploy of this stack only)
-		const result = await triggerGitStackSyncFromWebhook(id);
-		await auditGitStack(event, 'webhook', id, gitStack.stackName, gitStack.environmentId, {
-			method: 'GET', source: 'get', result: result.success ? 'triggered' : 'failed'
-		});
-
-		if (!result.success) {
-			return json(result, { status: 500 });
-		}
-
-		// Deprecated compat shim (see POST handler): repository webhooks
-		// (/api/git/webhook/[id]) replace this endpoint.
-		return json({ success: true, message: 'Stack sync triggered', deprecated: true }, { status: 202 });
+		return await handleGitWebhookRequest(event, options);
 	} catch (error: any) {
 		console.error('Stack webhook GET error:', error);
 		return json({ success: false, error: error.message }, { status: 500 });

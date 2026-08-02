@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { statSync, readdirSync, existsSync, realpathSync } from 'node:fs';
-import { join, resolve, isAbsolute } from 'node:path';
+import { join, resolve, isAbsolute, relative } from 'node:path';
 import { getGitRepository } from '$lib/server/db';
 import { syncRepositoryExclusive, getRepoClonePath } from '$lib/server/git';
 import { authorize } from '$lib/server/authorize';
@@ -9,6 +9,7 @@ import { isPathUnderRoot } from '$lib/server/path-utils';
 
 interface FileEntry {
 	name: string;
+	/** Path relative to the repository root ('' = root). Never absolute. */
 	path: string;
 	type: 'file' | 'directory' | 'symlink';
 	size: number;
@@ -23,8 +24,13 @@ interface FileEntry {
  * If the repository is not yet cloned, a blocking clone is triggered first
  * (so the first browse request is the only one that waits for cloning).
  *
- * The `path` query parameter is optional — defaults to the repository root.
- * All paths are validated to stay within the clone root (no directory traversal).
+ * The `path` query parameter is optional (relative to the repo root, or an
+ * absolute path previously returned by this endpoint) — defaults to the
+ * repository root. All paths are validated to stay within the clone root
+ * (no directory traversal, no symlink escape, no .git internals).
+ *
+ * All paths in the response are RELATIVE to the repository root, so the
+ * host filesystem layout (DATA_DIR etc.) is never exposed.
  */
 export const GET: RequestHandler = async ({ params, url, cookies }) => {
 	const auth = await authorize(cookies);
@@ -52,17 +58,18 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 		return json({ error: `Failed to sync repository: ${syncResult.error}` }, { status: 500 });
 	}
 
-	// Resolve the requested path (default to repo root)
+	// Resolve the requested path (default to repo root). Relative paths are
+	// joined with the repo root; absolute paths are accepted so navigation
+	// works with previously returned entry paths, but they are re-validated
+	// against the (realpath'd) root below before anything is listed.
 	const requestedPath = url.searchParams.get('path') || '';
 	let targetPath: string;
 
 	if (!requestedPath || requestedPath === '/') {
 		targetPath = repoRoot;
 	} else if (isAbsolute(requestedPath)) {
-		// Caller passed an absolute path (after receiving repoRoot from a prior response)
 		targetPath = requestedPath;
 	} else {
-		// Relative path — join with repo root
 		targetPath = join(repoRoot, requestedPath);
 	}
 
@@ -72,7 +79,7 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 	// as inside `/repos/myrepo`.
 	const resolvedTarget = resolve(targetPath);
 	if (!existsSync(resolvedTarget)) {
-		return json({ error: `Path not found: ${resolvedTarget}` }, { status: 404 });
+		return json({ error: 'Path not found' }, { status: 404 });
 	}
 
 	let realRoot: string;
@@ -87,9 +94,16 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 		return json({ error: 'Access denied: path is outside repository root' }, { status: 403 });
 	}
 
+	// Never expose git internals, even when requested directly (the listing
+	// below hides .git, but a crafted request could still target it).
+	const gitDir = join(realRoot, '.git');
+	if (isPathUnderRoot(realTarget, gitDir)) {
+		return json({ error: 'Access denied: .git is not browsable' }, { status: 403 });
+	}
+
 	const stat = statSync(realTarget);
 	if (!stat.isDirectory()) {
-		return json({ error: `Not a directory: ${resolvedTarget}` }, { status: 400 });
+		return json({ error: 'Not a directory' }, { status: 400 });
 	}
 
 	try {
@@ -106,7 +120,7 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 
 				entries.push({
 					name: entry.name,
-					path: fullPath,
+					path: relative(realRoot, fullPath),
 					type: entry.isDirectory() ? 'directory' : entry.isSymbolicLink() ? 'symlink' : 'file',
 					size: entryStat.size,
 					mtime: entryStat.mtime.toISOString(),
@@ -125,15 +139,12 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 		});
 
 		return json({
-			path: realTarget,
-			// Expose the root so the client can compute relative paths
-			repoRoot: realRoot,
-			parent: realTarget === realRoot ? null : resolve(realTarget, '..'),
+			path: relative(realRoot, realTarget),
+			parent: realTarget === realRoot ? null : relative(realRoot, resolve(realTarget, '..')),
 			entries
 		});
 	} catch (error) {
 		console.error('[BrowseAPI] Error listing directory:', error);
-		const message = error instanceof Error ? error.message : 'Unknown error';
-		return json({ error: `Failed to list directory: ${message}` }, { status: 500 });
+		return json({ error: 'Failed to list directory' }, { status: 500 });
 	}
 };

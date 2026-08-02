@@ -11,6 +11,22 @@ function remapPathBetweenStackDirs(fromDir: string, toDir: string, path: string)
 	return path;
 }
 
+function remapPathsBetweenStackDirs(fromDir: string, toDir: string, paths: string[]): string[] {
+	return paths.map((p) => remapPathBetweenStackDirs(fromDir, toDir, p));
+}
+
+function remapComposeContentsBetweenStackDirs(
+	fromDir: string,
+	toDir: string,
+	contents: Record<string, string>
+): Record<string, string> {
+	const remapped: Record<string, string> = {};
+	for (const [path, content] of Object.entries(contents)) {
+		remapped[remapPathBetweenStackDirs(fromDir, toDir, path)] = content;
+	}
+	return remapped;
+}
+
 /**
  * Remap absolute paths from Dockhand's Hawser staging dir to the remote host stack dir.
  */
@@ -19,7 +35,7 @@ export function remapPathsFromStagingToRemote(
 	remoteStackDir: string,
 	paths: string[]
 ): string[] {
-	return paths.map((p) => remapPathBetweenStackDirs(stagingStackDir, remoteStackDir, p));
+	return remapPathsBetweenStackDirs(stagingStackDir, remoteStackDir, paths);
 }
 
 /**
@@ -30,7 +46,7 @@ export function remapPathsFromRemoteToStaging(
 	remoteStackDir: string,
 	paths: string[]
 ): string[] {
-	return paths.map((p) => remapPathBetweenStackDirs(remoteStackDir, stagingStackDir, p));
+	return remapPathsBetweenStackDirs(remoteStackDir, stagingStackDir, paths);
 }
 
 /**
@@ -41,11 +57,7 @@ export function remapComposeContentsFromStagingToRemote(
 	remoteStackDir: string,
 	contents: Record<string, string>
 ): Record<string, string> {
-	const remapped: Record<string, string> = {};
-	for (const [path, content] of Object.entries(contents)) {
-		remapped[remapPathBetweenStackDirs(stagingStackDir, remoteStackDir, path)] = content;
-	}
-	return remapped;
+	return remapComposeContentsBetweenStackDirs(stagingStackDir, remoteStackDir, contents);
 }
 
 /**
@@ -56,9 +68,5 @@ export function remapComposeContentsFromRemoteToStaging(
 	remoteStackDir: string,
 	contents: Record<string, string>
 ): Record<string, string> {
-	const remapped: Record<string, string> = {};
-	for (const [path, content] of Object.entries(contents)) {
-		remapped[remapPathBetweenStackDirs(remoteStackDir, stagingStackDir, path)] = content;
-	}
-	return remapped;
+	return remapComposeContentsBetweenStackDirs(remoteStackDir, stagingStackDir, contents);
 }

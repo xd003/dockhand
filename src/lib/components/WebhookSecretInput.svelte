@@ -3,8 +3,8 @@
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
 	import * as Tooltip from '$lib/components/ui/tooltip';
-	import { Check, Copy, Key, XCircle } from 'lucide-svelte';
-	import { copyToClipboard } from '$lib/utils/clipboard';
+	import { Key } from 'lucide-svelte';
+	import CopyButton from '$lib/components/CopyButton.svelte';
 	import { generateWebhookSecret } from '$lib/utils/webhook-secret';
 
 	interface Props {
@@ -24,14 +24,6 @@
 		showCopy = false,
 		oninput
 	}: Props = $props();
-
-	let copied = $state<'ok' | 'error' | null>(null);
-
-	async function copySecret() {
-		const ok = await copyToClipboard(value);
-		copied = ok ? 'ok' : 'error';
-		setTimeout(() => copied = null, 2000);
-	}
 </script>
 
 <div class="space-y-2">
@@ -45,20 +37,7 @@
 			oninput={() => oninput?.()}
 		/>
 		{#if showCopy && value}
-			<Button variant="outline" size="sm" onclick={copySecret} title="Copy secret">
-				{#if copied === 'error'}
-					<Tooltip.Root open>
-						<Tooltip.Trigger>
-							<XCircle class="w-4 h-4 text-red-500" />
-						</Tooltip.Trigger>
-						<Tooltip.Content>Copy requires HTTPS</Tooltip.Content>
-					</Tooltip.Root>
-				{:else if copied === 'ok'}
-					<Check class="w-4 h-4 text-green-500" />
-				{:else}
-					<Copy class="w-4 h-4" />
-				{/if}
-			</Button>
+			<CopyButton text={value} title="Copy secret" />
 		{/if}
 		<Tooltip.Root>
 			<Tooltip.Trigger>

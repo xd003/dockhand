@@ -30,9 +30,9 @@ function coreDeploy(opts: DeployGitStackOpts, stack: TestStack): { success: bool
 }
 
 describe('repo webhook fan-out gating', () => {
-	it('defers stacks with their own webhook: only deploys when the sync found changes', async () => {
+	it('skips stacks with their own webhook entirely — never calls deploy', async () => {
 		const stacks: TestStack[] = [
-			{ id: 1, stackName: 'deferred', forceRedeploy: true, webhookEnabled: true, updated: false },
+			{ id: 1, stackName: 'own-webhook', forceRedeploy: true, webhookEnabled: true, updated: false },
 			{ id: 2, stackName: 'plain-force', forceRedeploy: true, webhookEnabled: false, updated: false },
 			{ id: 3, stackName: 'passive', forceRedeploy: false, webhookEnabled: false, updated: false }
 		];
@@ -44,26 +44,25 @@ describe('repo webhook fan-out gating', () => {
 			return Promise.resolve(coreDeploy(opts, stack));
 		});
 
-		// Deferred stack: called with ignoreForceRedeploy, no changes -> skipped
-		assert.deepEqual(intents.find((i) => i.stackId === 1)?.opts, {
-			force: false,
-			ignoreForceRedeploy: true
-		});
+		// Own-webhook stack: NOT called at all
+		assert.equal(intents.find((i) => i.stackId === 1), undefined);
 		// Plain forceRedeploy stack: honored, redeploys without changes
 		assert.deepEqual(intents.find((i) => i.stackId === 2)?.opts, {
 			force: false,
 			ignoreForceRedeploy: false
 		});
 		assert.deepEqual(
-			result.stacks.map((s) => [s.id, s.status]),
-			[[1, 'skipped'], [2, 'deployed'], [3, 'skipped']]
+			result.stacks.map((s) => [s.id, s.status, s.status === 'skipped' ? s.reason : undefined]),
+			[[1, 'skipped', 'own-webhook'], [2, 'deployed', undefined], [3, 'skipped', undefined]]
 		);
 		assert.equal(result.success, true);
 	});
 
-	it('deploys a deferred stack when the sync found changes', async () => {
+	it('never deploys an own-webhook stack even when the sync found changes', async () => {
+		// The whole point of the true skip: a push that hits both the repo webhook
+		// and the stack webhook must not deploy the stack twice.
 		const stacks: TestStack[] = [
-			{ id: 1, stackName: 'deferred', forceRedeploy: true, webhookEnabled: true, updated: true }
+			{ id: 1, stackName: 'own-webhook', forceRedeploy: true, webhookEnabled: true, updated: true }
 		];
 
 		const intents: Array<{ stackId: number; opts: DeployGitStackOpts }> = [];
@@ -73,10 +72,10 @@ describe('repo webhook fan-out gating', () => {
 			return Promise.resolve(coreDeploy(opts, stack));
 		});
 
-		assert.deepEqual(intents[0].opts, { force: false, ignoreForceRedeploy: true });
+		assert.deepEqual(intents, []);
 		assert.deepEqual(
 			result.stacks.map((s) => [s.id, s.status]),
-			[[1, 'deployed']]
+			[[1, 'skipped']]
 		);
 	});
 
@@ -84,16 +83,16 @@ describe('repo webhook fan-out gating', () => {
 		// Stack webhook path (scheduler runGitStackSync): deployGitStack(stackId,
 		// { force: false }) — no ignoreForceRedeploy, so the stack's own
 		// forceRedeploy setting is honored even without changes.
-		const deferredStack: TestStack = {
+		const ownWebhookStack: TestStack = {
 			id: 1,
-			stackName: 'deferred',
+			stackName: 'own-webhook',
 			forceRedeploy: true,
 			webhookEnabled: true,
 			updated: false
 		};
 
 		const webhookIntent = { force: false, ignoreForceRedeploy: false };
-		const result = coreDeploy(webhookIntent, deferredStack);
+		const result = coreDeploy(webhookIntent, ownWebhookStack);
 
 		assert.equal(result.skipped, false);
 		assert.equal(
@@ -149,14 +148,14 @@ describe('repo webhook fan-out gating', () => {
 
 	it('continues fan-out and reports failure when one stack fails', async () => {
 		const stacks: TestStack[] = [
-			{ id: 1, stackName: 'deferred', forceRedeploy: true, webhookEnabled: true, updated: true },
+			{ id: 1, stackName: 'plain-force', forceRedeploy: true, webhookEnabled: false, updated: true },
 			{ id: 2, stackName: 'broken', forceRedeploy: false, webhookEnabled: false, updated: false }
 		];
 
 		const result = await fanOutDeployStacks(stacks, (stackId) => {
 			if (stackId === 2) return Promise.resolve({ success: false, error: 'compose failed' });
 			const stack = stacks.find((s) => s.id === stackId)!;
-			return Promise.resolve(coreDeploy({ force: false, ignoreForceRedeploy: true }, stack));
+			return Promise.resolve(coreDeploy({ force: false, ignoreForceRedeploy: false }, stack));
 		});
 
 		assert.deepEqual(

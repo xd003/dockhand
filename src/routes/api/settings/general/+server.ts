@@ -34,6 +34,8 @@ import {
 import { authorize } from '$lib/server/authorize';
 import { refreshSystemJobs } from '$lib/server/scheduler';
 import { sendToEventSubprocess, sendToMetricsSubprocess } from '$lib/server/subprocess-manager';
+import { getGitMode, getDesiredGitMode, isGitModeEnvForced } from '$lib/server/git-mode';
+import { getGitModeTransition } from '$lib/server/db';
 import { DEFAULT_GRYPE_IMAGE, DEFAULT_TRIVY_IMAGE } from '$lib/server/scanner';
 import { DEFAULT_HELPER_IMAGE } from '$lib/server/backups/restic';
 
@@ -122,6 +124,18 @@ export interface GeneralSettings {
 	// Scanner Advanced settings (#1219). Empty = use auto-detection.
 	defaultScannerNetworkMode: string;
 	defaultScannerDns: string[];
+	// Git repository model (stack vs centralized)
+	gitRepositoryMode: 'stack' | 'centralized';
+	gitRepositoryDesiredMode: 'stack' | 'centralized';
+	gitRepositoryModeForcedByEnv: boolean;
+	gitModeTransition: {
+		state: 'idle' | 'draining' | 'provisioning' | 'cutting_over' | 'failed';
+		mode: 'stack' | 'centralized';
+		jobId: string | null;
+		startedAt: string | null;
+		finishedAt: string | null;
+		error: string | null;
+	};
 }
 
 const DEFAULT_SETTINGS: Omit<GeneralSettings, 'scheduleRetentionDays' | 'eventRetentionDays' | 'scheduleCleanupCron' | 'eventCleanupCron' | 'scheduleCleanupEnabled' | 'eventCleanupEnabled' | 'scannerCleanupCron' | 'scannerCleanupEnabled'> = {
@@ -164,6 +178,10 @@ const DEFAULT_SETTINGS: Omit<GeneralSettings, 'scheduleRetentionDays' | 'eventRe
 	protectScannerImages: true,
 	defaultScannerNetworkMode: '',
 	defaultScannerDns: [],
+	gitRepositoryMode: 'stack',
+	gitRepositoryDesiredMode: 'stack',
+	gitRepositoryModeForcedByEnv: false,
+	gitModeTransition: { state: 'idle', mode: 'stack', jobId: null, startedAt: null, finishedAt: null, error: null },
 	defaultComposeTemplate: `version: "3.8"
 
 services:
@@ -324,7 +342,7 @@ export const GET: RequestHandler = async ({ cookies }) => {
 			getSetting('default_scanner_dns')
 		]);
 
-		const settings: GeneralSettings = {
+		const baseSettings = {
 			confirmDestructive: confirmDestructive ?? DEFAULT_SETTINGS.confirmDestructive,
 			showStoppedContainers: showStoppedContainers ?? DEFAULT_SETTINGS.showStoppedContainers,
 			highlightUpdates: highlightUpdates ?? DEFAULT_SETTINGS.highlightUpdates,
@@ -378,6 +396,28 @@ export const GET: RequestHandler = async ({ cookies }) => {
 			defaultScannerDns: parseScannerDnsStorage(defaultScannerDnsRaw)
 		};
 
+		// Git repository model — fetched separately (cheap, keeps the bulk fetch untouched)
+		const [effectiveMode, desiredMode, transition] = await Promise.all([
+			getGitMode(),
+			getDesiredGitMode(),
+			getGitModeTransition()
+		]);
+
+		const settings: GeneralSettings = {
+			...baseSettings,
+			gitRepositoryMode: effectiveMode,
+			gitRepositoryDesiredMode: desiredMode,
+			gitRepositoryModeForcedByEnv: isGitModeEnvForced(),
+			gitModeTransition: {
+				state: transition?.state ?? 'idle',
+				mode: (transition?.mode as 'stack' | 'centralized') ?? 'stack',
+				jobId: transition?.jobId ?? null,
+				startedAt: transition?.startedAt ?? null,
+				finishedAt: transition?.finishedAt ?? null,
+				error: transition?.error ?? null
+			}
+		};
+
 		return json(settings);
 	} catch (error) {
 		console.error('Failed to get general settings:', error);
@@ -393,7 +433,39 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
 
 	try {
 		const body = await request.json();
-		const { confirmDestructive, showStoppedContainers, highlightUpdates, coloredActionButtons, actionIconSize, timeFormat, dateFormat, downloadFormat, defaultGrypeArgs, defaultTrivyArgs, scheduleRetentionDays, eventRetentionDays, scheduleCleanupCron, eventCleanupCron, scheduleCleanupEnabled, eventCleanupEnabled, scannerCleanupCron, scannerCleanupEnabled, logBufferSizeKb, logMaxLines, defaultTimezone, eventCollectionMode, eventPollInterval, metricsCollectionInterval, lightTheme, darkTheme, font, fontSize, gridFontSize, terminalFont, editorFont, compactPorts, showExposedPorts, showGitCommitHash, formatLogTimestamps, externalStackPaths, primaryStackLocation, defaultGrypeImage, defaultTrivyImage, defaultComposeTemplate, labelFilterMode, defaultBackupImage, honorProxyLabels, showImageChangelogLinks, animateIcons, protectScannerImages, showWhatsNew, defaultScannerNetworkMode, defaultScannerDns } = body;
+		const { confirmDestructive, showStoppedContainers, highlightUpdates, coloredActionButtons, actionIconSize, timeFormat, dateFormat, downloadFormat, defaultGrypeArgs, defaultTrivyArgs, scheduleRetentionDays, eventRetentionDays, scheduleCleanupCron, eventCleanupCron, scheduleCleanupEnabled, eventCleanupEnabled, scannerCleanupCron, scannerCleanupEnabled, logBufferSizeKb, logMaxLines, defaultTimezone, eventCollectionMode, eventPollInterval, metricsCollectionInterval, lightTheme, darkTheme, font, fontSize, gridFontSize, terminalFont, editorFont, compactPorts, showExposedPorts, showGitCommitHash, formatLogTimestamps, externalStackPaths, primaryStackLocation, defaultGrypeImage, defaultTrivyImage, defaultComposeTemplate, labelFilterMode, defaultBackupImage, honorProxyLabels, showImageChangelogLinks, animateIcons, protectScannerImages, showWhatsNew, defaultScannerNetworkMode, defaultScannerDns, gitRepositoryDesiredMode } = body;
+
+		// Git repository model change — validated up-front so a bad/mid-transition
+		// toggle never falls through to the bulk setting writes. Only an actual
+		// change is gated (a no-op value from a full settings save is allowed).
+		if (gitRepositoryDesiredMode !== undefined) {
+			if (gitRepositoryDesiredMode !== 'stack' && gitRepositoryDesiredMode !== 'centralized') {
+				return json({ error: 'Invalid git repository mode. Must be "stack" or "centralized".' }, { status: 400 });
+			}
+			const currentDesired = await getDesiredGitMode();
+			if (currentDesired !== gitRepositoryDesiredMode) {
+				if (isGitModeEnvForced()) {
+					return json({ error: 'Git repository mode is managed by the DOCKHAND_GIT_CENTRALIZED_MODE environment variable' }, { status: 400 });
+				}
+				const activeTransition = await getGitModeTransition();
+				if (activeTransition && activeTransition.state !== 'idle') {
+					return json({ error: 'A git repository mode transition is already in progress' }, { status: 409 });
+				}
+				const { setDesiredGitMode, ConflictError } = await import('$lib/server/git-mode');
+				await setDesiredGitMode(gitRepositoryDesiredMode);
+				// Kick off the mode transition job (git-transition.ts) — runs in the
+				// background; the response carries the resulting transition state.
+				try {
+					const { startGitModeTransition } = await import('$lib/server/git-transition');
+					await startGitModeTransition(gitRepositoryDesiredMode);
+				} catch (err) {
+					if (err instanceof ConflictError) {
+						return json({ error: err.message }, { status: 409 });
+					}
+					throw err;
+				}
+			}
+		}
 
 		if (confirmDestructive !== undefined) {
 			await setSetting('confirm_destructive', confirmDestructive);
@@ -678,7 +750,7 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
 			getSetting('default_scanner_dns')
 		]);
 
-		const settings: GeneralSettings = {
+		const baseSettings = {
 			confirmDestructive: confirmDestructiveVal ?? DEFAULT_SETTINGS.confirmDestructive,
 			showStoppedContainers: showStoppedContainersVal ?? DEFAULT_SETTINGS.showStoppedContainers,
 			highlightUpdates: highlightUpdatesVal ?? DEFAULT_SETTINGS.highlightUpdates,
@@ -730,6 +802,27 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
 			animateIcons: animateIconsVal ?? DEFAULT_SETTINGS.animateIcons,
 			defaultScannerNetworkMode: defaultScannerNetworkModeVal ?? DEFAULT_SETTINGS.defaultScannerNetworkMode,
 			defaultScannerDns: parseScannerDnsStorage(defaultScannerDnsRawVal)
+		};
+
+		const [effectiveModeVal, desiredModeVal, transitionVal] = await Promise.all([
+			getGitMode(),
+			getDesiredGitMode(),
+			getGitModeTransition()
+		]);
+
+		const settings: GeneralSettings = {
+			...baseSettings,
+			gitRepositoryMode: effectiveModeVal,
+			gitRepositoryDesiredMode: desiredModeVal,
+			gitRepositoryModeForcedByEnv: isGitModeEnvForced(),
+			gitModeTransition: {
+				state: transitionVal?.state ?? 'idle',
+				mode: (transitionVal?.mode as 'stack' | 'centralized') ?? 'stack',
+				jobId: transitionVal?.jobId ?? null,
+				startedAt: transitionVal?.startedAt ?? null,
+				finishedAt: transitionVal?.finishedAt ?? null,
+				error: transitionVal?.error ?? null
+			}
 		};
 
 		return json(settings);

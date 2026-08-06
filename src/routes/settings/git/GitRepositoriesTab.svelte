@@ -8,6 +8,7 @@
 	import { forgeIcon } from '$lib/utils/git-forge';
 	import ConfirmPopover from '$lib/components/ConfirmPopover.svelte';
 	import { canAccess } from '$lib/stores/auth';
+	import { appSettings } from '$lib/stores/settings';
 	import GitRepositoryModal from './GitRepositoryModal.svelte';
 	import { EmptyState } from '$lib/components/ui/empty-state';
 
@@ -35,6 +36,15 @@
 	let confirmDeleteId = $state<number | null>(null);
 	let testingId = $state<number | null>(null);
 	let testResult = $state<{ id: number; success: boolean; message: string } | null>(null);
+
+	// F11: mode transition state — while active, git tooling is locked server-side.
+	const gitModeTransition = $derived($appSettings.gitModeTransition);
+	const transitionActive = $derived(gitModeTransition.state !== 'idle');
+
+	onMount(() => {
+		// F11: sync the client's git mode with the server before showing the list.
+		appSettings.reload();
+	});
 
 	async function fetchRepositories() {
 		try {
@@ -133,13 +143,21 @@
 </script>
 
 <div class="space-y-4">
+	{#if transitionActive}
+		<div class="rounded-md border border-blue-300/60 dark:border-blue-700/60 bg-blue-50 dark:bg-blue-950/30 p-3 text-sm text-blue-700 dark:text-blue-400">
+			<span class="inline-flex items-center gap-2">
+				<Loader2 class="w-4 h-4 animate-spin" />
+				Git repository mode transition in progress ({gitModeTransition.state}) — git operations are temporarily locked.
+			</span>
+		</div>
+	{/if}
 	<div class="flex justify-between items-center">
 		<div>
 			<h3 class="text-lg font-medium">Git repositories</h3>
 			<p class="text-sm text-muted-foreground">Manage Git repositories that can be used to deploy stacks</p>
 		</div>
 		{#if $canAccess('settings', 'edit')}
-			<Button size="sm" onclick={() => openModal()}>
+			<Button size="sm" onclick={() => openModal()} disabled={transitionActive}>
 				<Plus class="w-4 h-4" />
 				Add repository
 			</Button>

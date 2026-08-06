@@ -54,6 +54,18 @@ export interface AppSettings {
 	// Scanner Advanced settings (#1219). Empty values = use auto-detection.
 	defaultScannerNetworkMode: string;   // '' | 'host' | 'bridge' | 'none' | <custom-network>
 	defaultScannerDns: string[];         // ['1.1.1.1', '8.8.8.8']; empty = inherit
+	// Git repository model (stack vs centralized)
+	gitRepositoryMode: 'stack' | 'centralized';
+	gitRepositoryDesiredMode: 'stack' | 'centralized';
+	gitRepositoryModeForcedByEnv: boolean;
+	gitModeTransition: {
+		state: 'idle' | 'draining' | 'provisioning' | 'cutting_over' | 'failed';
+		mode: 'stack' | 'centralized';
+		jobId: string | null;
+		startedAt: string | null;
+		finishedAt: string | null;
+		error: string | null;
+	};
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -94,6 +106,10 @@ const DEFAULT_SETTINGS: AppSettings = {
 	protectScannerImages: true,
 	defaultScannerNetworkMode: '',
 	defaultScannerDns: [],
+	gitRepositoryMode: 'stack',
+	gitRepositoryDesiredMode: 'stack',
+	gitRepositoryModeForcedByEnv: false,
+	gitModeTransition: { state: 'idle', mode: 'stack', jobId: null, startedAt: null, finishedAt: null, error: null },
 	defaultComposeTemplate: `version: "3.8"
 
 services:
@@ -137,8 +153,8 @@ function createSettingsStore() {
 	let initialized = false;
 
 	// Load settings from database on initialization
-	async function loadSettings() {
-		if (!browser || initialized) return;
+	async function loadSettings(force = false) {
+		if (!browser || (initialized && !force)) return;
 		initialized = true;
 
 		try {
@@ -184,7 +200,11 @@ function createSettingsStore() {
 					showWhatsNew: settings.showWhatsNew ?? DEFAULT_SETTINGS.showWhatsNew,
 					protectScannerImages: settings.protectScannerImages ?? DEFAULT_SETTINGS.protectScannerImages,
 					defaultScannerNetworkMode: settings.defaultScannerNetworkMode ?? DEFAULT_SETTINGS.defaultScannerNetworkMode,
-					defaultScannerDns: Array.isArray(settings.defaultScannerDns) ? settings.defaultScannerDns : DEFAULT_SETTINGS.defaultScannerDns
+					defaultScannerDns: Array.isArray(settings.defaultScannerDns) ? settings.defaultScannerDns : DEFAULT_SETTINGS.defaultScannerDns,
+					gitRepositoryMode: settings.gitRepositoryMode ?? DEFAULT_SETTINGS.gitRepositoryMode,
+					gitRepositoryDesiredMode: settings.gitRepositoryDesiredMode ?? DEFAULT_SETTINGS.gitRepositoryDesiredMode,
+					gitRepositoryModeForcedByEnv: settings.gitRepositoryModeForcedByEnv ?? DEFAULT_SETTINGS.gitRepositoryModeForcedByEnv,
+					gitModeTransition: settings.gitModeTransition ?? DEFAULT_SETTINGS.gitModeTransition
 				});
 			}
 		} catch {
@@ -243,7 +263,11 @@ function createSettingsStore() {
 					showWhatsNew: updatedSettings.showWhatsNew ?? DEFAULT_SETTINGS.showWhatsNew,
 					protectScannerImages: updatedSettings.protectScannerImages ?? DEFAULT_SETTINGS.protectScannerImages,
 					defaultScannerNetworkMode: updatedSettings.defaultScannerNetworkMode ?? DEFAULT_SETTINGS.defaultScannerNetworkMode,
-					defaultScannerDns: Array.isArray(updatedSettings.defaultScannerDns) ? updatedSettings.defaultScannerDns : DEFAULT_SETTINGS.defaultScannerDns
+					defaultScannerDns: Array.isArray(updatedSettings.defaultScannerDns) ? updatedSettings.defaultScannerDns : DEFAULT_SETTINGS.defaultScannerDns,
+					gitRepositoryMode: updatedSettings.gitRepositoryMode ?? DEFAULT_SETTINGS.gitRepositoryMode,
+					gitRepositoryDesiredMode: updatedSettings.gitRepositoryDesiredMode ?? DEFAULT_SETTINGS.gitRepositoryDesiredMode,
+					gitRepositoryModeForcedByEnv: updatedSettings.gitRepositoryModeForcedByEnv ?? DEFAULT_SETTINGS.gitRepositoryModeForcedByEnv,
+					gitModeTransition: updatedSettings.gitModeTransition ?? DEFAULT_SETTINGS.gitModeTransition
 				});
 			}
 		} catch (error) {
@@ -262,6 +286,14 @@ function createSettingsStore() {
 			set(value);
 			saveSettings(value);
 		},
+		/**
+		 * Re-fetch settings from the server (used by git modals so the client mode
+		 * can never disagree with the server after a toggle elsewhere — F11).
+		 */
+		reload: () => {
+			initialized = false;
+			return loadSettings(true);
+		},
 		update: (fn: (settings: AppSettings) => AppSettings) => {
 			update((current) => {
 				const newSettings = fn(current);
@@ -276,6 +308,66 @@ function createSettingsStore() {
 				saveSettings({ confirmDestructive: value });
 				return newSettings;
 			});
+		},
+		/**
+		 * Change the desired git repository mode (stack | centralized). Returns the
+		 * fetch result so the UI can surface 400 (env-forced) / 409 (mid-transition).
+		 * After a successful start, polls until the background transition settles
+		 * (idle) so the UI never stays stuck on "transition in progress".
+		 */
+		saveGitRepositoryMode: async (mode: 'stack' | 'centralized'): Promise<{ ok: boolean; status: number; error?: string }> => {
+			if (!browser) return { ok: false, status: 0, error: 'Not in browser' };
+			const response = await fetch('/api/settings/general', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ gitRepositoryDesiredMode: mode })
+			});
+			if (response.ok) {
+				try {
+					const updated = await response.json();
+					update((current) => ({
+						...current,
+						gitRepositoryDesiredMode: updated.gitRepositoryDesiredMode ?? mode,
+						gitRepositoryMode: updated.gitRepositoryMode ?? current.gitRepositoryMode,
+						gitRepositoryModeForcedByEnv: updated.gitRepositoryModeForcedByEnv ?? current.gitRepositoryModeForcedByEnv,
+						gitModeTransition: updated.gitModeTransition ?? current.gitModeTransition
+					}));
+				} catch { /* ignore response parse */ }
+
+				// Poll until the transition settles so the UI doesn't show a stale
+				// "in progress" state after the background job finishes.
+				const deadline = Date.now() + 10 * 60 * 1000;
+				for (;;) {
+					let settings: any;
+					try {
+						const res = await fetch('/api/settings/general');
+						settings = await res.json();
+					} catch {
+						break;
+					}
+					update((current) => ({
+						...current,
+						gitRepositoryMode: settings.gitRepositoryMode ?? current.gitRepositoryMode,
+						gitRepositoryDesiredMode: settings.gitRepositoryDesiredMode ?? current.gitRepositoryDesiredMode,
+						gitRepositoryModeForcedByEnv: settings.gitRepositoryModeForcedByEnv ?? current.gitRepositoryModeForcedByEnv,
+						gitModeTransition: settings.gitModeTransition ?? current.gitModeTransition
+					}));
+					const t = settings.gitModeTransition;
+					if (!t || t.state === 'idle') {
+						return t?.error ? { ok: false, status: 0, error: t.error } : { ok: true, status: response.status };
+					}
+					if (Date.now() >= deadline) {
+						return { ok: true, status: response.status, error: 'Mode transition is taking longer than expected — check the server logs.' };
+					}
+					await new Promise((r) => setTimeout(r, 1500));
+				}
+			}
+			let error = '';
+			try {
+				const body = await response.json();
+				error = body?.error || '';
+			} catch { /* ignore */ }
+			return { ok: false, status: response.status, error };
 		},
 		setShowStoppedContainers: (value: boolean) => {
 			update((current) => {

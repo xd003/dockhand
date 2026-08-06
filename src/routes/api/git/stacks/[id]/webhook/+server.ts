@@ -1,111 +1,100 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { getGitStack } from '$lib/server/db';
+import { getGitStack, type GitStackWithRepo } from '$lib/server/db';
+import { triggerGitStackSyncFromWebhook } from '$lib/server/scheduler';
 import { deployGitStack } from '$lib/server/git';
+import { getGitMode } from '$lib/server/git-mode';
 import { auditGitStack } from '$lib/server/audit';
-import { verifyWebhookSignature } from '$lib/server/webhook-signature';
+import { handleGitWebhookRequest, type GitWebhookHandlerOptions } from '$lib/server/git-webhook-handler';
+import { gitTransitionActive } from '$lib/server/scheduler';
+import { Semaphore } from '$lib/server/semaphore';
 
-function detectSource(request: Request): string {
-	if (request.headers.get('x-hub-signature-256')) return 'github';
-	if (request.headers.get('x-gitlab-token')) return 'gitlab';
-	return 'unknown';
+// Stack-mode synchronous deploys re-clone the repo per sync, so they hold the
+// request worker for the full clone+deploy. Cap concurrent in-flight deploys
+// so a burst of webhook calls cannot pile up unbounded workers (F7). The
+// network hang risk is bounded at the git layer: the stack engine passes a
+// 10-minute timeout to every `git clone` it runs (see execGit in git.ts —
+// the subprocess is SIGKILLed on timeout, so the slot is genuinely released).
+// A full deploy-level Promise.race is deliberately NOT used: it would return a
+// false "timed out" to the provider (triggering a duplicate retry) while the
+// deploy keeps running, defeating the point of the concurrency cap.
+const MAX_STACK_WEBHOOKS = 5;
+const stackWebhookSlots = new Semaphore(MAX_STACK_WEBHOOKS);
+async function stackDeployTrigger(id: number): Promise<{ success: boolean; error?: string; output?: string; skipped?: boolean }> {
+	if (await gitTransitionActive()) {
+		return { success: false, error: 'Git repository mode transition in progress' };
+	}
+	const run = stackWebhookSlots.tryRun(() => deployGitStack(id, { force: false }));
+	if (!run) {
+		return { success: false, error: 'Too many concurrent webhook deploys, try again shortly' };
+	}
+	return run;
 }
 
+/**
+ * Stack-level git webhook.
+ * - Stack mode: the primary webhook — synchronous deploy (per-stack contract),
+ *   no force-redeploy precondition.
+ * - Centralized mode: deprecated compat shim (webhooks moved to the
+ *   repository); only stacks with force redeployment enabled can have their
+ *   own webhook, triggered in the background.
+ */
+async function buildOptions(): Promise<GitWebhookHandlerOptions<GitStackWithRepo>> {
+	if (await getGitMode() !== 'centralized') {
+		return {
+			load: (id) => getGitStack(id),
+			audit: async (event, id, stack, meta) => {
+				await auditGitStack(event, 'webhook', id, stack.stackName, stack.environmentId, meta);
+			},
+			trigger: (id) => stackDeployTrigger(id),
+			invalidIdMessage: 'Invalid stack ID',
+			notFoundMessage: 'Stack not found',
+			webhookDisabledMessage: 'Webhook is not enabled for this stack',
+			secretNotConfiguredMessage: 'Webhook secret is not configured for this stack',
+			successMessage: 'Stack sync triggered',
+			synchronous: true
+		};
+	}
+
+	return {
+		load: (id) => getGitStack(id),
+		preconditions: (stack) => {
+			if (!stack.forceRedeploy) {
+				return { error: 'Force redeployment is not enabled for this stack', status: 403 };
+			}
+			return null;
+		},
+		audit: async (event, id, stack, meta) => {
+			await auditGitStack(event, 'webhook', id, stack.stackName, stack.environmentId, meta);
+		},
+		trigger: (id) => triggerGitStackSyncFromWebhook(id),
+		invalidIdMessage: 'Invalid stack ID',
+		notFoundMessage: 'Stack not found',
+		webhookDisabledMessage: 'Webhook is not enabled for this stack',
+		secretNotConfiguredMessage: 'Webhook secret is not configured for this stack',
+		successMessage: 'Stack sync triggered',
+		deprecated: true
+	};
+}
+
+/**
+ * Stack-level git webhook. See git-webhook-handler.ts for the shared flow.
+ */
 export const POST: RequestHandler = async (event) => {
-	const { params, request } = event;
 	try {
-		const id = parseInt(params.id);
-		if (isNaN(id)) {
-			return json({ error: 'Invalid stack ID' }, { status: 400 });
-		}
-
-		const gitStack = await getGitStack(id);
-		if (!gitStack) {
-			return json({ error: 'Git stack not found' }, { status: 404 });
-		}
-
-		if (!gitStack.webhookEnabled) {
-			return json({ error: 'Webhook is not enabled for this stack' }, { status: 403 });
-		}
-
-		const source = detectSource(request);
-
-		// A secret is mandatory: reject if none is configured.
-		if (!gitStack.webhookSecret) {
-			await auditGitStack(event, 'webhook', id, gitStack.stackName, gitStack.environmentId, {
-				method: 'POST', source, error: 'no_secret_configured'
-			});
-			return json({ error: 'Webhook secret is not configured for this stack' }, { status: 401 });
-		}
-
-		const payload = await request.text();
-		const githubSignature = request.headers.get('x-hub-signature-256');
-		const gitlabToken = request.headers.get('x-gitlab-token');
-
-		const signature = githubSignature || gitlabToken;
-
-		if (!verifyWebhookSignature(payload, signature, gitStack.webhookSecret)) {
-			await auditGitStack(event, 'webhook', id, gitStack.stackName, gitStack.environmentId, {
-				method: 'POST', source, error: 'invalid_signature'
-			});
-			return json({ error: 'Invalid webhook signature' }, { status: 401 });
-		}
-
-		// Deploy the git stack (syncs and deploys only if there are changes)
-		const result = await deployGitStack(id, { force: false });
-		await auditGitStack(event, 'webhook', id, gitStack.stackName, gitStack.environmentId, {
-			method: 'POST', source, result: result.skipped ? 'skipped' : result.success ? 'deployed' : 'failed'
-		});
-		return json(result);
+		return await handleGitWebhookRequest(event, await buildOptions());
 	} catch (error: any) {
-		console.error('Webhook error:', error);
+		console.error('Stack webhook error:', error);
 		return json({ success: false, error: error.message }, { status: 500 });
 	}
 };
 
 // Also support GET for simple polling/manual triggers
 export const GET: RequestHandler = async (event) => {
-	const { params, url } = event;
 	try {
-		const id = parseInt(params.id);
-		if (isNaN(id)) {
-			return json({ error: 'Invalid stack ID' }, { status: 400 });
-		}
-
-		const gitStack = await getGitStack(id);
-		if (!gitStack) {
-			return json({ error: 'Git stack not found' }, { status: 404 });
-		}
-
-		if (!gitStack.webhookEnabled) {
-			return json({ error: 'Webhook is not enabled for this stack' }, { status: 403 });
-		}
-
-		// A secret is mandatory (see POST handler). Reject if none is configured.
-		if (!gitStack.webhookSecret) {
-			await auditGitStack(event, 'webhook', id, gitStack.stackName, gitStack.environmentId, {
-				method: 'GET', source: 'get', error: 'no_secret_configured'
-			});
-			return json({ error: 'Webhook secret is not configured for this stack' }, { status: 401 });
-		}
-
-		// Verify secret via query parameter for GET requests
-		const secret = url.searchParams.get('secret');
-		if (secret !== gitStack.webhookSecret) {
-			await auditGitStack(event, 'webhook', id, gitStack.stackName, gitStack.environmentId, {
-				method: 'GET', source: 'get', error: 'invalid_secret'
-			});
-			return json({ error: 'Invalid webhook secret' }, { status: 401 });
-		}
-
-		// Deploy the git stack (syncs and deploys only if there are changes)
-		const result = await deployGitStack(id, { force: false });
-		await auditGitStack(event, 'webhook', id, gitStack.stackName, gitStack.environmentId, {
-			method: 'GET', source: 'get', result: result.skipped ? 'skipped' : result.success ? 'deployed' : 'failed'
-		});
-		return json(result);
+		return await handleGitWebhookRequest(event, await buildOptions());
 	} catch (error: any) {
-		console.error('Webhook GET error:', error);
+		console.error('Stack webhook GET error:', error);
 		return json({ success: false, error: error.message }, { status: 500 });
 	}
 };

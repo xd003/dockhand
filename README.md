@@ -28,6 +28,14 @@ Dockhand is a modern, efficient Docker management application providing real-tim
 - **File Browser**: Browse, upload, and download files from containers
 - **Authentication**: SSO via OIDC, local users, and optional RBAC (Enterprise)
 
+### Git repository model
+
+Dockhand ships in the **stack** model by default: each Git stack clones its own repository and scheduled syncs/webhooks are configured per stack. An opt-in **centralized** model (one shared clone per repository, with repository-level scheduled syncs and webhooks) can be enabled in **Settings → General → Git repositories**. Switching models runs a migration job (provisioning shared clones, promoting schedules/webhooks, then cutting over) and takes effect once it completes; git operations return `409 Conflict` while it runs.
+
+Hosts that want the centralized model without a UI step can force it with `DOCKHAND_GIT_CENTRALIZED_MODE=true` (any other value, including unset/`false`, defers to the UI setting).
+
+Environment variable `DOCKHAND_GIT_INSECURE_WEBHOOK_SECRET_COMPAT=true` restores the insecure GET `?secret=` webhook auth (audit-logged on every use). It is **off by default** — webhooks use the ts/sig HMAC flow instead.
+
 ## Tech Stack
 
 - **Base**: own OS layer built from scratch using <a href="https://github.com/wolfi-dev/os">Wolfi packages</a> via apko. Every package is explicitly declared in the Dockerfile.

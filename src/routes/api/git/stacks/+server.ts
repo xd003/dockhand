@@ -11,10 +11,13 @@ import {
 	getStackSource
 } from '$lib/server/db';
 import { deployGitStack } from '$lib/server/git';
+import { getGitMode } from '$lib/server/git-mode';
+import { assertNotTransitioning } from '$lib/server/git-transition-guard';
 import { authorize } from '$lib/server/authorize';
-import { registerSchedule } from '$lib/server/scheduler';
 import { auditGitStack } from '$lib/server/audit';
 import { createJobResponse } from '$lib/server/sse';
+import { registerSchedule } from '$lib/server/scheduler';
+import { WEBHOOK_SECRET_REQUIRED_ERROR } from '$lib/utils/webhook-secret';
 
 // Stack name validation: Docker Compose requires lowercase; must start with a
 // letter or number, and contain only lowercase letters, numbers, hyphens, underscores
@@ -48,10 +51,16 @@ export const POST: RequestHandler = async (event) => {
 	try {
 		const data = await request.json();
 
+		// Refuse writes while a git mode transition is running (F9)
+		const locked = await assertNotTransitioning();
+		if (locked) return locked;
+
 		// Permission check with environment context
 		if (auth.authEnabled && !await auth.can('stacks', 'create', data.environmentId || undefined)) {
 			return json({ error: 'Permission denied' }, { status: 403 });
 		}
+
+		const mode = await getGitMode();
 
 		if (!data.stackName || typeof data.stackName !== 'string') {
 			return json({ error: 'Stack name is required' }, { status: 400 });
@@ -70,7 +79,7 @@ export const POST: RequestHandler = async (event) => {
 
 		// A secret is mandatory when the webhook is enabled.
 		if (data.webhookEnabled && !data.webhookSecret?.trim()) {
-			return json({ error: 'A webhook secret is required when the webhook is enabled' }, { status: 400 });
+			return json({ error: WEBHOOK_SECRET_REQUIRED_ERROR }, { status: 400 });
 		}
 
 		// Either repositoryId or new repo details (url, branch) must be provided
@@ -94,13 +103,33 @@ export const POST: RequestHandler = async (event) => {
 			// Create the repository first
 			const repoName = data.repoName || data.stackName;
 			try {
-				const repo = await createGitRepository({
-					name: repoName,
-					url: data.url,
-					branch: data.branch || 'main',
-					credentialId: data.credentialId || null
-				});
-				repositoryId = repo.id;
+				if (mode === 'centralized') {
+					const repo = await createGitRepository({
+						name: repoName,
+						url: data.url,
+						branch: data.branch || 'main',
+						credentialId: data.credentialId || null,
+						autoUpdate: data.autoUpdate || false,
+						autoUpdateSchedule: data.autoUpdateSchedule || undefined,
+						autoUpdateCron: data.autoUpdate ? (data.autoUpdateCron || '0 3 * * *') : undefined,
+						webhookEnabled: data.webhookEnabled || false,
+						webhookSecret: data.webhookEnabled ? (data.webhookSecret || null) : null
+					});
+					repositoryId = repo.id;
+					if (repo.autoUpdate) {
+						await registerSchedule(repo.id, 'git_repository_sync', null);
+					}
+				} else {
+					// Stack mode: repositories are thin records — no clone, no repo-level
+					// schedule/webhook. Syncs and webhooks are configured per stack.
+					const repo = await createGitRepository({
+						name: repoName,
+						url: data.url,
+						branch: data.branch || 'main',
+						credentialId: data.credentialId || null
+					});
+					repositoryId = repo.id;
+				}
 			} catch (error: any) {
 				if (error.message?.includes('UNIQUE constraint failed')) {
 					return json({ error: 'A repository with this name already exists' }, { status: 400 });
@@ -115,23 +144,47 @@ export const POST: RequestHandler = async (event) => {
 			}
 		}
 
-		const gitStack = await createGitStack({
-			stackName: trimmedStackName,
-			environmentId: data.environmentId || null,
-			repositoryId: repositoryId,
-			composePath: data.composePath || 'compose.yaml',
-			envFilePath: data.envFilePath || null,
-			autoUpdate: data.autoUpdate || false,
-			autoUpdateSchedule: data.autoUpdateSchedule || 'daily',
-			autoUpdateCron: data.autoUpdateCron || '0 3 * * *',
-			webhookEnabled: data.webhookEnabled || false,
-			webhookSecret: data.webhookSecret || null,
-			contextDir: data.contextDir || null,
-			buildOnDeploy: data.buildOnDeploy ?? false,
-			noBuildCache: data.noBuildCache ?? false,
-			repullImages: data.repullImages ?? false,
-			forceRedeploy: data.forceRedeploy ?? false
-		});
+		const gitStack = await createGitStack(mode === 'centralized'
+			? {
+				stackName: trimmedStackName,
+				environmentId: data.environmentId || null,
+				repositoryId: repositoryId,
+				composePath: data.composePath || 'compose.yaml',
+				composePaths: data.composePaths || null,
+				envFilePath: data.envFilePath || null,
+				contextDir: data.contextDir || null,
+				buildOnDeploy: data.buildOnDeploy ?? false,
+				noBuildCache: data.noBuildCache ?? false,
+				repullImages: data.repullImages ?? false,
+				forceRedeploy: data.forceRedeploy ?? false,
+				webhookEnabled: data.forceRedeploy ? (data.webhookEnabled || false) : false,
+				webhookSecret: (data.forceRedeploy && data.webhookEnabled) ? (data.webhookSecret || null) : null
+			}
+			: {
+				// Stack mode: stack-level scheduled sync + webhook, not gated by forceRedeploy.
+				stackName: trimmedStackName,
+				environmentId: data.environmentId || null,
+				repositoryId: repositoryId,
+				composePath: data.composePath || 'compose.yaml',
+				composePaths: data.composePaths || null,
+				envFilePath: data.envFilePath || null,
+				contextDir: data.contextDir || null,
+				buildOnDeploy: data.buildOnDeploy ?? false,
+				noBuildCache: data.noBuildCache ?? false,
+				repullImages: data.repullImages ?? false,
+				forceRedeploy: data.forceRedeploy ?? false,
+				webhookEnabled: data.webhookEnabled || false,
+				webhookSecret: data.webhookEnabled ? (data.webhookSecret || null) : null,
+				autoUpdate: data.autoUpdate || false,
+				autoUpdateSchedule: data.autoUpdate ? (data.autoUpdateSchedule || 'daily') : undefined,
+				autoUpdateCron: data.autoUpdate ? (data.autoUpdateCron || '0 3 * * *') : undefined
+			}
+		);
+
+		// Stack mode: register the per-stack schedule when scheduled sync is enabled.
+		if (mode === 'stack' && gitStack.autoUpdate && gitStack.autoUpdateCron) {
+			await registerSchedule(gitStack.id, 'git_stack_sync', gitStack.environmentId);
+		}
 
 		// Create stack_sources entry so the stack appears in the list immediately
 		await upsertStackSource({
@@ -141,11 +194,6 @@ export const POST: RequestHandler = async (event) => {
 			gitRepositoryId: repositoryId,
 			gitStackId: gitStack.id
 		});
-
-		// Register schedule with croner if auto-update is enabled
-		if (gitStack.autoUpdate && gitStack.autoUpdateCron) {
-			await registerSchedule(gitStack.id, 'git_stack_sync', gitStack.environmentId);
-		}
 
 		// Audit log
 		await auditGitStack(event, 'create', gitStack.id, gitStack.stackName, gitStack.environmentId);

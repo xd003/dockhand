@@ -44,6 +44,7 @@ export const environments = sqliteTable('environments', {
 	hawserAgentName: text('hawser_agent_name'),
 	hawserVersion: text('hawser_version'),
 	hawserCapabilities: text('hawser_capabilities'), // JSON array: ["compose", "exec", "metrics"]
+	hawserStacksDir: text('hawser_stacks_dir'), // Remote STACKS_DIR reported by agent
 	createdAt: text('created_at').default(sql`CURRENT_TIMESTAMP`),
 	updatedAt: text('updated_at').default(sql`CURRENT_TIMESTAMP`)
 });
@@ -74,6 +75,23 @@ export const registries = sqliteTable('registries', {
 export const settings = sqliteTable('settings', {
 	key: text('key').primaryKey(),
 	value: text('value').notNull(),
+	updatedAt: text('updated_at').default(sql`CURRENT_TIMESTAMP`)
+});
+
+// =============================================================================
+// GIT MODE TRANSITION TABLE (single-row state machine)
+// =============================================================================
+// Persists the git-repository mode transition job (see git-transition.ts).
+// Only one row is ever written; state drives a 409 lock-out of git mutations.
+export const gitModeTransition = sqliteTable('git_mode_transition', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	mode: text('mode').default('stack'), // effective mode written at cutover
+	state: text('state').default('idle'), // idle | draining | provisioning | cutting_over | failed
+	jobId: text('job_id'),
+	startedAt: text('started_at'),
+	finishedAt: text('finished_at'),
+	snapshot: text('snapshot'), // JSON: original force_redeploy per stack + original repo-level fields
+	error: text('error'),
 	updatedAt: text('updated_at').default(sql`CURRENT_TIMESTAMP`)
 });
 
@@ -308,9 +326,10 @@ export const gitStacks = sqliteTable('git_stacks', {
 	stackName: text('stack_name').notNull(),
 	environmentId: integer('environment_id').references(() => environments.id, { onDelete: 'cascade' }),
 	repositoryId: integer('repository_id').notNull().references(() => gitRepositories.id, { onDelete: 'cascade' }),
-	composePath: text('compose_path').default('docker-compose.yml'), // Reverted to original value (#1110)
+	composePath: text('compose_path').default('docker-compose.yml'), // Primary compose file path (denormalized from composePaths[0])
+	composePaths: text('compose_paths'), // JSON array of ordered compose file paths (repo-relative)
 	envFilePath: text('env_file_path'), // Path to .env file in repository (e.g., ".env", "config/.env.prod")
-	autoUpdate: integer('auto_update', { mode: 'boolean' }).default(false),
+	autoUpdate: integer('auto_update', { mode: 'boolean' }).default(false), // Deprecated: kept for downgrade compatibility (0010 is additive)
 	autoUpdateSchedule: text('auto_update_schedule').default('daily'),
 	autoUpdateCron: text('auto_update_cron').default('0 3 * * *'),
 	webhookEnabled: integer('webhook_enabled', { mode: 'boolean' }).default(false),
@@ -338,7 +357,8 @@ export const stackSources = sqliteTable('stack_sources', {
 	sourceType: text('source_type').notNull().default('internal'),
 	gitRepositoryId: integer('git_repository_id').references(() => gitRepositories.id, { onDelete: 'set null' }),
 	gitStackId: integer('git_stack_id').references(() => gitStacks.id, { onDelete: 'set null' }),
-	composePath: text('compose_path'), // Custom path to compose file (for stacks with non-default location)
+	composePath: text('compose_path'), // Primary compose file path (denormalized from composePaths[0])
+	composePaths: text('compose_paths'), // JSON array of ordered compose file paths
 	envPath: text('env_path'), // Custom path to .env file (for stacks with non-default location)
 	createdAt: text('created_at').default(sql`CURRENT_TIMESTAMP`),
 	updatedAt: text('updated_at').default(sql`CURRENT_TIMESTAMP`)
@@ -577,6 +597,9 @@ export type NewHawserToken = typeof hawserTokens.$inferInsert;
 
 export type Setting = typeof settings.$inferSelect;
 export type NewSetting = typeof settings.$inferInsert;
+
+export type GitModeTransition = typeof gitModeTransition.$inferSelect;
+export type NewGitModeTransition = typeof gitModeTransition.$inferInsert;
 
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;

@@ -8,7 +8,8 @@
  * git@host:path) passes unchanged, so this is fully backward-compatible.
  */
 
-import { resolve, isAbsolute, sep } from 'node:path';
+import { isAbsolute, resolve } from 'node:path';
+import { isPathUnderRoot } from './path-utils';
 
 export function assertSafeRepoUrl(url: string): void {
 	const u = (url || '').trim();
@@ -43,7 +44,7 @@ export function assertSafeGitRef(ref: string | null | undefined): void {
 export function repoFilePath(repoPath: string, userRel: string, label: string): string {
 	if (isAbsolute(userRel)) throw new Error(`${label} must be a relative path (got "${userRel}")`);
 	const abs = resolve(repoPath, userRel);
-	if (abs !== repoPath && !abs.startsWith(repoPath + sep)) {
+	if (!isPathUnderRoot(abs, repoPath)) {
 		throw new Error(`${label} must be a path inside the repository (got "${userRel}")`);
 	}
 	return abs;

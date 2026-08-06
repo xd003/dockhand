@@ -1,115 +1,54 @@
-import { json, text } from '@sveltejs/kit';
+import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { getGitRepository } from '$lib/server/db';
-import { deployFromRepository } from '$lib/server/git';
+import { getGitRepository, type GitRepository } from '$lib/server/db';
+import { triggerGitRepositorySyncFromWebhook } from '$lib/server/scheduler';
 import { auditGitRepository } from '$lib/server/audit';
-import { verifyWebhookSignature } from '$lib/server/webhook-signature';
+import { handleGitWebhookRequest, type GitWebhookHandlerOptions } from '$lib/server/git-webhook-handler';
+import { getGitMode } from '$lib/server/git-mode';
 
-function detectSource(request: Request): string {
-	if (request.headers.get('x-hub-signature-256')) return 'github';
-	if (request.headers.get('x-gitlab-token')) return 'gitlab';
-	return 'unknown';
+const options: GitWebhookHandlerOptions<GitRepository> = {
+	load: (id) => getGitRepository(id),
+	audit: async (event, id, repository, meta) => {
+		await auditGitRepository(event, 'webhook', id, repository.name, meta);
+	},
+	trigger: (id) => triggerGitRepositorySyncFromWebhook(id),
+	invalidIdMessage: 'Invalid repository ID',
+	notFoundMessage: 'Repository not found',
+	webhookDisabledMessage: 'Webhook is not enabled for this repository',
+	secretNotConfiguredMessage: 'Webhook secret is not configured for this repository',
+	successMessage: 'Repository sync triggered'
+};
+
+/** Repository-level webhooks are a centralized-mode concept (stack mode is per-stack). */
+async function stackModeDisabled(): Promise<Response | null> {
+	if (await getGitMode() !== 'centralized') {
+		return json({ error: 'Webhooks are configured per stack in stack mode' }, { status: 404 });
+	}
+	return null;
 }
 
+/**
+ * Repository-level git webhook. See git-webhook-handler.ts for the shared flow.
+ */
 export const POST: RequestHandler = async (event) => {
-	const { params, request } = event;
 	try {
-		const id = parseInt(params.id);
-		if (isNaN(id)) {
-			return json({ error: 'Invalid repository ID' }, { status: 400 });
-		}
-
-		const repository = await getGitRepository(id);
-		if (!repository) {
-			return json({ error: 'Repository not found' }, { status: 404 });
-		}
-
-		if (!repository.webhookEnabled) {
-			return json({ error: 'Webhook is not enabled for this repository' }, { status: 403 });
-		}
-
-		const source = detectSource(request);
-
-		// A secret is mandatory: reject if none is configured.
-		if (!repository.webhookSecret) {
-			await auditGitRepository(event, 'webhook', id, repository.name, {
-				method: 'POST', source, error: 'no_secret_configured'
-			});
-			return json({ error: 'Webhook secret is not configured for this repository' }, { status: 401 });
-		}
-
-		const payload = await request.text();
-		const githubSignature = request.headers.get('x-hub-signature-256');
-		const gitlabToken = request.headers.get('x-gitlab-token');
-
-		const signature = githubSignature || gitlabToken;
-
-		if (!verifyWebhookSignature(payload, signature, repository.webhookSecret)) {
-			await auditGitRepository(event, 'webhook', id, repository.name, {
-				method: 'POST', source, error: 'invalid_signature'
-			});
-			return json({ error: 'Invalid webhook signature' }, { status: 401 });
-		}
-
-		// Optionally check which branch was pushed (for GitHub)
-		// const body = await request.json();
-		// if (body.ref && body.ref !== `refs/heads/${repository.branch}`) {
-		//   return json({ message: 'Push was not to tracked branch, skipping' });
-		// }
-
-		// Deploy from repository
-		const result = await deployFromRepository(id);
-		await auditGitRepository(event, 'webhook', id, repository.name, {
-			method: 'POST', source, result: result.success ? 'deployed' : 'failed'
-		});
-		return json(result);
+		const disabled = await stackModeDisabled();
+		if (disabled) return disabled;
+		return await handleGitWebhookRequest(event, options);
 	} catch (error: any) {
 		console.error('Webhook error:', error);
 		return json({ success: false, error: error.message }, { status: 500 });
 	}
 };
 
-// Also support GET for simple polling/manual triggers
+// GET is kept for simple polling/manual triggers, but the secret is no longer
+// passed in the URL (it leaked into access/proxy logs and Referer headers).
+// Auth: ?ts=<unix-seconds>&sig=<hex HMAC-SHA256(secret, ts)>, valid for 5 minutes.
 export const GET: RequestHandler = async (event) => {
-	const { params, url } = event;
 	try {
-		const id = parseInt(params.id);
-		if (isNaN(id)) {
-			return json({ error: 'Invalid repository ID' }, { status: 400 });
-		}
-
-		const repository = await getGitRepository(id);
-		if (!repository) {
-			return json({ error: 'Repository not found' }, { status: 404 });
-		}
-
-		if (!repository.webhookEnabled) {
-			return json({ error: 'Webhook is not enabled for this repository' }, { status: 403 });
-		}
-
-		// A secret is mandatory (see POST handler). Reject if none is configured.
-		if (!repository.webhookSecret) {
-			await auditGitRepository(event, 'webhook', id, repository.name, {
-				method: 'GET', source: 'get', error: 'no_secret_configured'
-			});
-			return json({ error: 'Webhook secret is not configured for this repository' }, { status: 401 });
-		}
-
-		// Verify secret via query parameter for GET requests
-		const secret = url.searchParams.get('secret');
-		if (secret !== repository.webhookSecret) {
-			await auditGitRepository(event, 'webhook', id, repository.name, {
-				method: 'GET', source: 'get', error: 'invalid_secret'
-			});
-			return json({ error: 'Invalid webhook secret' }, { status: 401 });
-		}
-
-		// Deploy from repository
-		const result = await deployFromRepository(id);
-		await auditGitRepository(event, 'webhook', id, repository.name, {
-			method: 'GET', source: 'get', result: result.success ? 'deployed' : 'failed'
-		});
-		return json(result);
+		const disabled = await stackModeDisabled();
+		if (disabled) return disabled;
+		return await handleGitWebhookRequest(event, options);
 	} catch (error: any) {
 		console.error('Webhook GET error:', error);
 		return json({ success: false, error: error.message }, { status: 500 });

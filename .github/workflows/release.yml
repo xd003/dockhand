@@ -14,7 +14,7 @@ on:
 
 jobs:
   docker:
-    runs-on: [ubuntu, amd64]
+    runs-on: office-server-amd64-ubuntu
     steps:
       - name: Checkout
         uses: actions/checkout@v4

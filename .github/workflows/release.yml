@@ -14,7 +14,7 @@ on:
 
 jobs:
   docker:
-    runs-on: [ubunutu, amd64]
+    runs-on: [ubuntu, amd64]
     steps:
       - name: Checkout
         uses: actions/checkout@v4

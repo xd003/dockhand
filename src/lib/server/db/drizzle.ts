@@ -24,6 +24,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { eq } from 'drizzle-orm';
 import { createHash } from 'node:crypto';
+import { building } from '$app/environment';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -869,8 +870,10 @@ async function seedDatabase(): Promise<void> {
 // STARTUP
 // =============================================================================
 
-// Seed the database on startup
-await seedDatabase();
+// Seed the database on startup. Skipped during `vite build`: SvelteKit's post-build
+// analysis imports every server module, which would open a live SQLite connection and
+// crash better-sqlite3's native teardown at process exit on Node 24 (SIGABRT).
+if (!building) await seedDatabase();
 
 // =============================================================================
 // EXPORTS

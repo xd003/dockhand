@@ -1,20 +1,31 @@
+/**
+ * Git — shared infrastructure + mode-dispatching facade.
+ *
+ * This module owns:
+ *  - low-level git/credential/CA plumbing (buildGitEnv, execGit, ...)
+ *  - pure helpers shared by both engines (change detection, deletion-sync)
+ *  - mode-agnostic operations (test, preview, env-file parsing)
+ *  - the mode-dispatching facade: every stack/repository operation delegates to
+ *    either StackGitEngine (git-stack.ts) or CentralizedGitEngine
+ *    (git-centralized.ts) based on the effective git repository mode.
+ *
+ * Engines are SEALED: they import shared plumbing from here but never share
+ * mutable path/sync helpers with each other (see F5). Centralized clones live
+ * under git-repos/shared/<name>/ so no layout can collide with per-stack
+ * clones (git-repos/<env>/<stack>, git-repos/stack-<id>).
+ */
+
 import { existsSync, mkdirSync, rmSync, chmodSync, readFileSync, writeFileSync, renameSync, readdirSync, realpathSync } from 'node:fs';
-import { join, resolve, dirname, basename, relative, isAbsolute } from 'node:path';
+import { join, dirname } from 'node:path';
 import { spawn as nodeSpawn, spawnSync } from 'node:child_process';
 import {
 	getGitRepository,
 	getGitRepositories,
 	getGitCredential,
-	updateGitRepository,
 	getGitStack,
-	updateGitStack,
-	upsertStackSource,
-	getFullGitStacksByRepositoryId,
-	getSetting,
-	setSetting,
+	getEnvironments,
 	type GitRepository,
-	type GitCredential,
-	type GitStackWithRepo
+	type GitCredential
 } from './db';
 import { deployStack, getStackDir } from './stacks';
 import { sendEventNotification } from './notifications';
@@ -25,7 +36,6 @@ import { parseComposePathsColumn } from './compose-files';
 import { collectProcess } from './process-utils';
 import { redactEnvVarsForLog } from './log-utils';
 import {
-	fanOutDeployStacks,
 	mergeDeployGitStackOpts,
 	shouldDeployGitStack,
 	type DeployGitStackOpts
@@ -45,6 +55,7 @@ import {
 	type DeletionSkip,
 	type SyncManifest
 } from './git-deletions';
+import { getGitMode, type GitMode } from './git-mode';
 
 const MERGED_CA_BUNDLE_PATH = '/tmp/dockhand-merged-ca-bundle.crt';
 let mergedCaBundleReady = false;
@@ -110,101 +121,23 @@ function getMergedCaBundlePath(): string {
 	return MERGED_CA_BUNDLE_PATH;
 }
 
-// Directory for storing cloned repositories
-const dataDir = process.env.DATA_DIR || './data';
-const GIT_REPOS_DIR = resolve(process.env.GIT_REPOS_DIR || join(dataDir, 'git-repos'));
-
-// Ensure git repos directory exists
-if (!existsSync(GIT_REPOS_DIR)) {
-	mkdirSync(GIT_REPOS_DIR, { recursive: true });
-}
-
-export function getGitReposDir(): string {
-	return GIT_REPOS_DIR;
-}
-
-/**
- * Legacy layout stored per-environment clones under git-repos/<envName>/.
- * Current layout clones once per repository at git-repos/<repoName>/ (shared).
- */
-function isLegacyEnvGitReposDir(dir: string): boolean {
-	if (!existsSync(dir)) return false;
-	if (existsSync(join(dir, '.git'))) return false;
-	const base = basename(dir);
-	if (base.startsWith('preview-') || base.startsWith('repo-')) return false;
-	return true;
-}
-
-const LEGACY_ENV_GIT_REPOS_MIGRATION_KEY = 'migration:legacy_env_git_repos_v1';
-
-/** Remove a leftover per-environment git-repos directory, if present. */
-export function cleanupLegacyEnvGitReposDir(envName: string): void {
-	const dir = join(GIT_REPOS_DIR, envName);
-	if (dir === GIT_REPOS_DIR || !dir.startsWith(GIT_REPOS_DIR + '/')) return;
-	if (!isLegacyEnvGitReposDir(dir)) return;
-	try {
-		rmSync(dir, { recursive: true, force: true });
-		console.log(`[Git] Removed legacy env-scoped git-repos dir: ${dir}`);
-	} catch (err) {
-		console.warn(`[Git] Failed to remove legacy env-scoped git-repos dir ${dir}:`, err);
-	}
-}
-
-/**
- * One-time migration: remove per-environment git-repos directories from the old
- * layout (git-repos/<envName>/). Tracked in settings so it does not run again.
- */
-export async function migrateLegacyEnvGitRepos(): Promise<void> {
-	if (await getSetting(LEGACY_ENV_GIT_REPOS_MIGRATION_KEY)) return;
-
-	console.log('[Git] Running one-time migration: legacy env-scoped git-repos cleanup...');
-
-	if (!existsSync(GIT_REPOS_DIR)) {
-		await setSetting(LEGACY_ENV_GIT_REPOS_MIGRATION_KEY, true);
-		return;
-	}
-
-	let removed = 0;
-	for (const entry of readdirSync(GIT_REPOS_DIR)) {
-		const dir = join(GIT_REPOS_DIR, entry);
-		if (!isLegacyEnvGitReposDir(dir)) continue;
-		rmSync(dir, { recursive: true, force: true });
-		console.log(`[Git] Removed legacy env-scoped git-repos dir: ${dir}`);
-		removed++;
-	}
-
-	await setSetting(LEGACY_ENV_GIT_REPOS_MIGRATION_KEY, true);
-	console.log(
-		removed > 0
-			? `[Git] Legacy env-scoped git-repos migration complete (${removed} dir(s) removed)`
-			: '[Git] Legacy env-scoped git-repos migration complete (nothing to remove)'
-	);
-}
-
-/**
- * Sanitize a repository name for use as a filesystem directory name.
- * Replaces characters unsafe on most filesystems with underscores,
- * collapses consecutive underscores, and strips leading/trailing underscores.
- */
-function sanitizeRepoName(name: string): string {
-	return name
-		.replace(/[^a-zA-Z0-9._-]/g, '_')
-		.replace(/_+/g, '_')
-		.replace(/^_|_$/g, '') || 'repo-unknown';
-}
-
-function getRepoPath(repoName: string): string {
-	const sanitized = sanitizeRepoName(repoName);
-	// Guard against directory traversal via specially-crafted names (e.g. "..")
-	if (sanitized === '.' || sanitized === '..' || sanitized.includes('/') || sanitized.includes('\\')) {
-		throw new Error(`Invalid repository name: ${repoName}`);
-	}
-	return join(GIT_REPOS_DIR, sanitized);
-}
+// Git clone path layout (centralized shared/ namespace + per-stack paths)
+// lives in git-paths.ts — a DB-free module so the isolation rules can be
+// unit-tested. Re-exported here for callers.
+import {
+	getGitReposDir,
+	getRepoPath,
+	sanitizeRepoName,
+	GIT_REPOS_DIR,
+	stackRepoPath
+} from './git-paths';
+export { getGitReposDir, getRepoPath, sanitizeRepoName, stackRepoPath, GIT_REPOS_DIR };
 
 /**
  * True when `candidateName` would share a clone directory with another repository
- * after sanitization (e.g. "a b" vs "a  b" both become "a_b").
+ * after sanitization (e.g. "a b" vs "a  b" both become "a_b"), or with a
+ * per-environment clone directory (git-repos/<envName>/). Refusing the collision
+ * protects both layouts during and after a mode transition (F2).
  */
 export async function findRepoNameSanitizationCollision(
 	candidateName: string,
@@ -216,6 +149,16 @@ export async function findRepoNameSanitizationCollision(
 		if (excludeId != null && repo.id === excludeId) continue;
 		if (sanitizeRepoName(repo.name) === candidateKey) {
 			return repo.name;
+		}
+	}
+	// A centralized clone at git-repos/shared/<name> and a per-stack env tree at
+	// git-repos/<envName>/ would not collide directly, but an env named exactly
+	// like the repo (or vice-versa) makes the heuristic cleanup ambiguous —
+	// refuse those names outright.
+	const envs = await getEnvironments();
+	for (const env of envs) {
+		if (sanitizeRepoName(env.name) === candidateKey) {
+			return env.name;
 		}
 	}
 	return null;
@@ -299,7 +242,7 @@ async function ensurePasswdEntry(env: GitEnv): Promise<void> {
 	}
 }
 
-async function buildGitEnv(credential: GitCredential | null): Promise<GitEnv> {
+export async function buildGitEnv(credential: GitCredential | null): Promise<GitEnv> {
 	const env: GitEnv = {
 		...process.env as GitEnv,
 		GIT_TERMINAL_PROMPT: '0',
@@ -369,7 +312,7 @@ async function buildGitEnv(credential: GitCredential | null): Promise<GitEnv> {
 	return env;
 }
 
-function cleanupSshKey(credential: GitCredential | null): void {
+export function cleanupSshKey(credential: GitCredential | null): void {
 	if (credential?.authType === 'ssh') {
 		const sshKeyPath = `/tmp/.ssh-key-${credential.id}`;
 		try {
@@ -382,7 +325,7 @@ function cleanupSshKey(credential: GitCredential | null): void {
 	}
 }
 
-function buildRepoUrl(url: string, credential: GitCredential | null): string {
+export function buildRepoUrl(url: string, credential: GitCredential | null): string {
 	assertSafeRepoUrl(url);
 	// Never embed credentials in the URL — they leak via /proc/<pid>/cmdline (see #1081).
 	// HTTPS credentials are injected via GIT_CONFIG_COUNT env vars in buildGitEnv().
@@ -400,15 +343,34 @@ function buildRepoUrl(url: string, credential: GitCredential | null): string {
 	return url;
 }
 
-async function execGit(args: string[], cwd: string, env: GitEnv): Promise<{ stdout: string; stderr: string; code: number }> {
+export async function execGit(
+	args: string[],
+	cwd: string,
+	env: GitEnv,
+	timeoutMs?: number
+): Promise<{ stdout: string; stderr: string; code: number }> {
+	let proc: ReturnType<typeof nodeSpawn> | undefined;
 	try {
-		const proc = nodeSpawn('git', args, {
+		proc = nodeSpawn('git', args, {
 			cwd,
 			env,
 			stdio: ['pipe', 'pipe', 'pipe']
 		});
 
+		// Bounds a hung git subprocess (e.g. a frozen SSH connection during a
+		// clone). The child is SIGKILLed on timeout so the concurrency slot is
+		// genuinely released — a bare Promise.race would free the slot while the
+		// clone keeps running, defeating the point of the cap.
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		if (timeoutMs && timeoutMs > 0) {
+			timer = setTimeout(() => {
+				console.error(`[Git] git ${args[0] ?? ''} timed out after ${timeoutMs}ms — killing subprocess`);
+				try { proc?.kill('SIGKILL'); } catch { /* already gone */ }
+			}, timeoutMs);
+		}
+
 		const result = await collectProcess(proc);
+		if (timer) clearTimeout(timer);
 
 		return { stdout: result.stdout.trim(), stderr: result.stderr.trim(), code: result.exitCode };
 	} catch (err: any) {
@@ -420,7 +382,7 @@ async function execGit(args: string[], cwd: string, env: GitEnv): Promise<{ stdo
  * Get list of files that changed between two commits in a specific directory.
  * Returns array of changed file paths (relative to repo root).
  */
-async function getChangedFilesInDir(
+export async function getChangedFilesInDir(
 	repoPath: string,
 	previousCommit: string,
 	newCommit: string,
@@ -462,7 +424,7 @@ async function getChangedFilesInDir(
  * disk hash. A sanity guard blocks ALL deletions when the clone walk looks
  * broken (empty, or missing the compose file).
  */
-async function computeSyncDeletionPlan(options: {
+export async function computeSyncDeletionPlan(options: {
 	logPrefix: string;
 	composeDir: string; // absolute path inside the clone
 	composeFileName: string | undefined; // compose file relative to composeDir
@@ -506,7 +468,7 @@ async function computeSyncDeletionPlan(options: {
  * instead (#1260); this summary (with real apply results) goes to the
  * server log only.
  */
-async function finalizeDeletionSync(options: {
+export async function finalizeDeletionSync(options: {
 	stackId: number;
 	logPrefix: string;
 	previousManifest: SyncManifest;
@@ -536,6 +498,7 @@ async function finalizeDeletionSync(options: {
 	}
 
 	const nextManifest = buildNextManifest(newCommitFull, newFiles);
+	const { updateGitStack } = await import('./db');
 	await updateGitStack(stackId, { syncedFiles: serializeManifest(nextManifest) });
 	console.log(`${logPrefix} Manifest persisted: ${Object.keys(nextManifest.files).length} file(s) at commit ${nextManifest.commit?.substring(0, 7)}`);
 }
@@ -567,10 +530,33 @@ export interface TestResult {
 	error?: string;
 }
 
+// Progress callback type
+export type ProgressCallback = (data: {
+	status: 'connecting' | 'cloning' | 'fetching' | 'reading' | 'deploying' | 'complete' | 'error';
+	message?: string;
+	step?: number;
+	totalSteps?: number;
+	error?: string;
+}) => void;
+
+export type DeployGitStackResult = {
+	success: boolean;
+	output?: string;
+	error?: string;
+	skipped?: boolean;
+};
+
+export type FanOutResult = {
+	success: boolean;
+	output?: string;
+	error?: string;
+	stacks?: Array<{ id: number; name: string; status: 'deployed' | 'skipped' | 'failed'; error?: string }>;
+};
+
 /**
  * Clean up git/SSH error messages for user display
  */
-function cleanGitError(stderr: string): string {
+export function cleanGitError(stderr: string): string {
 	// Remove SSH warnings and noise
 	const lines = stderr.split('\n').filter(line => {
 		const l = line.trim().toLowerCase();
@@ -611,7 +597,7 @@ function cleanGitError(stderr: string): string {
  * Core function to test a git repository connection.
  * Tests the URL, branch, and credentials passed directly (not from DB).
  */
-async function testRepositoryConnection(options: {
+export async function testRepositoryConnection(options: {
 	url: string;
 	branch: string;
 	credential: GitCredential | null;
@@ -729,630 +715,11 @@ export async function testRepositoryConfig(options: {
 	});
 }
 
-export async function syncRepository(repoId: number): Promise<SyncResult> {
-	const repo = await getGitRepository(repoId);
-	if (!repo) {
-		return { success: false, error: 'Repository not found' };
-	}
-
-	const credential = repo.credentialId ? await getGitCredential(repo.credentialId) : null;
-	const repoPath = getRepoPath(repo.name);
-	// Migrate legacy repo-{id} directory to the name-based path on first access
-	const legacyRepoPath = join(GIT_REPOS_DIR, `repo-${repoId}`);
-	if (existsSync(legacyRepoPath) && !existsSync(repoPath)) {
-		try {
-			renameSync(legacyRepoPath, repoPath);
-			console.log(`[Git] Migrated repo dir ${legacyRepoPath} -> ${repoPath}`);
-		} catch (err) {
-			console.warn(`[Git] Failed to migrate repo dir, will clone fresh:`, err);
-		}
-	}
-	const env = await buildGitEnv(credential);
-
-	try {
-		// Update sync status
-		await updateGitRepository(repoId, { syncStatus: 'syncing', syncError: null });
-
-		let updated = false;
-		let currentCommit = '';
-
-		if (!existsSync(repoPath) || !existsSync(join(repoPath, '.git'))) {
-			// Missing or incomplete clone (e.g. interrupted clone left a directory
-			// without .git) — remove residue and clone fresh.
-			if (existsSync(repoPath)) {
-				rmSync(repoPath, { recursive: true, force: true });
-			}
-			assertSafeGitRef(repo.branch);
-			const repoUrl = buildRepoUrl(repo.url, credential);
-
-			const result = await execGit(
-				['clone', '--filter=blob:none', '--branch', repo.branch, repoUrl, repoPath],
-				process.cwd(),
-				env
-			);
-			if (result.code !== 0) {
-				// Clean up partial clone directory on failure
-				if (existsSync(repoPath)) {
-					rmSync(repoPath, { recursive: true, force: true });
-				}
-				throw new Error(`Git clone failed: ${result.stderr}`);
-			}
-
-			updated = true;
-		} else {
-			// Get current commit before updating
-			const beforeResult = await execGit(['rev-parse', 'HEAD'], repoPath, env);
-			const beforeCommit = beforeResult.stdout;
-
-			// Fetch + hard-reset to the configured branch. Avoid `git pull`, which can
-			// create merge commits or leave the worktree in a conflicted state when
-			// the configured branch differs from the currently checked-out branch.
-			assertSafeGitRef(repo.branch);
-			const fetchResult = await execGit(['fetch', 'origin', repo.branch], repoPath, env);
-			if (fetchResult.code !== 0) {
-				throw new Error(`Git fetch failed: ${fetchResult.stderr}`);
-			}
-			const checkoutResult = await execGit(
-				['checkout', '-B', repo.branch, `origin/${repo.branch}`],
-				repoPath,
-				env
-			);
-			if (checkoutResult.code !== 0) {
-				throw new Error(`Git checkout failed: ${checkoutResult.stderr}`);
-			}
-
-			// Get commit after update
-			const afterResult = await execGit(['rev-parse', 'HEAD'], repoPath, env);
-			const afterCommit = afterResult.stdout;
-
-			updated = beforeCommit !== afterCommit;
-		}
-
-		// Get current commit hash
-		const commitResult = await execGit(['rev-parse', 'HEAD'], repoPath, env);
-		currentCommit = commitResult.stdout.substring(0, 7);
-
-		// Read the compose file (if present — may not exist if this is a browse-only clone)
-		const composePath = repoFilePath(repoPath, repo.composePath, "Compose path");
-		let composeContent: string | undefined;
-		if (existsSync(composePath)) {
-			composeContent = readFileSync(composePath, 'utf-8');
-		} else {
-			console.warn(`[Git] Compose file not found at ${repo.composePath} — skipping content read (will be validated on deploy)`);
-		}
-
-		// Update repository status
-		await updateGitRepository(repoId, {
-			syncStatus: 'synced',
-			lastSync: new Date().toISOString(),
-			lastCommit: currentCommit,
-			syncError: null
-		});
-
-		cleanupSshKey(credential);
-
-		return {
-			success: true,
-			commit: currentCommit,
-			composeContent,
-			updated
-		};
-	} catch (error: any) {
-		cleanupSshKey(credential);
-		await updateGitRepository(repoId, {
-			syncStatus: 'error',
-			syncError: error.message
-		});
-		return { success: false, error: error.message };
-	}
-}
-
-export async function deployFromRepositoryWithFanOut(
-	repositoryId: number,
-	log?: (msg: string) => void
-): Promise<FanOutResult> {
-	// Coalesce concurrent repo webhooks / manual triggers for the same repository
-	// into a single in-flight fan-out (+ at most one trailing re-run).
-	return runCoalesced(
-		repoFanOutSlots,
-		repositoryId,
-		{ log },
-		mergeFanOutOpts,
-		(opts) => deployFromRepositoryWithFanOutImpl(repositoryId, opts.log)
-	);
-}
-
-async function deployFromRepositoryWithFanOutImpl(
-	repositoryId: number,
-	log?: (msg: string) => void
-): Promise<FanOutResult> {
-	const _log = log || console.log;
-
-	const repo = await getGitRepository(repositoryId);
-	if (!repo) {
-		return { success: false, error: 'Repository not found' };
-	}
-
-	_log(`[Git] Starting fan-out deployment for repository "${repo.name}" (ID: ${repositoryId})`);
-
-	// Get all stacks tied to this repository
-	const stacks = await getFullGitStacksByRepositoryId(repositoryId);
-	if (stacks.length === 0) {
-		_log(`[Git] No stacks linked to repository "${repo.name}".`);
-		return { success: true, stacks: [] };
-	}
-
-	_log(`[Git] Found ${stacks.length} stack(s) linked to this repository.`);
-
-	// Concurrent stack-level webhooks coalesce inside deployGitStack (stronger
-	// intent wins), and stacks with their own webhook are deferred there.
-	return fanOutDeployStacks(stacks, (stackId, opts) => deployGitStack(stackId, opts), _log);
-}
-
-export async function checkForUpdates(repoId: number): Promise<{ hasUpdates: boolean; currentCommit?: string; latestCommit?: string; error?: string }> {
-	const repo = await getGitRepository(repoId);
-	if (!repo) {
-		return { hasUpdates: false, error: 'Repository not found' };
-	}
-
-	const credential = repo.credentialId ? await getGitCredential(repo.credentialId) : null;
-	const repoPath = getRepoPath(repo.name);
-	const env = await buildGitEnv(credential);
-
-	try {
-		if (!existsSync(repoPath)) {
-			return { hasUpdates: true, currentCommit: 'none', latestCommit: 'unknown' };
-		}
-
-		// Get current commit
-		const currentResult = await execGit(['rev-parse', 'HEAD'], repoPath, env);
-		const currentCommit = currentResult.stdout.substring(0, 7);
-
-		// Fetch latest without merging. Guard the branch like every other
-		// exec path — a stored branch starting with '-' would be parsed as a
-		// git option.
-		assertSafeGitRef(repo.branch);
-		await execGit(['fetch', 'origin', repo.branch], repoPath, env);
-
-		// Get remote commit
-		const latestResult = await execGit(['rev-parse', `origin/${repo.branch}`], repoPath, env);
-		const latestCommit = latestResult.stdout.substring(0, 7);
-
-		cleanupSshKey(credential);
-
-		return {
-			hasUpdates: currentCommit !== latestCommit,
-			currentCommit,
-			latestCommit
-		};
-	} catch (error: any) {
-		cleanupSshKey(credential);
-		return { hasUpdates: false, error: error.message };
-	}
-}
-
-export function deleteRepositoryFiles(repoName: string, repoId?: number): void {
-	const repoPath = getRepoPath(repoName);
-	try {
-		if (existsSync(repoPath)) {
-			rmSync(repoPath, { recursive: true, force: true });
-		}
-	} catch (error) {
-		const errorMsg = error instanceof Error ? error.message : String(error);
-		console.error('[Git] Failed to delete repository files:', errorMsg);
-	}
-	// Also clean up any legacy repo-{id} directory left from before the naming change
-	if (repoId !== undefined) {
-		const legacyPath = join(GIT_REPOS_DIR, `repo-${repoId}`);
-		try {
-			if (existsSync(legacyPath)) {
-				rmSync(legacyPath, { recursive: true, force: true });
-			}
-		} catch {
-			// Ignore legacy cleanup errors
-		}
-	}
-}
-
-/**
- * Rename the on-disk clone directory when a repository is renamed.
- * No-op if sanitized paths are identical or the source dir is missing.
- */
-export function renameRepositoryFiles(oldName: string, newName: string): void {
-	const oldPath = getRepoPath(oldName);
-	const newPath = getRepoPath(newName);
-	if (oldPath === newPath) return;
-	if (!existsSync(oldPath)) return;
-	if (existsSync(newPath)) {
-		console.warn(`[Git] Cannot rename repo dir ${oldPath} -> ${newPath}: target already exists`);
-		return;
-	}
-	try {
-		renameSync(oldPath, newPath);
-		console.log(`[Git] Renamed repo dir ${oldPath} -> ${newPath}`);
-	} catch (error) {
-		const errorMsg = error instanceof Error ? error.message : String(error);
-		console.error('[Git] Failed to rename repository files:', errorMsg);
-	}
-}
-
-/**
- * Returns the absolute path where a repository is (or will be) cloned.
- * Used by the browse API to validate that requested paths stay within the repo root.
- */
-export function getRepoClonePath(repoName: string): string {
-	return getRepoPath(repoName);
-}
-
-/**
- * Trigger a clone/sync of a repository without blocking the caller.
- * Intended for clone-on-save: called after creating or updating a repository in the DB.
- * `syncRepository` is idempotent — it clones if the directory is missing or pulls if it exists.
- * Errors are swallowed here; status is persisted in the DB (syncStatus / syncError columns).
- */
-export function cloneRepositoryNow(repoId: number): void {
-	console.log(`[Git] Triggering background clone for repository ${repoId}`);
-	// Use syncRepositoryExclusive so concurrent background triggers share a single in-flight clone
-	syncRepositoryExclusive(repoId).then((result) => {
-		if (result.success) {
-			console.log(`[Git] Background clone for repository ${repoId} completed successfully`);
-		} else {
-			console.warn(`[Git] Background clone for repository ${repoId} failed: ${result.error}`);
-		}
-	}).catch((err) => {
-		console.error(`[Git] Unexpected error during background clone for repository ${repoId}:`, err);
-	});
-}
-
-// === Git Stack Functions ===
-
-/**
- * In-flight sync promises per repository ID.
- * When multiple git stacks share the same repository and are synced concurrently,
- * the second (and subsequent) callers wait for the first sync to complete and
- * receive its result — no duplicate clones are started.
- */
-const repoSyncInFlight = new Map<number, Promise<SyncResult>>();
-
-/**
- * Sync a repository with concurrency control.
- * If a sync is already in progress for this repository ID, the caller waits
- * for the existing sync to finish and receives its result (no duplicate clone).
- */
-export async function syncRepositoryExclusive(repoId: number): Promise<SyncResult> {
-	const existing = repoSyncInFlight.get(repoId);
-	if (existing) {
-		console.log(`[Git] Waiting for in-flight sync of repository ${repoId}...`);
-		return existing;
-	}
-	const promise = syncRepository(repoId).finally(() => {
-		repoSyncInFlight.delete(repoId);
-	});
-	repoSyncInFlight.set(repoId, promise);
-	return promise;
-}
-
-// -----------------------------------------------------------------------------
-// Coalescing exclusive runners — see src/lib/server/coalesce.ts for the generic
-// implementation. The git-specific merge helpers and slot maps live here.
-// -----------------------------------------------------------------------------
-
-import {
-	runCoalesced,
-	type CoalesceSlot
-} from './coalesce';
-
-type DeployGitStackResult = {
-	success: boolean;
-	output?: string;
-	error?: string;
-	skipped?: boolean;
-};
-
-// Progress callback type
-type ProgressCallback = (data: {
-	status: 'connecting' | 'cloning' | 'fetching' | 'reading' | 'deploying' | 'complete' | 'error';
-	message?: string;
-	step?: number;
-	totalSteps?: number;
-	error?: string;
-}) => void;
-
-type FanOutOpts = {
-	log?: (msg: string) => void;
-};
-
-type FanOutResult = {
-	success: boolean;
-	output?: string;
-	error?: string;
-	stacks?: Array<{ id: number; name: string; status: 'deployed' | 'skipped' | 'failed'; error?: string }>;
-};
-
-/** Per-stack deploy coalesce slots (repo webhook fan-out ↔ stack webhook). */
-const stackDeploySlots = new Map<number, CoalesceSlot<DeployGitStackOpts, DeployGitStackResult>>();
-
-/** Per-repository fan-out coalesce slots (duplicate repo webhooks). */
-const repoFanOutSlots = new Map<number, CoalesceSlot<FanOutOpts, FanOutResult>>();
-
-function mergeFanOutOpts(a: FanOutOpts, b: FanOutOpts): FanOutOpts {
-	// Prefer the newer caller's logger so its schedule-execution log is populated
-	return { log: b.log ?? a.log };
-}
-
-/**
- * Re-entrancy marker: deployGitStack holds the coalesce slot and then calls
- * syncGitStack — that nested call must not wait on its own slot.
- */
-const stackDeployReentrancy = new Set<number>();
-
-/**
- * Wait until no coalesced stack deploy is in flight for this stack.
- * Used by standalone sync so it does not race a webhook deploy mid-flight.
- */
-async function waitForStackDeployIdle(stackId: number): Promise<void> {
-	for (;;) {
-		const slot = stackDeploySlots.get(stackId);
-		if (!slot || slot.done) return;
-		console.log(`[Git] Stack ${stackId}: waiting for in-flight deploy to finish before sync...`);
-		await slot.idle;
-	}
-}
-
-export async function syncGitStack(stackId: number, onProgress?: ProgressCallback): Promise<SyncResult> {
-	// If a coalesced deploy owns this stack, wait for it rather than failing.
-	// (deployGitStack calls syncGitStack while it already holds the slot — that
-	// path is re-entrant via the flag below.)
-	if (!stackDeployReentrancy.has(stackId)) {
-		await waitForStackDeployIdle(stackId);
-	}
-
-	const gitStack = await getGitStack(stackId);
-	if (!gitStack) {
-		return { success: false, error: 'Git stack not found' };
-	}
-
-	const logPrefix = `[Stack:${gitStack.stackName}]`;
-	console.log(`${logPrefix} ========================================`);
-	console.log(`${logPrefix} SYNC GIT STACK START`);
-	console.log(`${logPrefix} ========================================`);
-	console.log(`${logPrefix} Stack ID:`, stackId);
-	console.log(`${logPrefix} Stack name:`, gitStack.stackName);
-	console.log(`${logPrefix} Repository ID:`, gitStack.repositoryId);
-	console.log(`${logPrefix} Compose path:`, gitStack.composePath);
-	console.log(`${logPrefix} Env file path:`, gitStack.envFilePath || '(none)');
-	console.log(`${logPrefix} Environment ID:`, gitStack.environmentId);
-
-	// Concurrent deploys are serialized via stackDeploySlots — a stale DB status here
-	// should not produce a spurious error, but guard when not re-entrant.
-	if (gitStack.syncStatus === 'syncing' && !stackDeployReentrancy.has(stackId)) {
-		console.log(`${logPrefix} ERROR: Sync already in progress`);
-		return { success: false, error: 'Sync already in progress' };
-	}
-
-	const repo = await getGitRepository(gitStack.repositoryId);
-	if (!repo) {
-		console.log(`${logPrefix} ERROR: Repository not found`);
-		return { success: false, error: 'Repository not found' };
-	}
-
-	console.log(`${logPrefix} Repository URL:`, repo.url);
-	console.log(`${logPrefix} Repository branch:`, repo.branch);
-
-	const credential = repo.credentialId ? await getGitCredential(repo.credentialId) : null;
-	const env = await buildGitEnv(credential);
-
-	console.log(`${logPrefix} Has credential:`, !!credential);
-
-	try {
-		// Step 1: Connecting
-		onProgress?.({ status: 'connecting', message: 'Connecting to repository...', step: 1, totalSteps: 5 });
-		// Update sync status
-		await updateGitStack(stackId, { syncStatus: 'syncing', syncError: null });
-
-		let updated = false;
-		let currentCommit = '';
-
-		// Sync the shared repository clone. If another stack is already syncing this
-		// repository, wait for that sync to complete and share the result (no duplicate clone).
-		console.log(`${logPrefix} Syncing shared repository clone...`);
-		onProgress?.({ status: 'cloning', message: 'Syncing repository...', step: 2, totalSteps: 5 });
-		const repoSyncResult = await syncRepositoryExclusive(gitStack.repositoryId);
-		if (!repoSyncResult.success) {
-			throw new Error(`Repository sync failed: ${repoSyncResult.error}`);
-		}
-		onProgress?.({ status: 'fetching', message: 'Repository up to date', step: 3, totalSteps: 5 });
-		const repoPath = getRepoPath(repo.name);
-
-		// Use the DB's last known commit as the baseline for change detection.
-		// The shared clone is up to date after syncRepositoryExclusive completes.
-		const previousCommit = gitStack.lastCommit ?? null;
-
-		// Get current commit from the shared clone
-		const newCommitResult = await execGit(['rev-parse', 'HEAD'], repoPath, env);
-		const newCommit = newCommitResult.stdout.trim();
-		// Normalize to 7-char short hash for comparison (DB stores 7-char, git returns 40-char)
-		const commitChanged = previousCommit?.substring(0, 7) !== newCommit.substring(0, 7);
-		console.log(`${logPrefix} Previous commit: ${previousCommit || '(none)'}, new commit: ${newCommit.substring(0, 7)}, commit changed: ${commitChanged}`);
-
-		// Check if any files in the compose file's directory have changed
-		// This catches changes to the compose file, env files, and any other referenced files
-		// (e.g., config files, scripts, additional env files)
-		let changedFiles: string[] = [];
-		if (commitChanged) {
-			// Use contextDir if set, otherwise fall back to compose file's directory
-			const diffDirRelative = gitStack.contextDir || dirname(gitStack.composePath);
-			console.log(`${logPrefix} Checking for changes in directory: ${diffDirRelative || '(root)'}`);
-
-			const diffResult = await getChangedFilesInDir(
-				repoPath,
-				previousCommit,
-				newCommit,
-				diffDirRelative || '.',
-				env
-			);
-
-			updated = diffResult.changed;
-			changedFiles = diffResult.files;
-
-			if (diffResult.error) {
-				console.log(`${logPrefix} Diff error: ${diffResult.error}`);
-			}
-
-			if (changedFiles.length > 0) {
-				console.log(`${logPrefix} Changed files (${changedFiles.length}):`);
-				for (const file of changedFiles) {
-					console.log(`${logPrefix}   - ${file}`);
-				}
-			} else {
-				console.log(`${logPrefix} No files changed in stack directory`);
-			}
-		} else {
-			updated = false;
-			console.log(`${logPrefix} No commit change, skipping file diff`);
-		}
-
-		// Get current commit hash
-		const commitResult = await execGit(['rev-parse', 'HEAD'], repoPath, env);
-		currentCommit = commitResult.stdout.substring(0, 7);
-		console.log(`${logPrefix} Current commit:`, currentCommit);
-
-		// Read the compose file
-		onProgress?.({ status: 'reading', message: `Reading ${gitStack.composePath}...`, step: 4, totalSteps: 5 });
-		const composePath = repoFilePath(repoPath, gitStack.composePath, "Compose path");
-		console.log(`${logPrefix} Reading compose file from:`, composePath);
-		if (!existsSync(composePath)) {
-			console.log(`${logPrefix} ERROR: Compose file not found at:`, composePath);
-			throw new Error(`Compose file not found: ${gitStack.composePath}`);
-		}
-
-		const composeContent = readFileSync(composePath, 'utf-8');
-		console.log(`${logPrefix} Compose content length:`, composeContent.length, 'chars');
-		console.log(`${logPrefix} Compose content:`);
-		console.log(composeContent);
-
-		// Determine the source directory and compose filename
-		// If contextDir is set, use it as the source directory (relative to repo root)
-		// and compute composeFileName as relative path from contextDir to compose file
-		let composeDir: string;
-		let composeFileName: string;
-		if (gitStack.contextDir) {
-			const contextDirAbsolute = resolve(repoPath, gitStack.contextDir);
-			// Validate: context dir must be within repo (sep-aware; rejects sibling prefix matches)
-			if (!isPathUnderRoot(contextDirAbsolute, repoPath)) {
-				throw new Error('Context directory must be within the repository');
-			}
-			// Validate: compose file must be within context directory
-			const relCompose = relative(contextDirAbsolute, composePath);
-			if (relCompose.startsWith('..') || isAbsolute(relCompose)) {
-				throw new Error('Compose file must be within the context directory');
-			}
-			composeDir = contextDirAbsolute;
-			composeFileName = relCompose; // e.g., "apps/myapp/compose.yaml"
-		} else {
-			composeDir = dirname(composePath);
-			composeFileName = basename(gitStack.composePath); // e.g., "docker-compose.yaml"
-		}
-		console.log(`${logPrefix} Source directory (composeDir):`, composeDir);
-		console.log(`${logPrefix} Compose filename:`, composeFileName);
-
-		// Read env file if configured (optional - don't fail if missing)
-		let envFileVars: Record<string, string> | undefined;
-		let envFileContent: string | undefined;
-		let envFileName: string | undefined;
-		if (gitStack.envFilePath) {
-			const envFilePath = repoFilePath(repoPath, gitStack.envFilePath, "Env file path");
-			console.log(`${logPrefix} Looking for env file at:`, envFilePath);
-			if (existsSync(envFilePath)) {
-				try {
-					// Realpath containment: a git-tracked symlink pointing outside
-					// the repo must not be followed (host file exfiltration).
-					const realEnvPath = realpathSync(envFilePath);
-					if (!isPathUnderRoot(realEnvPath, realpathSync(repoPath))) {
-						console.warn(`${logPrefix} Configured env file resolves outside the repository — skipping: ${gitStack.envFilePath}`);
-					} else {
-						console.log(`${logPrefix} Reading env file...`);
-						envFileContent = readFileSync(realEnvPath, 'utf-8');
-						envFileVars = parseEnvFileContent(envFileContent, gitStack.stackName);
-						console.log(`${logPrefix} Env file parsed, vars count:`, Object.keys(envFileVars).length);
-
-						// Compute env file path relative to compose directory
-						// This is needed for --env-file flag after files are copied to stack directory
-						envFileName = relative(composeDir, envFilePath);
-						console.log(`${logPrefix} Env filename relative to compose dir:`, envFileName);
-					}
-				} catch (err) {
-					// Log but don't fail - env file is optional
-					console.warn(`${logPrefix} Failed to read env file ${gitStack.envFilePath}:`, err);
-				}
-			} else {
-				console.warn(`${logPrefix} Configured env file not found:`, gitStack.envFilePath);
-			}
-		} else {
-			console.log(`${logPrefix} No env file path configured`);
-		}
-
-		// Deletion sync (#966): manifest-vs-clone deletion plan
-		const deletionData = await computeSyncDeletionPlan({
-			logPrefix,
-			composeDir,
-			composeFileName,
-			rawManifest: gitStack.syncedFiles
-		});
-
-		// Update git stack status
-		await updateGitStack(stackId, {
-			syncStatus: 'synced',
-			lastSync: new Date().toISOString(),
-			lastCommit: currentCommit,
-			syncError: null
-		});
-
-		cleanupSshKey(credential);
-
-		console.log(`${logPrefix} ----------------------------------------`);
-		console.log(`${logPrefix} SYNC GIT STACK COMPLETE`);
-		console.log(`${logPrefix} ----------------------------------------`);
-		console.log(`${logPrefix} Success: true`);
-		console.log(`${logPrefix} Updated:`, updated);
-		console.log(`${logPrefix} Changed files:`, changedFiles.length > 0 ? changedFiles.join(', ') : '(none)');
-		console.log(`${logPrefix} Commit:`, currentCommit);
-		console.log(`${logPrefix} Env file vars count:`, envFileVars ? Object.keys(envFileVars).length : 0);
-
-		return {
-			success: true,
-			commit: currentCommit,
-			composeContent,
-			composeDir,
-			composeFileName,
-			envFileVars,
-			envFileName,
-			updated,
-			changedFiles,
-			deletionPlan: deletionData.plan,
-			newFiles: deletionData.newFiles,
-			newCommitFull: newCommit,
-			previousManifest: deletionData.previousManifest
-		};
-	} catch (error: any) {
-		cleanupSshKey(credential);
-		await updateGitStack(stackId, {
-			syncStatus: 'error',
-			syncError: error.message
-		});
-		console.log(`${logPrefix} SYNC ERROR:`, error.message);
-		return { success: false, error: error.message };
-	}
-}
-
 /**
  * Fire the git_sync_success / git_sync_failed / git_sync_skipped notification for a
- * git-stack deploy. Called from deployGitStack so EVERY caller notifies — webhook,
- * manual API deploy, create/update, and the scheduler alike. Previously the dispatch
- * lived only in the git-stack-sync scheduler task, so webhook/manual deploys were
- * silent (#1295). Best-effort: never changes the deploy outcome.
+ * git-stack deploy. Best-effort: never changes the deploy outcome.
  */
-async function notifyGitSync(stackName: string, envId: number | null | undefined, result: { success: boolean; error?: string; skipped?: boolean }): Promise<void> {
+export async function notifyGitSync(stackName: string, envId: number | null | undefined, result: { success: boolean; error?: string; skipped?: boolean }): Promise<void> {
 	try {
 		if (result.success && result.skipped) {
 			await sendEventNotification('git_sync_skipped', {
@@ -1376,221 +743,10 @@ async function notifyGitSync(stackName: string, envId: number | null | undefined
 	} catch { /* never changes the deploy outcome */ }
 }
 
-export async function deployGitStack(
-	stackId: number,
-	options?: { force?: boolean; ignoreForceRedeploy?: boolean }
-): Promise<DeployGitStackResult> {
-	// Coalesce concurrent stack deploys (stack webhook ↔ repo fan-out ↔ manual).
-	// Stronger intent wins: force ORs; ignoreForceRedeploy only if all agree.
-	const opts: DeployGitStackOpts = {
-		force: options?.force ?? true, // Default to force for backward compatibility
-		ignoreForceRedeploy: options?.ignoreForceRedeploy ?? false
-	};
-
-	return runCoalesced(
-		stackDeploySlots,
-		stackId,
-		opts,
-		mergeDeployGitStackOpts,
-		(merged) => deployGitStackCore(stackId, merged)
-	);
-}
-
-async function deployGitStackCore(
-	stackId: number,
-	opts: DeployGitStackOpts,
-	onProgress?: ProgressCallback
-): Promise<DeployGitStackResult> {
-	const { force, ignoreForceRedeploy } = opts;
-
-	const gitStack = await getGitStack(stackId);
-	if (!gitStack) {
-		onProgress?.({ status: 'error', error: 'Git stack not found' });
-		return { success: false, error: 'Git stack not found' };
-	}
-
-	const logPrefix = `[Stack:${gitStack.stackName}]`;
-	console.log(`${logPrefix} ========================================`);
-	console.log(`${logPrefix} DEPLOY GIT STACK START`);
-	console.log(`${logPrefix} ========================================`);
-	console.log(`${logPrefix} Stack ID:`, stackId);
-	console.log(`${logPrefix} Force deploy:`, force);
-	console.log(`${logPrefix} Ignore force redeploy:`, ignoreForceRedeploy);
-
-	// Mark re-entrancy so nested syncGitStack does not wait on our own slot
-	stackDeployReentrancy.add(stackId);
-	try {
-		// Sync first
-		console.log(`${logPrefix} Syncing git repository...`);
-		const syncResult = await syncGitStack(stackId, onProgress);
-		if (!syncResult.success) {
-			console.log(`${logPrefix} Sync failed:`, syncResult.error);
-			const failResult = { success: false, error: syncResult.error };
-			await notifyGitSync(gitStack.stackName, gitStack.environmentId, failResult);
-			onProgress?.({ status: 'error', error: syncResult.error });
-			return failResult;
-		}
-
-		console.log(`${logPrefix} Sync successful`);
-		console.log(`${logPrefix} Sync result - updated:`, syncResult.updated);
-		console.log(`${logPrefix} Sync result - commit:`, syncResult.commit);
-		console.log(`${logPrefix} Sync result - env file vars:`, syncResult.envFileVars ? Object.keys(syncResult.envFileVars).length : 0);
-		if (syncResult.envFileVars && Object.keys(syncResult.envFileVars).length > 0) {
-			console.log(`${logPrefix} Env file var keys:`, Object.keys(syncResult.envFileVars).join(', '));
-			console.log(`${logPrefix} Env file vars (masked):`, JSON.stringify(redactEnvVarsForLog(syncResult.envFileVars), null, 2));
-		}
-
-		// Check if there are changes - skip redeploy if no changes and not forced
-		// Note: For new stacks (first deploy), syncResult.updated will be true
-		// forceRedeploy setting overrides the skip logic for webhooks/scheduled syncs
-		const shouldDeploy = shouldDeployGitStack({
-			force,
-			ignoreForceRedeploy,
-			forceRedeploy: gitStack.forceRedeploy,
-			updated: syncResult.updated
-		});
-		if (!shouldDeploy) {
-			console.log(`${logPrefix} No changes detected and force=false, forceRedeploy=false, skipping redeploy`);
-			const skippedResult = {
-				success: true,
-				output: 'No changes detected, skipping redeploy',
-				skipped: true
-			};
-			await notifyGitSync(gitStack.stackName, gitStack.environmentId, skippedResult);
-			return skippedResult;
-		}
-
-		const forceRecreate = syncResult.updated;
-		console.log(`${logPrefix} Will force recreate:`, forceRecreate, `(updated=${syncResult.updated})`);
-		console.log(`${logPrefix} Build on deploy:`, gitStack.buildOnDeploy);
-		console.log(`${logPrefix} Re-pull images:`, gitStack.repullImages);
-		console.log(`${logPrefix} Force redeploy setting:`, gitStack.forceRedeploy);
-
-		// Show the git file changes BEFORE the deploy starts, so the user sees
-		// what changed while the deploy runs and the deploy start/result lines
-		// stay together (#1260). Removals reflect the deletion plan here;
-		// apply-stage divergences (rare) are reported after the deploy.
-		if (onProgress && syncResult.previousManifest && syncResult.newFiles && syncResult.deletionPlan) {
-			const changeTable = formatChangeTable(
-				buildSyncChangeSummary(
-					syncResult.previousManifest.files,
-					syncResult.newFiles,
-					{ deleted: syncResult.deletionPlan.toDelete.map((f) => f.path), skipped: [] },
-					syncResult.deletionPlan.skipped
-				)
-			);
-			onProgress({ status: 'deploying', message: `File changes: ${changeTable[0]}`, step: 5, totalSteps: 5 });
-			for (const line of changeTable.slice(1)) {
-				onProgress({ status: 'deploying', message: line, step: 5, totalSteps: 5 });
-			}
-			onProgress({ status: 'deploying', message: `Deploying ${gitStack.stackName}...`, step: 5, totalSteps: 5 });
-			if (syncResult.deletionPlan.toDelete.length > 0) {
-				onProgress({
-					status: 'deploying',
-					message: `Removing ${syncResult.deletionPlan.toDelete.length} file(s) deleted from the repository...`,
-					step: 5,
-					totalSteps: 5
-				});
-			}
-		}
-
-		// Deploy using unified function - handles both new and existing stacks
-		// Uses `docker compose up -d --remove-orphans` which only recreates changed services
-		// Force recreate whenever git detected changes to ensure containers pick up
-		// new env var values even if compose file itself didn't change
-		console.log(`${logPrefix} Calling deployStack...`);
-		console.log(`${logPrefix} Source directory (composeDir):`, syncResult.composeDir);
-		console.log(`${logPrefix} Compose filename:`, syncResult.composeFileName);
-		console.log(`${logPrefix} Env filename:`, syncResult.envFileName ?? '(none)');
-
-		const result = await deployStack({
-			name: gitStack.stackName,
-			compose: syncResult.composeContent!,
-			envId: gitStack.environmentId,
-			sourceDir: syncResult.composeDir, // Copy entire directory from git repo
-			composeFileName: syncResult.composeFileName, // Use original compose filename from repo
-			envFileName: syncResult.envFileName, // Env file relative to compose dir (for --env-file flag, optional)
-			composePaths: gitStack.composePaths ? parseComposePathsColumn(gitStack.composePaths) : undefined,
-			forceRecreate,
-			build: gitStack.buildOnDeploy,
-			noBuildCache: gitStack.noBuildCache,
-			pullPolicy: gitStack.repullImages ? 'always' : undefined,
-			filesToDelete: syncResult.deletionPlan?.toDelete,
-			isGitDeploy: true // suppress stack_* notification; we emit git_sync_* below
-		});
-
-		console.log(`${logPrefix} ----------------------------------------`);
-		console.log(`${logPrefix} DEPLOY GIT STACK RESULT`);
-		console.log(`${logPrefix} ----------------------------------------`);
-		console.log(`${logPrefix} Success:`, result.success);
-		if (result.output) console.log(`${logPrefix} Output:`, result.output);
-		if (result.error) console.log(`${logPrefix} Error:`, result.error);
-
-		if (result.success) {
-			// Deletion sync: persist manifest + log per-file change summary
-			if (syncResult.previousManifest && syncResult.newFiles && syncResult.newCommitFull && syncResult.deletionPlan) {
-				await finalizeDeletionSync({
-					stackId,
-					logPrefix,
-					previousManifest: syncResult.previousManifest,
-					newCommitFull: syncResult.newCommitFull,
-					newFiles: syncResult.newFiles,
-					plan: syncResult.deletionPlan,
-					applyResult: result.deletion
-				});
-			}
-
-			// Record the stack source with resolved compose path for consistency
-			const stackDir = await getStackDir(gitStack.stackName, gitStack.environmentId);
-			const resolvedComposePath = syncResult.composeFileName
-				? join(stackDir, syncResult.composeFileName)
-				: undefined;
-
-			console.log(`${logPrefix} Resolved compose path for stack_sources:`, resolvedComposePath);
-
-			await upsertStackSource({
-				stackName: gitStack.stackName,
-				environmentId: gitStack.environmentId,
-				sourceType: 'git',
-				gitRepositoryId: gitStack.repositoryId,
-				gitStackId: stackId,
-				composePath: resolvedComposePath,
-				composePaths: gitStack.composePaths ? parseComposePathsColumn(gitStack.composePaths) : null
-			});
-
-			if (onProgress) {
-				const applySkips = (result.deletion?.skipped ?? []).filter((s) => s.reason !== 'already-absent');
-				for (const skip of applySkips) {
-					onProgress({
-						status: 'deploying',
-						message: `Kept "${skip.path}" — ${skipReasonMessage(skip.reason)}`,
-						step: 5,
-						totalSteps: 5
-					});
-				}
-				onProgress({ status: 'complete', message: `Successfully deployed ${gitStack.stackName}` });
-			}
-		} else {
-			if (syncResult.updated && syncResult.commit) {
-				// Sync advanced lastCommit before deploy. Roll it back on deploy failure so
-				// the next scheduled/webhook sync still sees the commit as pending and retries.
-				console.log(`${logPrefix} Deploy failed after sync — rolling back lastCommit to enable retry`);
-				await updateGitStack(stackId, {
-					lastCommit: gitStack.lastCommit ?? null,
-					syncStatus: 'error',
-					syncError: result.error || 'Deploy failed'
-				});
-			}
-			onProgress?.({ status: 'error', error: result.error || 'Failed to deploy stack' });
-		}
-
-		await notifyGitSync(gitStack.stackName, gitStack.environmentId, result);
-		return result;
-	} finally {
-		stackDeployReentrancy.delete(stackId);
-	}
-}
-
+/**
+ * Test a git stack's repository connection (mode-agnostic — uses ls-remote,
+ * does not touch any clone directory).
+ */
 export async function testGitStack(stackId: number): Promise<TestResult> {
 	const gitStack = await getGitStack(stackId);
 	if (!gitStack) {
@@ -1642,76 +798,53 @@ export async function testGitStack(stackId: number): Promise<TestResult> {
 	}
 }
 
-export async function deleteGitStackFiles(stackId: number, stackName?: string, environmentId?: number | null): Promise<void> {
-	// No-op: git stacks no longer maintain per-stack clone directories.
-	// The shared repository clone (DATA_DIR/git-repos/{repoName}) is managed
-	// by the repository lifecycle and is only removed when the repository is deleted.
+/**
+ * Returns the absolute path where a centralized repository is (or will be) cloned.
+ * Used by the browse API to validate that requested paths stay within the repo root.
+ * Only meaningful in centralized mode (browse is disabled in stack mode).
+ */
+export function deleteRepositoryFiles(repoName: string, repoId?: number): void {
+	const repoPath = getRepoPath(repoName);
+	try {
+		if (existsSync(repoPath)) {
+			rmSync(repoPath, { recursive: true, force: true });
+		}
+	} catch (error) {
+		const errorMsg = error instanceof Error ? error.message : String(error);
+		console.error('[Git] Failed to delete repository files:', errorMsg);
+	}
+	// Also clean up any pre-shared repo-{id} directory left from the old layout
+	if (repoId !== undefined) {
+		const oldPath = join(GIT_REPOS_DIR, `repo-${repoId}`);
+		try {
+			if (existsSync(oldPath)) {
+				rmSync(oldPath, { recursive: true, force: true });
+			}
+		} catch {
+			// Ignore cleanup errors
+		}
+	}
 }
-
-export async function deployGitStackWithProgress(
-	stackId: number,
-	onProgress: ProgressCallback
-): Promise<{ success: boolean; output?: string; error?: string; skipped?: boolean }> {
-	// Serialize with webhook/cron deploys via the same coalesce slot (force deploy).
-	// Progress UI waits cleanly instead of failing with "already in progress".
-	return runCoalesced(
-		stackDeploySlots,
-		stackId,
-		{ force: true, ignoreForceRedeploy: false } satisfies DeployGitStackOpts,
-		mergeDeployGitStackOpts,
-		(merged) => deployGitStackCore(stackId, merged, onProgress)
-	);
-}
-
-// =============================================================================
-// ENV FILE OPERATIONS
-// =============================================================================
 
 /**
- * List all .env* files in a git stack's repository.
- * Returns relative paths from the repository root.
+ * Rename the on-disk clone directory when a repository is renamed.
+ * No-op if sanitized paths are identical or the source dir is missing.
  */
-export async function listGitStackEnvFiles(stackId: number): Promise<{ files: string[]; error?: string }> {
-	const gitStack = await getGitStack(stackId);
-	if (!gitStack) {
-		return { files: [], error: 'Git stack not found' };
+export function renameRepositoryFiles(oldName: string, newName: string): void {
+	const oldPath = getRepoPath(oldName);
+	const newPath = getRepoPath(newName);
+	if (oldPath === newPath) return;
+	if (!existsSync(oldPath)) return;
+	if (existsSync(newPath)) {
+		console.warn(`[Git] Cannot rename repo dir ${oldPath} -> ${newPath}: target already exists`);
+		return;
 	}
-
-	const repo = await getGitRepository(gitStack.repositoryId);
-	if (!repo) {
-		return { files: [], error: 'Repository not found' };
-	}
-	const repoPath = getRepoPath(repo.name);
-	if (!existsSync(repoPath)) {
-		return { files: [], error: 'Repository not synced — deploy the stack first to populate the shared clone' };
-	}
-
 	try {
-		// Find all .env* files recursively (but not too deep)
-		const maxDepth = 3;
-
-		// Use find to locate all .env* files
-		const proc = nodeSpawn('find', [repoPath, '-maxdepth', String(maxDepth), '-type', 'f', '-name', '.env*'], {
-			stdio: ['pipe', 'pipe', 'pipe']
-		});
-		const findResult = await collectProcess(proc);
-		const output = findResult.stdout;
-
-		const files = output.trim().split('\n').filter(f => f);
-		const envFiles: string[] = [];
-
-		for (const file of files) {
-			// Convert absolute path to relative from repo root
-			const relativePath = file.replace(repoPath + '/', '');
-			// Skip files in node_modules or .git directories
-			if (!relativePath.includes('node_modules/') && !relativePath.includes('.git/')) {
-				envFiles.push(relativePath);
-			}
-		}
-
-		return { files: envFiles.sort() };
-	} catch (error: any) {
-		return { files: [], error: error.message };
+		renameSync(oldPath, newPath);
+		console.log(`[Git] Renamed repo dir ${oldPath} -> ${newPath}`);
+	} catch (error) {
+		const errorMsg = error instanceof Error ? error.message : String(error);
+		console.error('[Git] Failed to rename repository files:', errorMsg);
 	}
 }
 
@@ -1729,8 +862,6 @@ export function parseEnvFileContent(content: string, stackName?: string): Record
 	console.log(`${logPrefix} PARSE ENV FILE CONTENT`);
 	console.log(`${logPrefix} ----------------------------------------`);
 	console.log(`${logPrefix} Raw content length:`, content.length, 'chars');
-	console.log(`${logPrefix} Raw content:`);
-	console.log(content);
 
 	const lines = content.split('\n');
 	console.log(`${logPrefix} Total lines:`, lines.length);
@@ -1773,59 +904,6 @@ export function parseEnvFileContent(content: string, stackName?: string): Record
 	}
 
 	return result;
-}
-
-/**
- * Read and parse a .env file from a git stack's repository.
- */
-export async function readGitStackEnvFile(
-	stackId: number,
-	envFilePath: string
-): Promise<{ vars: Record<string, string>; error?: string }> {
-	const gitStack = await getGitStack(stackId);
-	if (!gitStack) {
-		return { vars: {}, error: 'Git stack not found' };
-	}
-
-	const repo = await getGitRepository(gitStack.repositoryId);
-	if (!repo) {
-		return { vars: {}, error: 'Repository not found' };
-	}
-	const repoPath = getRepoPath(repo.name);
-	if (!existsSync(repoPath)) {
-		return { vars: {}, error: 'Repository not synced — deploy the stack first to populate the shared clone' };
-	}
-
-	// Security check: ensure the path doesn't escape the repo. Both lexical
-	// containment (../ traversal) and realpath containment (a git-tracked
-	// symlink pointing outside the repo) are checked, so a malicious repo
-	// cannot exfiltrate host files through the env-file reader.
-	const fullPath = resolve(repoPath, envFilePath);
-	if (!isPathUnderRoot(fullPath, repoPath)) {
-		return { vars: {}, error: 'Invalid file path' };
-	}
-
-	if (!existsSync(fullPath)) {
-		return { vars: {}, error: `File not found: ${envFilePath}` };
-	}
-
-	let realPath: string;
-	try {
-		realPath = realpathSync(fullPath);
-		if (!isPathUnderRoot(realPath, realpathSync(repoPath))) {
-			return { vars: {}, error: 'Invalid file path' };
-		}
-	} catch {
-		return { vars: {}, error: `File not found: ${envFilePath}` };
-	}
-
-	try {
-		const content = readFileSync(realPath, 'utf-8');
-		const vars = parseEnvFileContent(content);
-		return { vars };
-	} catch (error: any) {
-		return { vars: {}, error: error.message };
-	}
 }
 
 interface PreviewEnvOptions {
@@ -1952,3 +1030,114 @@ export async function previewRepoEnvFiles(options: PreviewEnvOptions): Promise<P
 		}
 	}
 }
+
+// =============================================================================
+// SEALED ENGINES + MODE-DISPATCHING FACADE
+// =============================================================================
+
+/**
+ * A sealed git engine. Stack and centralized engines share NO mutable path or
+ * sync helpers with each other (F5) — only the plumbing in this module.
+ */
+export interface GitEngine {
+	syncGitStack(stackId: number, onProgress?: ProgressCallback): Promise<SyncResult>;
+	deployGitStack(stackId: number, options?: { force?: boolean; ignoreForceRedeploy?: boolean }): Promise<DeployGitStackResult>;
+	deployGitStackWithProgress(stackId: number, onProgress: ProgressCallback): Promise<DeployGitStackResult>;
+	deleteGitStackFiles(stackId: number, stackName?: string, environmentId?: number | null): Promise<void>;
+	listGitStackEnvFiles(stackId: number): Promise<{ files: string[]; error?: string }>;
+	readGitStackEnvFile(stackId: number, envFilePath: string): Promise<{ vars: Record<string, string>; error?: string }>;
+	// Repository-level operations (centralized only).
+	syncRepository?(repoId: number): Promise<SyncResult>;
+	syncRepositoryExclusive?(repoId: number): Promise<SyncResult>;
+	deployFromRepositoryWithFanOut?(repositoryId: number, log?: (msg: string) => void): Promise<FanOutResult>;
+	checkForUpdates?(repoId: number): Promise<{ hasUpdates: boolean; currentCommit?: string; latestCommit?: string; error?: string }>;
+}
+
+/**
+ * Resolve the engine for the current effective mode. Called once per top-level
+ * operation — the mode is captured as an epoch and the same engine instance is
+ * used for the whole operation, so a mid-flight toggle cannot split-brain (F9).
+ */
+export async function getEngine(mode?: GitMode): Promise<GitEngine> {
+	const effectiveMode = mode ?? (await getGitMode());
+	if (effectiveMode === 'centralized') {
+		const { CentralizedGitEngine } = await import('./git-centralized');
+		return CentralizedGitEngine;
+	}
+	const { StackGitEngine } = await import('./git-stack');
+	return StackGitEngine;
+}
+
+export async function syncGitStack(stackId: number, onProgress?: ProgressCallback): Promise<SyncResult> {
+	return (await getEngine()).syncGitStack(stackId, onProgress);
+}
+
+export async function deployGitStack(
+	stackId: number,
+	options?: { force?: boolean; ignoreForceRedeploy?: boolean }
+): Promise<DeployGitStackResult> {
+	return (await getEngine()).deployGitStack(stackId, options);
+}
+
+export async function deployGitStackWithProgress(
+	stackId: number,
+	onProgress: ProgressCallback
+): Promise<DeployGitStackResult> {
+	return (await getEngine()).deployGitStackWithProgress(stackId, onProgress);
+}
+
+export async function deleteGitStackFiles(stackId: number, stackName?: string, environmentId?: number | null): Promise<void> {
+	return (await getEngine()).deleteGitStackFiles(stackId, stackName, environmentId);
+}
+
+export async function listGitStackEnvFiles(stackId: number): Promise<{ files: string[]; error?: string }> {
+	return (await getEngine()).listGitStackEnvFiles(stackId);
+}
+
+export async function readGitStackEnvFile(stackId: number, envFilePath: string): Promise<{ vars: Record<string, string>; error?: string }> {
+	return (await getEngine()).readGitStackEnvFile(stackId, envFilePath);
+}
+
+export async function syncRepository(repoId: number): Promise<SyncResult> {
+	const engine = await getEngine();
+	if (!engine.syncRepository) {
+		return { success: false, error: 'Repository-level sync is not available in stack mode' };
+	}
+	return engine.syncRepository(repoId);
+}
+
+export async function syncRepositoryExclusive(repoId: number): Promise<SyncResult> {
+	const engine = await getEngine();
+	if (!engine.syncRepositoryExclusive) {
+		return { success: false, error: 'Repository-level sync is not available in stack mode' };
+	}
+	return engine.syncRepositoryExclusive(repoId);
+}
+
+export async function deployFromRepositoryWithFanOut(
+	repositoryId: number,
+	log?: (msg: string) => void
+): Promise<FanOutResult> {
+	const engine = await getEngine();
+	if (!engine.deployFromRepositoryWithFanOut) {
+		return { success: false, error: 'Repository-level webhooks are not available in stack mode', stacks: [] };
+	}
+	return engine.deployFromRepositoryWithFanOut(repositoryId, log);
+}
+
+export async function checkForUpdates(repoId: number): Promise<{ hasUpdates: boolean; currentCommit?: string; latestCommit?: string; error?: string }> {
+	const engine = await getEngine();
+	if (!engine.checkForUpdates) {
+		return { hasUpdates: false, error: 'Repository-level update checks are not available in stack mode' };
+	}
+	return engine.checkForUpdates(repoId);
+}
+
+// Centralized-only lifecycle helper, re-exported for the environments route.
+// Mode-gated inside git-centralized.ts so stack-mode installs are never cleaned
+// up by the heuristic sweep (F10). Boot-time cleanup of the per-stack trees now
+// lives in git-transition.ts (cleanupStackCloneTreesAtBoot) — see Phase 8.
+export { cleanupEnvGitReposDir } from './git-centralized';
+
+// Re-export shared types used across the codebase.
+export type { GitMode };

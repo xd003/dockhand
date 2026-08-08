@@ -1,6 +1,7 @@
 <script lang="ts">
-	import { onDestroy } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import { toast } from 'svelte-sonner';
+	import { appSettings } from '$lib/stores/settings';
 	import { Button } from '$lib/components/ui/button';
 	import * as Dialog from '$lib/components/ui/dialog';
 	import * as Select from '$lib/components/ui/select';
@@ -56,6 +57,15 @@
 	let formAutoUpdateCron = $state('0 3 * * *');
 	let formWebhookEnabled = $state(false);
 	let formWebhookSecret = $state('');
+
+	// Repo-level schedule/webhook and the clone-progress modal are centralized
+	// concepts; stack mode keeps repositories as thin records (F11).
+	const isCentralizedMode = $derived($appSettings.gitRepositoryMode === 'centralized');
+
+	onMount(() => {
+		// F11: sync the client's git mode with the server before showing the modal.
+		appSettings.reload();
+	});
 
 	function getWebhookUrl(repoId: number): string {
 		return `${window.location.origin}/api/git/webhook/${repoId}`;
@@ -205,7 +215,7 @@
 			formErrors.url = 'Repository URL is required';
 		}
 
-		const webhookSecretError = webhookSecretValidationError(formWebhookEnabled, formWebhookSecret);
+		const webhookSecretError = isCentralizedMode ? webhookSecretValidationError(formWebhookEnabled, formWebhookSecret) : undefined;
 		if (webhookSecretError) {
 			formErrors.webhookSecret = webhookSecretError;
 		}
@@ -218,17 +228,25 @@
 		formError = '';
 
 		try {
-			const body = {
-				name: formName.trim(),
-				url: formUrl.trim(),
-				branch: formBranch || 'main',
-				credentialId: formCredentialId,
-				autoUpdate: formAutoUpdate,
-				autoUpdateSchedule: formAutoUpdate ? 'custom' : undefined,
-				autoUpdateCron: formAutoUpdateCron,
-				webhookEnabled: formWebhookEnabled,
-				webhookSecret: formWebhookEnabled ? formWebhookSecret : null
-			};
+			// Stack mode: repositories are thin records — no repo-level schedule/webhook.
+			const body = isCentralizedMode
+				? {
+					name: formName.trim(),
+					url: formUrl.trim(),
+					branch: formBranch || 'main',
+					credentialId: formCredentialId,
+					autoUpdate: formAutoUpdate,
+					autoUpdateSchedule: formAutoUpdate ? 'custom' : undefined,
+					autoUpdateCron: formAutoUpdateCron,
+					webhookEnabled: formWebhookEnabled,
+					webhookSecret: formWebhookEnabled ? formWebhookSecret : null
+				}
+				: {
+					name: formName.trim(),
+					url: formUrl.trim(),
+					branch: formBranch || 'main',
+					credentialId: formCredentialId
+				};
 
 			const url = repository
 				? `/api/git/repositories/${repository.id}`
@@ -239,8 +257,8 @@
 				method,
 				headers: {
 					'Content-Type': 'application/json',
-					// Progress modal + job polling need the background clone
-					...(method === 'POST' ? { 'X-Dockhand-Async': '1' } : {})
+					// Progress modal + job polling need the background clone (centralized only)
+					...(method === 'POST' && isCentralizedMode ? { 'X-Dockhand-Async': '1' } : {})
 				},
 				body: JSON.stringify(body)
 			});
@@ -310,7 +328,7 @@
 	else handleClose();
 }}>
 	<Dialog.Content class="max-w-lg">
-		{#if cloneStatus === 'cloning'}
+		{#if isCentralizedMode && cloneStatus === 'cloning'}
 			<!-- ── Cloning state ── -->
 			<Dialog.Header>
 				<Dialog.Title class="flex items-center gap-2">
@@ -326,7 +344,7 @@
 				<p class="text-sm text-muted-foreground">Cloning from <span class="font-mono text-foreground">{formUrl}</span>…</p>
 			</div>
 
-		{:else if cloneStatus === 'success'}
+		{:else if isCentralizedMode && cloneStatus === 'success'}
 			<!-- ── Success state ── -->
 			<Dialog.Header>
 				<Dialog.Title class="flex items-center gap-2 text-green-600 dark:text-green-400">
@@ -347,7 +365,7 @@
 				<Button onclick={handleClose}>Close</Button>
 			</Dialog.Footer>
 
-		{:else if cloneStatus === 'error'}
+		{:else if isCentralizedMode && cloneStatus === 'error'}
 			<!-- ── Error state ── -->
 			<Dialog.Header>
 				<Dialog.Title class="flex items-center gap-2 text-destructive">
@@ -472,7 +490,9 @@
 					{/if}
 				</div>
 
-				<!-- Auto-update section -->
+				<!-- Auto-update + webhook sections (centralized mode only — stack
+				     mode keeps repositories as thin records and configures these per stack) -->
+				{#if isCentralizedMode}
 				<div class="space-y-3 p-3 bg-muted/50 rounded-md">
 					<div class="flex items-center gap-3">
 						<div class="flex items-center gap-2 flex-1">
@@ -492,7 +512,6 @@
 					{/if}
 				</div>
 
-				<!-- Webhook section -->
 				<div class="space-y-3 p-3 bg-muted/50 rounded-md">
 					<div class="flex items-center gap-3">
 						<div class="flex items-center gap-2 flex-1">
@@ -529,6 +548,7 @@
 						{/if}
 					{/if}
 				</div>
+				{/if}
 
 				{#if formError}
 					<p class="text-sm text-destructive">{formError}</p>

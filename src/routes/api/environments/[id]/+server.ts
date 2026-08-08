@@ -4,7 +4,7 @@ import { existsSync, rmSync, renameSync } from 'fs';
 import type { RequestHandler } from './$types';
 import { getEnvironment, updateEnvironment, deleteEnvironment, getEnvironmentPublicIps, setEnvironmentPublicIp, deleteEnvironmentPublicIp, deleteEnvUpdateCheckSettings, deleteImagePruneSettings, getGitStacksForEnvironmentOnly, deleteGitStack, getBackupConfigs, getStackSources } from '$lib/server/db';
 import { clearDockerClientCache } from '$lib/server/docker';
-import { deleteGitStackFiles, cleanupLegacyEnvGitReposDir } from '$lib/server/git';
+import { deleteGitStackFiles, cleanupEnvGitReposDir } from '$lib/server/git';
 import { getDefaultStacksDir, getLocalStacksDir, isLocalConnection, isStacksDirEnvSet } from '$lib/server/stacks';
 import { authorize } from '$lib/server/authorize';
 import { auditEnvironment } from '$lib/server/audit';
@@ -13,7 +13,7 @@ import { resetHostDetection, detectHostDataDir } from '$lib/server/host-path';
 import { serializeLabels, parseLabels, MAX_LABELS } from '$lib/utils/label-colors';
 import { cleanPem } from '$lib/utils/pem';
 import { validateEnvName } from '$lib/utils/env-name';
-import { unregisterSchedule } from '$lib/server/scheduler';
+import { unregisterSchedule, unregisterScheduleByFamily } from '$lib/server/scheduler';
 import { closeEdgeConnection } from '$lib/server/hawser';
 import { computeAuditDiff } from '$lib/utils/diff';
 import { deleteEnvironmentIcon } from '$lib/server/env-icons';
@@ -113,7 +113,7 @@ export const PUT: RequestHandler = async (event) => {
 			}
 
 			// Drop any leftover per-environment git-repos dir from the old layout.
-			cleanupLegacyEnvGitReposDir(oldEnv.name);
+			cleanupEnvGitReposDir(oldEnv.name);
 		}
 
 		// Clear cached Docker client before updating
@@ -224,6 +224,8 @@ export const DELETE: RequestHandler = async (event) => {
 			await deleteGitStackFiles(stack.id, stack.stackName, stack.environmentId);
 			// Delete git stack from database
 			await deleteGitStack(stack.id);
+			// Unregister any lingering git_stack_sync schedule (no-op if absent)
+			unregisterScheduleByFamily(stack.id);
 		}
 
 		const success = await deleteEnvironment(id);
@@ -258,7 +260,7 @@ export const DELETE: RequestHandler = async (event) => {
 			console.error(`Failed to unregister backup schedules for environment "${env.name}":`, err);
 		}
 
-		// Clean up stack directory for this environment (Hawser staging / legacy env-scoped layout)
+		// Clean up stack directory for this environment (Hawser staging / env-scoped layout)
 		// Safety: only delete subdirectory named after the env, never the parent
 		try {
 			const stacksDir = getDefaultStacksDir();
@@ -294,9 +296,9 @@ export const DELETE: RequestHandler = async (event) => {
 
 		// Remove any leftover per-environment git-repos dir from the old layout.
 		try {
-			cleanupLegacyEnvGitReposDir(env.name);
+			cleanupEnvGitReposDir(env.name);
 		} catch (err) {
-			console.error(`Failed to clean up legacy git-repos directory for environment "${env.name}":`, err);
+			console.error(`Failed to clean up env-scoped git-repos directory for environment "${env.name}":`, err);
 		}
 
 		// Notify event collectors to stop collecting from deleted environment

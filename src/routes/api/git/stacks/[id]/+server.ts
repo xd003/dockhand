@@ -2,6 +2,9 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getGitStack, updateGitStack, deleteGitStack, deleteStackSource, updateStackSourceName, updateStackEnvVarsName, setStackEnvVars, getStackEnvVars, deleteStackEnvVars } from '$lib/server/db';
 import { deleteGitStackFiles, deployGitStack } from '$lib/server/git';
+import { getGitMode } from '$lib/server/git-mode';
+import { assertNotTransitioning } from '$lib/server/git-transition-guard';
+import { registerSchedule, unregisterSchedule } from '$lib/server/scheduler';
 import { authorize } from '$lib/server/authorize';
 import { auditGitStack } from '$lib/server/audit';
 import { computeAuditDiff } from '$lib/utils/diff';
@@ -51,6 +54,10 @@ export const PUT: RequestHandler = async (event) => {
 
 		const data = await request.json();
 
+		// Refuse writes while a git mode transition is running (F9)
+		const locked = await assertNotTransitioning();
+		if (locked) return locked;
+
 		// Validate stack name if it's being changed
 		if (data.stackName !== undefined) {
 			const trimmedStackName = data.stackName.trim();
@@ -72,19 +79,52 @@ export const PUT: RequestHandler = async (event) => {
 		}
 
 		const oldStackName = existing.stackName;
-		const updated = await updateGitStack(id, {
-			stackName: data.stackName,
-			composePath: data.composePath,
-			composePaths: data.composePaths,
-			envFilePath: data.envFilePath,
-			contextDir: data.contextDir,
-			buildOnDeploy: data.buildOnDeploy,
-			noBuildCache: data.noBuildCache,
-			repullImages: data.repullImages,
-			forceRedeploy: data.forceRedeploy,
-			webhookEnabled: data.forceRedeploy === false ? false : data.webhookEnabled,
-			webhookSecret: (data.forceRedeploy !== false && data.webhookEnabled) ? data.webhookSecret : null
-		});
+		const mode = await getGitMode();
+		const updated = await updateGitStack(id, mode === 'centralized'
+			? {
+				stackName: data.stackName,
+				composePath: data.composePath,
+				composePaths: data.composePaths,
+				envFilePath: data.envFilePath,
+				contextDir: data.contextDir,
+				buildOnDeploy: data.buildOnDeploy,
+				noBuildCache: data.noBuildCache,
+				repullImages: data.repullImages,
+				forceRedeploy: data.forceRedeploy,
+				webhookEnabled: data.forceRedeploy === false ? false : data.webhookEnabled,
+				webhookSecret: (data.forceRedeploy !== false && data.webhookEnabled) ? data.webhookSecret : null
+			}
+			: {
+				// Stack mode: stack-level scheduled sync + webhook, not gated by forceRedeploy.
+				stackName: data.stackName,
+				composePath: data.composePath,
+				composePaths: data.composePaths,
+				envFilePath: data.envFilePath,
+				contextDir: data.contextDir,
+				buildOnDeploy: data.buildOnDeploy,
+				noBuildCache: data.noBuildCache,
+				repullImages: data.repullImages,
+				forceRedeploy: data.forceRedeploy,
+				webhookEnabled: data.webhookEnabled,
+				webhookSecret: data.webhookEnabled ? data.webhookSecret : null,
+				autoUpdate: data.autoUpdate,
+				autoUpdateSchedule: data.autoUpdate ? (data.autoUpdateSchedule ?? existing.autoUpdateSchedule ?? 'daily') : null,
+				autoUpdateCron: data.autoUpdate ? (data.autoUpdateCron ?? existing.autoUpdateCron ?? '0 3 * * *') : null
+			}
+		);
+
+		if (!updated) {
+			return json({ error: 'Failed to update git stack' }, { status: 500 });
+		}
+
+		// Stack mode: keep the per-stack schedule in sync with the stack-level setting.
+		if (mode === 'stack') {
+			if (updated.autoUpdate && updated.autoUpdateCron) {
+				await registerSchedule(updated.id, 'git_stack_sync', updated.environmentId);
+			} else {
+				await unregisterSchedule(updated.id, 'git_stack_sync');
+			}
+		}
 
 		// If stack name changed, update related records
 		if (data.stackName && data.stackName !== oldStackName) {

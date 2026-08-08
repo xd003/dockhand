@@ -2,6 +2,7 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getGitRepository } from '$lib/server/db';
 import { deployFromRepositoryWithFanOut } from '$lib/server/git';
+import { assertNotTransitioning } from '$lib/server/git-transition-guard';
 import { auditGitRepository } from '$lib/server/audit';
 import { authorize } from '$lib/server/authorize';
 
@@ -13,6 +14,10 @@ export const POST: RequestHandler = async (event) => {
 	}
 
 	try {
+		// Refuse to start a fan-out while a git mode transition is running (F9)
+		const locked = await assertNotTransitioning();
+		if (locked) return locked;
+
 		const id = parseInt(params.id);
 		if (isNaN(id)) {
 			return json({ error: 'Invalid repository ID' }, { status: 400 });

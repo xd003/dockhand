@@ -40,6 +40,7 @@ import {
 	gitRepositories,
 	gitStacks,
 	stackSources,
+	gitModeTransition,
 	vulnerabilityScans,
 	auditLogs,
 	containerEvents,
@@ -70,6 +71,7 @@ import {
 	type GitRepository,
 	type GitStack,
 	type StackSource,
+	type GitModeTransition,
 	type VulnerabilityScan,
 	type AuditLog,
 	type ContainerEvent,
@@ -103,6 +105,7 @@ export type {
 	GitRepository,
 	GitStack,
 	StackSource,
+	GitModeTransition,
 	VulnerabilityScan,
 	AuditLog,
 	ContainerEvent
@@ -367,6 +370,71 @@ export async function listSettingsByPrefix(prefix: string): Promise<Array<{ key:
 		try { value = JSON.parse(r.value); } catch { value = r.value; }
 		return { key: r.key, value };
 	});
+}
+
+// =============================================================================
+// GIT MODE TRANSITION STATE (single-row table)
+// =============================================================================
+
+export type GitModeTransitionState = 'idle' | 'draining' | 'provisioning' | 'cutting_over' | 'failed';
+
+export interface GitModeTransitionRow {
+	mode: string;
+	state: GitModeTransitionState;
+	jobId: string | null;
+	startedAt: string | null;
+	finishedAt: string | null;
+	snapshot: string | null;
+	error: string | null;
+}
+
+/**
+ * Read the single-row git mode transition state. Returns null when the table is
+ * empty (equivalent to an idle transition).
+ */
+export async function getGitModeTransition(): Promise<GitModeTransitionRow | null> {
+	const rows = await db.select().from(gitModeTransition).limit(1);
+	if (!rows[0]) return null;
+	const row = rows[0];
+	return {
+		mode: row.mode ?? 'stack',
+		state: (row.state as GitModeTransitionState) ?? 'idle',
+		jobId: row.jobId,
+		startedAt: row.startedAt,
+		finishedAt: row.finishedAt,
+		snapshot: row.snapshot,
+		error: row.error
+	};
+}
+
+/**
+ * Insert-or-update the single-row git mode transition state. Only non-undefined
+ * fields are written, so callers can update a subset.
+ */
+export async function updateGitModeTransition(data: {
+	mode?: string;
+	state?: GitModeTransitionState;
+	jobId?: string | null;
+	startedAt?: string | null;
+	finishedAt?: string | null;
+	snapshot?: string | null;
+	error?: string | null;
+}): Promise<void> {
+	const existing = await db.select().from(gitModeTransition).limit(1);
+	const updates: Record<string, any> = { updatedAt: new Date().toISOString() };
+	if (data.mode !== undefined) updates.mode = data.mode;
+	if (data.state !== undefined) updates.state = data.state;
+	if (data.jobId !== undefined) updates.jobId = data.jobId;
+	if (data.startedAt !== undefined) updates.startedAt = data.startedAt;
+	if (data.finishedAt !== undefined) updates.finishedAt = data.finishedAt;
+	if (data.snapshot !== undefined) updates.snapshot = data.snapshot;
+	if (data.error !== undefined) updates.error = data.error;
+
+	if (existing[0]) {
+		await db.update(gitModeTransition).set(updates).where(eq(gitModeTransition.id, existing[0].id));
+	} else {
+		await db.insert(gitModeTransition).values(updates);
+	}
 }
 
 export async function getEnvSetting(key: string, envId?: number): Promise<any> {
@@ -2180,6 +2248,12 @@ export interface GitStackData {
 	forceRedeploy: boolean;
 	webhookEnabled: boolean;
 	webhookSecret: string | null;
+	// Stack-level scheduled sync — deprecated (repo-level in centralized mode)
+	// but the columns are preserved for downgrade compatibility and used by the
+	// stack git engine.
+	autoUpdate?: boolean;
+	autoUpdateSchedule?: string | null;
+	autoUpdateCron?: string | null;
 	lastSync: string | null;
 	lastCommit: string | null;
 	syncStatus: GitSyncStatus;
@@ -2217,6 +2291,9 @@ export async function getGitStacks(environmentId?: number): Promise<GitStackWith
 			forceRedeploy: gitStacks.forceRedeploy,
 			webhookEnabled: gitStacks.webhookEnabled,
 			webhookSecret: gitStacks.webhookSecret,
+			autoUpdate: gitStacks.autoUpdate,
+			autoUpdateSchedule: gitStacks.autoUpdateSchedule,
+			autoUpdateCron: gitStacks.autoUpdateCron,
 			lastSync: gitStacks.lastSync,
 			lastCommit: gitStacks.lastCommit,
 			syncStatus: gitStacks.syncStatus,
@@ -2248,6 +2325,9 @@ export async function getGitStacks(environmentId?: number): Promise<GitStackWith
 			forceRedeploy: gitStacks.forceRedeploy,
 			webhookEnabled: gitStacks.webhookEnabled,
 			webhookSecret: gitStacks.webhookSecret,
+			autoUpdate: gitStacks.autoUpdate,
+			autoUpdateSchedule: gitStacks.autoUpdateSchedule,
+			autoUpdateCron: gitStacks.autoUpdateCron,
 			lastSync: gitStacks.lastSync,
 			lastCommit: gitStacks.lastCommit,
 			syncStatus: gitStacks.syncStatus,
@@ -2279,6 +2359,9 @@ export async function getGitStacks(environmentId?: number): Promise<GitStackWith
 		forceRedeploy: row.forceRedeploy ?? false,
 		webhookEnabled: row.webhookEnabled ?? false,
 		webhookSecret: row.webhookSecret ?? null,
+		autoUpdate: row.autoUpdate ?? false,
+		autoUpdateSchedule: row.autoUpdateSchedule ?? null,
+		autoUpdateCron: row.autoUpdateCron ?? null,
 		lastSync: row.lastSync,
 		lastCommit: row.lastCommit,
 		syncStatus: row.syncStatus,
@@ -2293,6 +2376,83 @@ export async function getGitStacks(environmentId?: number): Promise<GitStackWith
 			credentialId: row.repoCredentialId
 		}
 	})) as GitStackWithRepo[];
+}
+
+// =============================================================================
+// STACK-LEVEL AUTO-SYNC & WEBHOOK QUERY FUNCTIONS (stack mode)
+// =============================================================================
+
+/**
+ * Returns all git stacks with stack-level autoUpdate=true (used by the stack
+ * scheduler at startup). Restored from the pre-centralization layout.
+ */
+export async function getEnabledAutoUpdateGitStacks(): Promise<GitStackWithRepo[]> {
+	const rows = await db.select({
+		id: gitStacks.id,
+		stackName: gitStacks.stackName,
+		environmentId: gitStacks.environmentId,
+		repositoryId: gitStacks.repositoryId,
+		composePath: gitStacks.composePath,
+		composePaths: gitStacks.composePaths,
+		envFilePath: gitStacks.envFilePath,
+		contextDir: gitStacks.contextDir,
+		buildOnDeploy: gitStacks.buildOnDeploy,
+		noBuildCache: gitStacks.noBuildCache,
+		repullImages: gitStacks.repullImages,
+		forceRedeploy: gitStacks.forceRedeploy,
+		webhookEnabled: gitStacks.webhookEnabled,
+		webhookSecret: gitStacks.webhookSecret,
+		lastSync: gitStacks.lastSync,
+		lastCommit: gitStacks.lastCommit,
+		syncStatus: gitStacks.syncStatus,
+		syncError: gitStacks.syncError,
+		createdAt: gitStacks.createdAt,
+		updatedAt: gitStacks.updatedAt,
+		repoName: gitRepositories.name,
+		repoUrl: gitRepositories.url,
+		repoBranch: gitRepositories.branch,
+		repoCredentialId: gitRepositories.credentialId
+	})
+		.from(gitStacks)
+		.innerJoin(gitRepositories, eq(gitStacks.repositoryId, gitRepositories.id))
+		.where(eq(gitStacks.autoUpdate, true));
+
+	return rows.map((row: any) => ({
+		id: row.id,
+		stackName: row.stackName,
+		environmentId: row.environmentId,
+		repositoryId: row.repositoryId,
+		composePath: row.composePath,
+		composePaths: row.composePaths ?? null,
+		envFilePath: row.envFilePath,
+		contextDir: row.contextDir ?? null,
+		buildOnDeploy: row.buildOnDeploy ?? false,
+		noBuildCache: row.noBuildCache ?? false,
+		repullImages: row.repullImages ?? false,
+		forceRedeploy: row.forceRedeploy ?? false,
+		webhookEnabled: row.webhookEnabled ?? false,
+		webhookSecret: row.webhookSecret ?? null,
+		lastSync: row.lastSync,
+		lastCommit: row.lastCommit,
+		syncStatus: row.syncStatus,
+		syncError: row.syncError,
+		createdAt: row.createdAt,
+		updatedAt: row.updatedAt,
+		repository: {
+			id: row.repositoryId,
+			name: row.repoName,
+			url: row.repoUrl,
+			branch: row.repoBranch,
+			credentialId: row.repoCredentialId
+		}
+	})) as GitStackWithRepo[];
+}
+
+/**
+ * Returns all git stacks with stack-level autoUpdate=true (no filters).
+ */
+export async function getAllAutoUpdateGitStacks(): Promise<GitStackWithRepo[]> {
+	return getEnabledAutoUpdateGitStacks();
 }
 
 // Get git stacks for a specific environment only (excludes stacks with null environment)
@@ -2312,6 +2472,9 @@ export async function getGitStacksForEnvironmentOnly(environmentId: number): Pro
 		forceRedeploy: gitStacks.forceRedeploy,
 		webhookEnabled: gitStacks.webhookEnabled,
 		webhookSecret: gitStacks.webhookSecret,
+		autoUpdate: gitStacks.autoUpdate,
+		autoUpdateSchedule: gitStacks.autoUpdateSchedule,
+		autoUpdateCron: gitStacks.autoUpdateCron,
 		lastSync: gitStacks.lastSync,
 		lastCommit: gitStacks.lastCommit,
 		syncStatus: gitStacks.syncStatus,
@@ -2343,6 +2506,9 @@ export async function getGitStacksForEnvironmentOnly(environmentId: number): Pro
 		forceRedeploy: row.forceRedeploy ?? false,
 		webhookEnabled: row.webhookEnabled ?? false,
 		webhookSecret: row.webhookSecret ?? null,
+		autoUpdate: row.autoUpdate ?? false,
+		autoUpdateSchedule: row.autoUpdateSchedule ?? null,
+		autoUpdateCron: row.autoUpdateCron ?? null,
 		lastSync: row.lastSync,
 		lastCommit: row.lastCommit,
 		syncStatus: row.syncStatus,
@@ -2375,6 +2541,9 @@ export async function getGitStack(id: number): Promise<GitStackWithRepo | null> 
 		forceRedeploy: gitStacks.forceRedeploy,
 		webhookEnabled: gitStacks.webhookEnabled,
 		webhookSecret: gitStacks.webhookSecret,
+		autoUpdate: gitStacks.autoUpdate,
+		autoUpdateSchedule: gitStacks.autoUpdateSchedule,
+		autoUpdateCron: gitStacks.autoUpdateCron,
 		lastSync: gitStacks.lastSync,
 		lastCommit: gitStacks.lastCommit,
 		syncStatus: gitStacks.syncStatus,
@@ -2408,6 +2577,9 @@ export async function getGitStack(id: number): Promise<GitStackWithRepo | null> 
 		forceRedeploy: row.forceRedeploy ?? false,
 		webhookEnabled: row.webhookEnabled ?? false,
 		webhookSecret: row.webhookSecret ?? null,
+		autoUpdate: row.autoUpdate ?? false,
+		autoUpdateSchedule: row.autoUpdateSchedule ?? null,
+		autoUpdateCron: row.autoUpdateCron ?? null,
 		lastSync: row.lastSync,
 		lastCommit: row.lastCommit,
 		syncStatus: row.syncStatus,
@@ -2509,6 +2681,9 @@ export async function createGitStack(data: {
 	forceRedeploy?: boolean;
 	webhookEnabled?: boolean;
 	webhookSecret?: string | null;
+	autoUpdate?: boolean;
+	autoUpdateSchedule?: string;
+	autoUpdateCron?: string;
 }): Promise<GitStackWithRepo> {
 	const primaryPath = data.composePaths?.length ? data.composePaths[0] : (data.composePath || 'compose.yaml');
 	const pathsJson = data.composePaths?.length ? JSON.stringify(data.composePaths) : null;
@@ -2526,7 +2701,10 @@ export async function createGitStack(data: {
 		repullImages: data.repullImages ?? false,
 		forceRedeploy: data.forceRedeploy ?? false,
 		webhookEnabled: data.webhookEnabled ?? false,
-		webhookSecret: data.webhookEnabled ? (data.webhookSecret ?? null) : null
+		webhookSecret: data.webhookEnabled ? (data.webhookSecret ?? null) : null,
+		autoUpdate: data.autoUpdate ?? false,
+		autoUpdateSchedule: data.autoUpdate ? (data.autoUpdateSchedule ?? 'daily') : undefined,
+		autoUpdateCron: data.autoUpdate ? (data.autoUpdateCron ?? '0 3 * * *') : undefined
 	}).returning();
 	return getGitStack(result[0].id) as Promise<GitStackWithRepo>;
 }
@@ -2554,6 +2732,9 @@ export async function updateGitStack(id: number, data: Partial<GitStackData> & {
 	if (data.forceRedeploy !== undefined) updateData.forceRedeploy = data.forceRedeploy;
 	if (data.webhookEnabled !== undefined) updateData.webhookEnabled = data.webhookEnabled;
 	if (data.webhookSecret !== undefined) updateData.webhookSecret = data.webhookEnabled ? data.webhookSecret : null;
+	if (data.autoUpdate !== undefined) updateData.autoUpdate = data.autoUpdate;
+	if (data.autoUpdateSchedule !== undefined) updateData.autoUpdateSchedule = data.autoUpdateSchedule;
+	if (data.autoUpdateCron !== undefined) updateData.autoUpdateCron = data.autoUpdateCron;
 	if (data.lastSync !== undefined) updateData.lastSync = data.lastSync;
 	if (data.lastCommit !== undefined) updateData.lastCommit = data.lastCommit;
 	if (data.syncStatus !== undefined) updateData.syncStatus = data.syncStatus;

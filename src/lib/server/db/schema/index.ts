@@ -79,6 +79,23 @@ export const settings = sqliteTable('settings', {
 });
 
 // =============================================================================
+// GIT MODE TRANSITION TABLE (single-row state machine)
+// =============================================================================
+// Persists the git-repository mode transition job (see git-transition.ts).
+// Only one row is ever written; state drives a 409 lock-out of git mutations.
+export const gitModeTransition = sqliteTable('git_mode_transition', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	mode: text('mode').default('stack'), // effective mode written at cutover
+	state: text('state').default('idle'), // idle | draining | provisioning | cutting_over | failed
+	jobId: text('job_id'),
+	startedAt: text('started_at'),
+	finishedAt: text('finished_at'),
+	snapshot: text('snapshot'), // JSON: original force_redeploy per stack + original repo-level fields
+	error: text('error'),
+	updatedAt: text('updated_at').default(sql`CURRENT_TIMESTAMP`)
+});
+
+// =============================================================================
 // EVENT TRACKING TABLES
 // =============================================================================
 
@@ -580,6 +597,9 @@ export type NewHawserToken = typeof hawserTokens.$inferInsert;
 
 export type Setting = typeof settings.$inferSelect;
 export type NewSetting = typeof settings.$inferInsert;
+
+export type GitModeTransition = typeof gitModeTransition.$inferSelect;
+export type NewGitModeTransition = typeof gitModeTransition.$inferInsert;
 
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;

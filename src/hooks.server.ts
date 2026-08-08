@@ -13,7 +13,7 @@ import { detectHostDataDir } from '$lib/server/host-path';
 import { listContainers, removeContainer } from '$lib/server/docker';
 import { migrateCredentials } from '$lib/server/encryption';
 import { validateStacksDirAtStartup, migrateLocalStacksToStacksDir } from '$lib/server/stacks';
-import { migrateLegacyEnvGitRepos } from '$lib/server/git';
+import { cleanupStackCloneTreesAtBoot, ensureGitModeTransitionResolved } from '$lib/server/git-transition';
 import { gzipSync } from 'node:zlib';
 import { rmSync, readdirSync, existsSync } from 'fs';
 import { join } from 'path';
@@ -145,16 +145,35 @@ if (!initialized) {
 		}
 
 		setServerStartTime(); // Track when server started
-		initDatabase();
+		try {
+			initDatabase();
+		} catch (error) {
+			console.error('Failed to initialize database:', error);
+			if (process.env.STACKS_DIR?.trim()) {
+				process.exit(1);
+			}
+		}
 
-		validateStacksDirAtStartup();
+		try {
+			validateStacksDirAtStartup();
+		} catch (error) {
+			console.error('Failed to initialize STACKS_DIR:', error);
+			process.exit(1);
+		}
 		const stacksDirReady = migrateLocalStacksToStacksDir().catch((err) => {
 			console.error('[StacksDir] Migration failed:', err);
 			process.exit(1);
 		});
 
-		migrateLegacyEnvGitRepos().catch((err) => {
-			console.error('[Git] Legacy env-scoped git-repos migration failed:', err);
+		// Resolve any desired git-repository mode transition (env-forced or an
+		// interrupted job) BEFORE the git-repos cleanup and scheduler start, so
+		// the effective mode is settled and shared clones are provisioned (N3).
+		const gitTransitionReady = ensureGitModeTransitionResolved().catch((err) => {
+			console.error('[GitTransition] Boot transition failed:', err);
+		});
+
+		const repoMigrationReady = gitTransitionReady.then(() => cleanupStackCloneTreesAtBoot()).catch((err) => {
+			console.error('[Git] Env-scoped git-repos migration failed:', err);
 		});
 
 		// Migrate plain text credentials to encrypted storage.
@@ -187,9 +206,10 @@ if (!initialized) {
 			console.error('Failed to cleanup orphaned scanner containers:', err);
 		});
 		// Start background subprocesses and the scheduler only AFTER credential
-		// migration/rotation has settled, so a scheduled backup can't decrypt a
-		// destination password mid-rotation (new key against old-key ciphertext).
-		Promise.all([credentialsReady, stacksDirReady]).then(() => {
+		// migration/rotation and the git-repos migration have settled, so a
+		// scheduled backup can't decrypt a destination password mid-rotation (new
+		// key against old-key ciphertext) or a sync hit mid-migration state.
+		Promise.all([credentialsReady, stacksDirReady, repoMigrationReady]).then(() => {
 			startSubprocesses().catch(err => {
 				console.error('Failed to start background subprocesses:', err);
 			});
@@ -221,7 +241,7 @@ if (!initialized) {
 
 		initialized = true;
 	} catch (error) {
-		console.error('Failed to initialize database:', error);
+		console.error('Startup initialization failed:', error);
 		if (process.env.STACKS_DIR?.trim()) {
 			process.exit(1);
 		}

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
+	import { appSettings } from '$lib/stores/settings';
 	import { Button } from '$lib/components/ui/button';
 	import * as Dialog from '$lib/components/ui/dialog';
 	import * as Select from '$lib/components/ui/select';
@@ -66,6 +67,10 @@
 		forceRedeploy: boolean;
 		webhookEnabled: boolean;
 		webhookSecret: string | null;
+		// Stack-level scheduled sync (deprecated in centralized mode)
+		autoUpdate?: boolean;
+		autoUpdateSchedule?: string | null;
+		autoUpdateCron?: string | null;
 	}
 
 	interface Props {
@@ -247,11 +252,16 @@
 	let formForceRedeploy = $state(false);
 	let formStackWebhookEnabled = $state(false);
 	let formStackWebhookSecret = $state('');
+	// Stack-level scheduled sync
+	let formStackAutoUpdate = $state(false);
+	let formStackAutoUpdateSchedule = $state<'daily' | 'weekly' | 'custom'>('daily');
+	let formStackAutoUpdateCron = $state('0 3 * * *');
 	let formDeployNow = $state(false);
 	let formError = $state('');
 	let formSaving = $state(false);
 	let showExistsWarning = $state(false);
-	let errors = $state<{ stackName?: string; repository?: string; repoName?: string; repoUrl?: string; newRepoWebhookSecret?: string; stackWebhookSecret?: string }>({});
+	let errors = $state<{ stackName?: string; repository?: string; repoName?: string; repoUrl?: string; newRepoWebhookSecret?: string; stackWebhookSecret?: string; stackAutoUpdateCron?: string }>({});
+	const isCentralizedMode = $derived($appSettings.gitRepositoryMode === 'centralized');
 
 	// Stack name validation: must start with alphanumeric, can contain alphanumeric, hyphens, underscores
 	const STACK_NAME_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
@@ -356,6 +366,8 @@
 	let selectedRepo = $derived(formRepositoryId ? repositories.find(r => r.id === formRepositoryId) : null);
 
 	onMount(() => {
+		// F11: sync the client's git mode with the server before showing the modal.
+		appSettings.reload();
 		// Load saved split ratio
 		const savedSplit = localStorage.getItem(STORAGE_KEY_SPLIT);
 		if (savedSplit) {
@@ -567,6 +579,9 @@
 			formForceRedeploy = gitStack.forceRedeploy ?? false;
 			formStackWebhookEnabled = gitStack.webhookEnabled ?? false;
 			formStackWebhookSecret = gitStack.webhookSecret || '';
+			formStackAutoUpdate = gitStack.autoUpdate ?? false;
+			formStackAutoUpdateSchedule = (gitStack.autoUpdateSchedule as 'daily' | 'weekly' | 'custom') ?? 'daily';
+			formStackAutoUpdateCron = gitStack.autoUpdateCron || '0 3 * * *';
 			formDeployNow = false;
 
 			// Load env files and overrides SYNCHRONOUSLY to avoid race conditions
@@ -600,6 +615,9 @@
 			formForceRedeploy = false;
 			formStackWebhookEnabled = false;
 			formStackWebhookSecret = '';
+			formStackAutoUpdate = false;
+			formStackAutoUpdateSchedule = 'daily';
+			formStackAutoUpdateCron = '0 3 * * *';
 			formDeployNow = false;
 		}
 	}
@@ -640,9 +658,11 @@
 			hasErrors = true;
 		}
 
-		const stackWebhookSecretError = formForceRedeploy
-			? webhookSecretValidationError(formStackWebhookEnabled, formStackWebhookSecret)
-			: undefined;
+		const stackWebhookSecretError = isCentralizedMode
+			? (formForceRedeploy
+				? webhookSecretValidationError(formStackWebhookEnabled, formStackWebhookSecret)
+				: undefined)
+			: webhookSecretValidationError(formStackWebhookEnabled, formStackWebhookSecret);
 		if (stackWebhookSecretError) {
 			errors.stackWebhookSecret = stackWebhookSecretError;
 			hasErrors = true;
@@ -693,8 +713,6 @@
 				noBuildCache: formNoBuildCache,
 				repullImages: formRepullImages,
 				forceRedeploy: formForceRedeploy,
-				webhookEnabled: formForceRedeploy ? formStackWebhookEnabled : false,
-				webhookSecret: (formForceRedeploy && formStackWebhookEnabled) ? formStackWebhookSecret || null : null,
 				deployNow: deployAfterSave,
 				envVars: overrideVars.map(v => ({
 					key: v.key.trim(),
@@ -702,6 +720,19 @@
 					isSecret: v.isSecret
 				}))
 			};
+
+			if (isCentralizedMode) {
+				// Centralized: stack webhook only under force redeploy; schedules live on the repository.
+				body.webhookEnabled = formForceRedeploy ? formStackWebhookEnabled : false;
+				body.webhookSecret = (formForceRedeploy && formStackWebhookEnabled) ? formStackWebhookSecret || null : null;
+			} else {
+				// Stack mode: stack-level scheduled sync + webhook (not gated by force redeploy).
+				body.webhookEnabled = formStackWebhookEnabled;
+				body.webhookSecret = formStackWebhookEnabled ? formStackWebhookSecret || null : null;
+				body.autoUpdate = formStackAutoUpdate;
+				body.autoUpdateSchedule = formStackAutoUpdate ? formStackAutoUpdateSchedule : undefined;
+				body.autoUpdateCron = formStackAutoUpdate ? (formStackAutoUpdateSchedule === 'custom' ? formStackAutoUpdateCron : undefined) : undefined;
+			}
 
 			if (formRepoMode === 'existing') {
 				body.repositoryId = formRepositoryId;
@@ -711,10 +742,12 @@
 				body.url = formNewRepoUrl;
 				body.branch = formNewRepoBranch || 'main';
 				body.credentialId = formNewRepoCredentialId;
-				body.autoUpdate = formNewRepoAutoUpdate;
-				body.autoUpdateCron = formNewRepoAutoUpdateCron;
-				body.webhookEnabled = formNewRepoWebhookEnabled;
-				body.webhookSecret = formNewRepoWebhookEnabled ? formNewRepoWebhookSecret : null;
+				if (isCentralizedMode) {
+					body.autoUpdate = formNewRepoAutoUpdate;
+					body.autoUpdateCron = formNewRepoAutoUpdateCron;
+					body.webhookEnabled = formNewRepoWebhookEnabled;
+					body.webhookSecret = formNewRepoWebhookEnabled ? formNewRepoWebhookSecret : null;
+				}
 			}
 
 			const url = gitStack
@@ -1126,6 +1159,7 @@
 								</div>
 							</div>
 							
+							{#if isCentralizedMode}
 							<div class="space-y-3 mt-4 border-t pt-4 border-muted">
 								<p class="text-xs font-medium text-muted-foreground uppercase tracking-wider">Repository Sync</p>
 								
@@ -1164,6 +1198,7 @@
 									/>
 								{/if}
 							</div>
+							{/if}
 						</div>
 					{/if}
 				</div>
@@ -1232,6 +1267,7 @@
 							class="flex-1"
 							oninput={() => { if (i === 0) formComposePath = formComposePaths[i]; }}
 						/>
+						{#if isCentralizedMode}
 						<Button
 							variant="outline" size="sm"
 							onclick={() => gitBrowseForRow(i)}
@@ -1239,6 +1275,7 @@
 							title="Browse repository" class="shrink-0">
 							<FolderOpen class="w-4 h-4" />
 						</Button>
+						{/if}
 						{#if total > 1}
 							<Button variant="outline" size="sm"
 									onclick={() => gitRemoveComposePath(i)}
@@ -1355,13 +1392,13 @@
 				<p class="text-xs text-muted-foreground">
 					Always redeploy the stack on webhook or scheduled sync, even if no git changes are detected.
 				</p>
-				{#if formForceRedeploy}
+				{#if isCentralizedMode && formForceRedeploy}
 				<div class="space-y-3 ml-6 p-3 bg-muted/50 rounded-md">
 					<div class="flex items-center gap-3">
 						<div class="flex items-center gap-2 flex-1">
 							<Webhook class="w-4 h-4 text-muted-foreground" />
 							<Label class="text-sm font-normal">Enable stack webhook</Label>
-							<span class="text-2xs uppercase tracking-wide text-amber-600 dark:text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded">Legacy</span>
+							<span class="text-2xs uppercase tracking-wide text-amber-600 dark:text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded">Stack</span>
 						</div>
 						<TogglePill
 							bind:checked={formStackWebhookEnabled}
@@ -1372,7 +1409,7 @@
 						Call this webhook to force redeploy <strong>this stack only</strong>. The repository-level webhook redeploys all linked stacks with force redeployment enabled.
 					</p>
 					<p class="text-xs text-amber-600 dark:text-amber-400">
-						Legacy: webhooks are configured on the <strong>Git repository</strong>. This endpoint is kept so existing integrations keep working — the repository webhook is enabled automatically when a stack webhook was already configured.
+						Stack mode: webhooks are configured on the <strong>Git repository</strong>. This endpoint is kept so existing integrations keep working — the repository webhook is enabled automatically when a stack webhook was already configured.
 					</p>
 					{#if formStackWebhookEnabled}
 						{#if gitStack}
@@ -1399,6 +1436,82 @@
 								Secret will be saved when you create the stack.
 							{/if}
 						</p>
+					{/if}
+				</div>
+				{/if}
+				{#if !isCentralizedMode}
+				<div class="space-y-3 p-3 bg-muted/50 rounded-md mt-3">
+					<p class="text-xs font-medium text-muted-foreground uppercase tracking-wider">Scheduled sync</p>
+					<div class="flex items-center gap-3">
+						<div class="flex items-center gap-2 flex-1">
+							<RefreshCw class="w-4 h-4 text-muted-foreground" />
+							<Label class="text-sm font-normal">Enable scheduled sync</Label>
+						</div>
+						<TogglePill bind:checked={formStackAutoUpdate} onchange={() => { if (!formStackAutoUpdate) { formStackAutoUpdateSchedule = 'daily'; formStackAutoUpdateCron = '0 3 * * *'; } }} />
+					</div>
+					{#if formStackAutoUpdate}
+						<div class="space-y-2">
+							<Label>Frequency</Label>
+							<Select.Root
+								type="single"
+								value={formStackAutoUpdateSchedule}
+								onValueChange={(value) => {
+									if (value === 'daily' || value === 'weekly' || value === 'custom') {
+										formStackAutoUpdateSchedule = value;
+										if (value === 'daily') formStackAutoUpdateCron = '0 3 * * *';
+										if (value === 'weekly') formStackAutoUpdateCron = '0 3 * * 0';
+									}
+								}}
+							>
+								<Select.Trigger class="w-full">
+									<span>{formStackAutoUpdateSchedule === 'daily' ? 'Daily' : formStackAutoUpdateSchedule === 'weekly' ? 'Weekly' : 'Custom'}</span>
+								</Select.Trigger>
+								<Select.Content>
+									<Select.Item value="daily"><span>Daily</span></Select.Item>
+									<Select.Item value="weekly"><span>Weekly</span></Select.Item>
+									<Select.Item value="custom"><span>Custom (cron)</span></Select.Item>
+								</Select.Content>
+							</Select.Root>
+							{#if formStackAutoUpdateSchedule === 'custom'}
+								<CronEditor
+									value={formStackAutoUpdateCron}
+									onchange={(cron) => formStackAutoUpdateCron = cron}
+								/>
+							{/if}
+						</div>
+					{/if}
+
+					<div class="flex items-center gap-3 pt-2">
+						<div class="flex items-center gap-2 flex-1">
+							<Webhook class="w-4 h-4 text-muted-foreground" />
+							<Label class="text-sm font-normal">Enable webhook</Label>
+						</div>
+						<TogglePill
+							bind:checked={formStackWebhookEnabled}
+							onchange={(enabled) => { formStackWebhookSecret = ensureWebhookSecret(enabled, formStackWebhookSecret); }}
+						/>
+					</div>
+					<p class="text-xs text-muted-foreground">
+						Deploy this stack when the webhook URL is called. Configure the URL and secret in your Git provider or CI/CD pipeline.
+					</p>
+					{#if formStackWebhookEnabled}
+						{#if gitStack}
+							<WebhookUrlCopyField
+								url={`${typeof window !== 'undefined' ? window.location.origin : ''}/api/git/stacks/${gitStack.id}/webhook`}
+								label="Stack webhook URL"
+							/>
+						{:else}
+							<p class="text-xs text-muted-foreground">
+								The stack webhook URL will be available after creating the stack.
+							</p>
+						{/if}
+						<WebhookSecretInput
+							id="stack-webhook-secret"
+							bind:value={formStackWebhookSecret}
+							error={errors.stackWebhookSecret}
+							showCopy={!!gitStack}
+							oninput={() => errors.stackWebhookSecret = undefined}
+						/>
 					{/if}
 				</div>
 				{/if}

@@ -75,15 +75,8 @@
     {
       "idx": 10,
       "version": "6",
-      "when": 1785144054494,
-      "tag": "0010_apply_commit_changes",
-      "breakpoints": true
-    },
-    {
-      "idx": 11,
-      "version": "6",
-      "when": 1785606597359,
-      "tag": "0011_add_hawser_stacks_dir",
+      "when": 1786016684925,
+      "tag": "0010_centralized_git",
       "breakpoints": true
     }
   ]

@@ -8,9 +8,8 @@ import type { RequestHandler } from './$types';
 import {
 	getAutoUpdateSettingById,
 	updateAutoUpdateSettingById,
-	getGitRepository,
 	updateGitRepository,
-	getGitStack,
+	updateGitStack,
 	getEnvUpdateCheckSettings,
 	setEnvUpdateCheckSettings,
 	getImagePruneSettings,
@@ -21,6 +20,8 @@ import {
 	updateBackupDestination
 } from '$lib/server/db';
 import { registerSchedule, unregisterSchedule } from '$lib/server/scheduler';
+import { getGitMode } from '$lib/server/git-mode';
+import { resolveGitScheduleTarget, isGitScheduleType } from '$lib/server/git-schedule-target';
 import { authorize } from '$lib/server/authorize';
 import { auditBackup, auditBackupDestination } from '$lib/server/audit';
 
@@ -59,65 +60,55 @@ export const POST: RequestHandler = async (event) => {
 			}
 
 			return json({ success: true, enabled: newEnabled });
-		} else if (type === 'git_repository_sync') {
-			const repo = await getGitRepository(scheduleId);
-			if (!repo) {
+		} else if (isGitScheduleType(type)) {
+			// Git schedules resolve through the mode-aware target resolver (F12):
+			// stack → per-stack git_stack_sync; centralized → per-repo
+			// git_repository_sync (git_stack_sync stays as a deprecated alias).
+			const mode = await getGitMode();
+			const target = await resolveGitScheduleTarget(mode, type, scheduleId);
+			if (!target) {
 				return json({ error: 'Schedule not found' }, { status: 404 });
 			}
 
-			const newEnabled = !repo.autoUpdate;
-			await updateGitRepository(scheduleId, {
+			if (target.kind === 'stack') {
+				const envDenied = await auth.requireEnvAccess(target.entity.environmentId);
+				if (envDenied) return envDenied;
+
+				const newEnabled = !target.entity.autoUpdate;
+				await updateGitStack(target.id, {
+					autoUpdate: newEnabled,
+					// Ensure autoUpdateSchedule is set so the schedule stays visible
+					// on the /schedules page even when paused (filtered by IS NOT NULL).
+					autoUpdateSchedule: target.entity.autoUpdateSchedule || 'custom'
+				});
+
+				if (newEnabled && target.entity.autoUpdateCron) {
+					await registerSchedule(target.id, 'git_stack_sync', target.entity.environmentId);
+				} else {
+					unregisterSchedule(target.id, 'git_stack_sync');
+				}
+
+				return json({ success: true, enabled: newEnabled });
+			}
+
+			const newEnabled = !target.entity.autoUpdate;
+			await updateGitRepository(target.id, {
 				autoUpdate: newEnabled,
 				// Ensure autoUpdateSchedule is set so the schedule stays visible
 				// on the /schedules page even when paused (filtered by IS NOT NULL).
-				autoUpdateSchedule: repo.autoUpdateSchedule || 'custom'
+				autoUpdateSchedule: target.entity.autoUpdateSchedule || 'custom'
 			});
 
-			if (newEnabled && repo.autoUpdateCron) {
-				await registerSchedule(scheduleId, 'git_repository_sync', null);
+			if (newEnabled && target.entity.autoUpdateCron) {
+				await registerSchedule(target.id, 'git_repository_sync', null);
 			} else {
-				unregisterSchedule(scheduleId, 'git_repository_sync');
-			}
-
-			return json({ success: true, enabled: newEnabled });
-		} else if (type === 'git_stack_sync') {
-			// Deprecated schedule type (v1 API compat): scheduled sync moved from
-			// git stacks to git repositories. Map the stack's id to its repository
-			// so old token scripts keep working (enabled state is now repo-wide).
-			const stack = await getGitStack(scheduleId);
-			if (!stack) {
-				return json({ error: 'Schedule not found' }, { status: 404 });
-			}
-			const envDenied = await auth.requireEnvAccess(stack.environmentId);
-			if (envDenied) return envDenied;
-
-			if (!stack.repositoryId) {
-				return json({ error: 'This stack is no longer linked to a git repository' }, { status: 400 });
-			}
-			const repo = await getGitRepository(stack.repositoryId);
-			if (!repo) {
-				return json({ error: 'The linked git repository no longer exists' }, { status: 400 });
-			}
-
-			const newEnabled = !repo.autoUpdate;
-			await updateGitRepository(stack.repositoryId, {
-				autoUpdate: newEnabled,
-				// Ensure autoUpdateSchedule is set so the schedule stays visible
-				// on the /schedules page even when paused (filtered by IS NOT NULL).
-				autoUpdateSchedule: repo.autoUpdateSchedule || 'custom'
-			});
-
-			if (newEnabled && repo.autoUpdateCron) {
-				await registerSchedule(stack.repositoryId, 'git_repository_sync', null);
-			} else {
-				unregisterSchedule(stack.repositoryId, 'git_repository_sync');
+				unregisterSchedule(target.id, 'git_repository_sync');
 			}
 
 			return json({
 				success: true,
 				enabled: newEnabled,
-				deprecated: true,
-				repositoryId: stack.repositoryId
+				...(type === 'git_stack_sync' ? { deprecated: true, repositoryId: target.id } : {})
 			});
 		} else if (type === 'env_update_check') {
 			const envDenied = await auth.requireEnvAccess(scheduleId);

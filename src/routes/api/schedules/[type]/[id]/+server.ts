@@ -8,9 +8,8 @@ import type { RequestHandler } from './$types';
 import {
 	getAutoUpdateSettingById,
 	deleteAutoUpdateSchedule,
-	getGitRepository,
 	updateGitRepository,
-	getGitStack,
+	updateGitStack,
 	deleteEnvUpdateCheckSettings,
 	deleteImagePruneSettings,
 	deleteBackupConfig,
@@ -19,6 +18,8 @@ import {
 	updateBackupDestination
 } from '$lib/server/db';
 import { unregisterSchedule } from '$lib/server/scheduler';
+import { getGitMode } from '$lib/server/git-mode';
+import { resolveGitScheduleTarget, isGitScheduleType } from '$lib/server/git-schedule-target';
 import { authorize } from '$lib/server/authorize';
 
 export const DELETE: RequestHandler = async ({ params, cookies }) => {
@@ -45,47 +46,37 @@ export const DELETE: RequestHandler = async ({ params, cookies }) => {
 			}
 			return json({ success: true });
 
-		} else if (type === 'git_repository_sync') {
-			const repo = await getGitRepository(scheduleId);
-			if (!repo) {
+		} else if (isGitScheduleType(type)) {
+			// Git schedules resolve through the mode-aware target resolver (F12).
+			const mode = await getGitMode();
+			const target = await resolveGitScheduleTarget(mode, type, scheduleId);
+			if (!target) {
 				return json({ error: 'Schedule not found' }, { status: 404 });
 			}
-			await updateGitRepository(scheduleId, {
+
+			if (target.kind === 'stack') {
+				const envDenied = await auth.requireEnvAccess(target.entity.environmentId);
+				if (envDenied) return envDenied;
+				await updateGitStack(target.id, {
+					autoUpdate: false,
+					autoUpdateSchedule: null,
+					autoUpdateCron: null
+				});
+				unregisterSchedule(target.id, 'git_stack_sync');
+				return json({ success: true });
+			}
+
+			await updateGitRepository(target.id, {
 				autoUpdate: false,
 				autoUpdateSchedule: null,
 				autoUpdateCron: null
 			});
-			unregisterSchedule(scheduleId, 'git_repository_sync');
-			return json({ success: true });
+			unregisterSchedule(target.id, 'git_repository_sync');
 
-		} else if (type === 'git_stack_sync') {
-			// Deprecated schedule type (v1 API compat): scheduled sync moved from
-			// git stacks to git repositories. "Delete" maps to disabling scheduled
-			// sync on the stack's repository (the old per-stack row no longer
-			// drives anything).
-			const stack = await getGitStack(scheduleId);
-			if (!stack) {
-				return json({ error: 'Schedule not found' }, { status: 404 });
-			}
-			const envDenied = await auth.requireEnvAccess(stack.environmentId);
-			if (envDenied) return envDenied;
-
-			if (!stack.repositoryId) {
-				return json({ error: 'This stack is no longer linked to a git repository' }, { status: 400 });
-			}
-			const repo = await getGitRepository(stack.repositoryId);
-			if (!repo) {
-				return json({ error: 'The linked git repository no longer exists' }, { status: 400 });
-			}
-
-			await updateGitRepository(stack.repositoryId, {
-				autoUpdate: false,
-				autoUpdateSchedule: null,
-				autoUpdateCron: null
+			return json({
+				success: true,
+				...(type === 'git_stack_sync' ? { deprecated: true, repositoryId: target.id } : {})
 			});
-			unregisterSchedule(stack.repositoryId, 'git_repository_sync');
-
-			return json({ success: true, deprecated: true, repositoryId: stack.repositoryId });
 		} else if (type === 'env_update_check') {
 			const envDenied = await auth.requireEnvAccess(scheduleId);
 			if (envDenied) return envDenied;

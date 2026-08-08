@@ -45,6 +45,14 @@ export interface GitWebhookHandlerOptions<TEntity extends GitWebhookEntity> {
 	secretNotConfiguredMessage: string;
 	successMessage: string;
 	deprecated?: boolean;
+	/**
+	 * When true the trigger is awaited and its result body is returned directly
+	 * (HEAD~1 stack-webhook contract: `{success, output, error, skipped}`).
+	 * When false (default) the trigger is expected to be non-blocking and a 202
+	 * is returned. Auth (ts/sig, signature headers, body cap) is identical in
+	 * both modes (F6/F7).
+	 */
+	synchronous?: boolean;
 }
 
 /**
@@ -90,6 +98,26 @@ export async function handleGitWebhookRequest<TEntity extends GitWebhookEntity>(
 			return json({ error: options.secretNotConfiguredMessage }, { status: 401 });
 		}
 
+		// Optional insecure-compat path for GET ?secret= callers (F6/F19). This
+		// leaks the secret via URL/Referer logs, so it is ONLY enabled when the
+		// operator explicitly opts in and every use is audit-logged. Default (no
+		// env var) is ts/sig HMAC only.
+		const insecureCompat = process.env.DOCKHAND_GIT_INSECURE_WEBHOOK_SECRET_COMPAT === 'true';
+		if (insecureCompat && url.searchParams.get('secret') === entity.webhookSecret) {
+			await options.audit(event, id, entity, {
+				method: 'GET', source: 'get', result: 'triggered', error: 'insecure_secret_compat'
+			});
+			const result = await options.trigger(id);
+			if (!result.success) {
+				return json(result, { status: 500 });
+			}
+			return options.synchronous ? json(result) : json({
+				success: true,
+				message: options.successMessage,
+				...(options.deprecated ? { deprecated: true } : {})
+			}, { status: 202 });
+		}
+
 		// Verify the time-windowed HMAC signature (no secret in the query string).
 		const ts = url.searchParams.get('ts') ?? '';
 		const sig = url.searchParams.get('sig');
@@ -108,6 +136,11 @@ export async function handleGitWebhookRequest<TEntity extends GitWebhookEntity>(
 
 		if (!result.success) {
 			return json(result, { status: 500 });
+		}
+
+		// Synchronous mode returns the awaited trigger result (stack-mode webhook).
+		if (options.synchronous) {
+			return json(result);
 		}
 
 		return json({
@@ -170,6 +203,11 @@ export async function handleGitWebhookRequest<TEntity extends GitWebhookEntity>(
 
 	if (!result.success) {
 		return json(result, { status: 500 });
+	}
+
+	// Synchronous mode returns the awaited trigger result (stack-mode webhook).
+	if (options.synchronous) {
+		return json(result);
 	}
 
 	return json({

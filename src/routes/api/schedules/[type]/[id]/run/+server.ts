@@ -15,6 +15,7 @@ import { getBackupConfig, getBackupDestination, getAutoUpdateSettingById, getGit
 import { runScheduledBackup } from '$lib/server/scheduler/tasks/backup';
 import { runRepoPrune, runRepoCheck, runRepoVerify } from '$lib/server/scheduler/tasks/repo-maintenance';
 import { authorize } from '$lib/server/authorize';
+import { getGitMode } from '$lib/server/git-mode';
 import { BACKUPS_ENABLED } from '$lib/server/features';
 
 export const POST: RequestHandler = async ({ params, cookies }) => {
@@ -30,6 +31,8 @@ export const POST: RequestHandler = async ({ params, cookies }) => {
 		if (isNaN(scheduleId)) {
 			return json({ error: 'Invalid schedule ID' }, { status: 400 });
 		}
+
+		const mode = await getGitMode();
 
 		// BETA GATE: backup-type schedules are unreachable unless FEAT_BACKUPS_ENABLED (see features.ts).
 		if (!BACKUPS_ENABLED && (type === 'backup' || type === 'repo_prune' || type === 'repo_check' || type === 'repo_verify')) {
@@ -63,9 +66,9 @@ export const POST: RequestHandler = async ({ params, cookies }) => {
 				break;
 			}
 			case 'git_stack_sync': {
-				// Deprecated schedule type (v1 API compat): stack-level sync was
-				// promoted to the repository, but the per-stack task still exists
-				// (used by stack-level webhooks), so keep the old run semantics.
+				// Stack mode: the stack-level task IS the schedule target. Centralized:
+				// deprecated alias — still runs the per-stack task (used by stack
+				// webhooks), so the old run semantics are preserved in both modes.
 				const stack = await getGitStack(scheduleId);
 				if (!stack) return json({ error: 'Schedule not found' }, { status: 404 });
 				scheduleEnvId = stack.environmentId;
@@ -166,7 +169,7 @@ export const POST: RequestHandler = async ({ params, cookies }) => {
 		return json({
 			success: true,
 			message: 'Schedule triggered successfully',
-			deprecated: type === 'git_stack_sync'
+			deprecated: type === 'git_stack_sync' && mode === 'centralized'
 		});
 	} catch (error: any) {
 		console.error('Failed to trigger schedule:', error);

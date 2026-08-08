@@ -904,6 +904,7 @@ export const environments = schemaProxy.environments;
 export const hawserTokens = schemaProxy.hawserTokens;
 export const registries = schemaProxy.registries;
 export const settings = schemaProxy.settings;
+export const gitModeTransition = schemaProxy.gitModeTransition;
 export const stackEvents = schemaProxy.stackEvents;
 export const hostMetrics = schemaProxy.hostMetrics;
 export const configSets = schemaProxy.configSets;
@@ -942,6 +943,8 @@ export type {
 	NewHawserToken,
 	Setting,
 	NewSetting,
+	GitModeTransition,
+	NewGitModeTransition,
 	User,
 	NewUser,
 	Session,

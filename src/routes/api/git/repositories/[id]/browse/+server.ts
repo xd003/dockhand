@@ -3,7 +3,8 @@ import type { RequestHandler } from './$types';
 import { statSync, readdirSync, existsSync, realpathSync } from 'node:fs';
 import { join, resolve, isAbsolute, relative } from 'node:path';
 import { getGitRepository } from '$lib/server/db';
-import { syncRepositoryExclusive, getRepoClonePath } from '$lib/server/git';
+import { syncRepositoryExclusive, getRepoPath } from '$lib/server/git';
+import { getGitMode } from '$lib/server/git-mode';
 import { authorize } from '$lib/server/authorize';
 import { isPathUnderRoot } from '$lib/server/path-utils';
 
@@ -48,7 +49,13 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 		return json({ error: 'Repository not found' }, { status: 404 });
 	}
 
-	const repoRoot = getRepoClonePath(repo.name);
+	// Browse operates on the shared clone — a centralized-mode concept. Stack
+	// mode uses the host-filesystem browser instead.
+	if (await getGitMode() !== 'centralized') {
+		return json({ error: 'Repository browsing is not available in stack mode' }, { status: 404 });
+	}
+
+	const repoRoot = getRepoPath(repo.name);
 
 	// Always sync (clone or pull) before listing so the browser shows up-to-date content.
 	// syncRepositoryExclusive joins any in-flight syncs (e.g. from just adding the repository).

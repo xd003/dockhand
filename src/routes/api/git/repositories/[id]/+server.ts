@@ -8,6 +8,8 @@ import {
 	getGitStacksByRepositoryId
 } from '$lib/server/db';
 import { deleteRepositoryFiles, deleteGitStackFiles, renameRepositoryFiles, syncRepositoryExclusive, findRepoNameSanitizationCollision } from '$lib/server/git';
+import { getGitMode } from '$lib/server/git-mode';
+import { assertNotTransitioning } from '$lib/server/git-transition-guard';
 import { createJob, completeJob, failJob } from '$lib/server/jobs';
 import { authorize } from '$lib/server/authorize';
 import { auditGitRepository } from '$lib/server/audit';
@@ -59,6 +61,12 @@ export const PUT: RequestHandler = async (event) => {
 
 		const data = await request.json();
 
+		// Refuse writes while a git mode transition is running (F9)
+		const locked = await assertNotTransitioning();
+		if (locked) return locked;
+
+		const mode = await getGitMode();
+
 		// Validate credential if provided
 		if (data.credentialId) {
 			const credentials = await getGitCredentials();
@@ -77,15 +85,15 @@ export const PUT: RequestHandler = async (event) => {
 			}
 		}
 
-		// A secret is mandatory when the webhook is enabled.
+		// A secret is mandatory when the webhook is enabled (centralized only).
 		// Evaluate the effective post-update state (PUT is partial).
 		const effWebhookEnabled = data.webhookEnabled !== undefined ? data.webhookEnabled : existing.webhookEnabled;
 		const effWebhookSecret = data.webhookSecret !== undefined ? data.webhookSecret : existing.webhookSecret;
-		if (effWebhookEnabled && !effWebhookSecret?.trim()) {
+		if (mode === 'centralized' && effWebhookEnabled && !effWebhookSecret?.trim()) {
 			return json({ error: WEBHOOK_SECRET_REQUIRED_ERROR }, { status: 400 });
 		}
 
-		const effAutoUpdate = data.autoUpdate ?? existing.autoUpdate;
+		const effAutoUpdate = mode === 'centralized' ? (data.autoUpdate ?? existing.autoUpdate) : undefined;
 		const effAutoUpdateSchedule = effAutoUpdate
 			? (data.autoUpdateSchedule ?? existing.autoUpdateSchedule ?? null)
 			: null;
@@ -93,18 +101,27 @@ export const PUT: RequestHandler = async (event) => {
 			? (data.autoUpdateCron ?? existing.autoUpdateCron ?? null)
 			: null;
 
-		// Update repository fields
-		const repository = await updateGitRepository(id, {
-			name: data.name,
-			url: data.url,
-			branch: data.branch,
-			credentialId: data.credentialId,
-			autoUpdate: data.autoUpdate,
-			autoUpdateSchedule: effAutoUpdateSchedule,
-			autoUpdateCron: effAutoUpdateCron,
-			webhookEnabled: data.webhookEnabled,
-			webhookSecret: data.webhookSecret
-		});
+		// Update repository fields. Stack mode updates only identity fields —
+		// repo-level schedule/webhook are centralized concepts.
+		const repository = await updateGitRepository(id, mode === 'centralized'
+			? {
+				name: data.name,
+				url: data.url,
+				branch: data.branch,
+				credentialId: data.credentialId,
+				autoUpdate: data.autoUpdate,
+				autoUpdateSchedule: effAutoUpdateSchedule,
+				autoUpdateCron: effAutoUpdateCron,
+				webhookEnabled: data.webhookEnabled,
+				webhookSecret: data.webhookSecret
+			}
+			: {
+				name: data.name,
+				url: data.url,
+				branch: data.branch,
+				credentialId: data.credentialId
+			}
+		);
 
 		if (!repository) {
 			return json({ error: 'Failed to update repository' }, { status: 500 });
@@ -115,6 +132,11 @@ export const PUT: RequestHandler = async (event) => {
 
 		// Audit log
 		await auditGitRepository(event, 'update', repository.id, repository.name, diff);
+
+		if (mode === 'stack') {
+			// No on-disk clone, no repo-level schedule, no resync — thin record.
+			return json(repository);
+		}
 
 		// Manage schedule if auto-update settings changed
 		if (repository.autoUpdate) {
@@ -178,17 +200,29 @@ export const DELETE: RequestHandler = async (event) => {
 			return json({ error: 'Repository not found' }, { status: 404 });
 		}
 
+		// Refuse writes while a git mode transition is running (F9)
+		const locked = await assertNotTransitioning();
+		if (locked) return locked;
+
+		const mode = await getGitMode();
+
 		// Delete git stack clone directories before cascade deletes the DB rows
 		const stacks = await getGitStacksByRepositoryId(id);
 		console.log(`[GitStack] Repository "${repository.name}" (id=${id}) deletion affects ${stacks.length} stacks: ${stacks.map(s => s.stackName).join(', ')}`);
 		for (const stack of stacks) {
+			// Stack mode: also drop any per-stack git_stack_sync schedule.
+			if (mode === 'stack') {
+				unregisterSchedule(stack.id, 'git_stack_sync');
+			}
 			await deleteGitStackFiles(stack.id, stack.stackName, stack.environmentId);
 		}
 
-		// Delete repository clone directory
-		deleteRepositoryFiles(repository.name, id);
-		
-		// Unregister schedule
+		if (mode === 'centralized') {
+			// Delete repository clone directory
+			deleteRepositoryFiles(repository.name, id);
+		}
+
+		// Unregister schedule (per-repo in centralized, per-stack handled above in stack mode)
 		unregisterSchedule(id, 'git_repository_sync');
 
 		const deleted = await deleteGitRepository(id);

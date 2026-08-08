@@ -7,6 +7,8 @@ import {
 	getGitCredentials
 } from '$lib/server/db';
 import { syncRepositoryExclusive, findRepoNameSanitizationCollision } from '$lib/server/git';
+import { getGitMode } from '$lib/server/git-mode';
+import { assertNotTransitioning } from '$lib/server/git-transition-guard';
 import { createJob, completeJob, failJob } from '$lib/server/jobs';
 import { authorize } from '$lib/server/authorize';
 import { auditGitRepository } from '$lib/server/audit';
@@ -40,6 +42,10 @@ export const POST: RequestHandler = async (event) => {
 	try {
 		const data = await request.json();
 
+		// Refuse writes while a git mode transition is running (F9)
+		const locked = await assertNotTransitioning();
+		if (locked) return locked;
+
 		if (!data.name || typeof data.name !== 'string') {
 			return json({ error: 'Name is required' }, { status: 400 });
 		}
@@ -47,6 +53,8 @@ export const POST: RequestHandler = async (event) => {
 		if (!data.url || typeof data.url !== 'string') {
 			return json({ error: 'Repository URL is required' }, { status: 400 });
 		}
+
+		const mode = await getGitMode();
 
 		const nameCollision = await findRepoNameSanitizationCollision(data.name);
 		if (nameCollision) {
@@ -64,36 +72,49 @@ export const POST: RequestHandler = async (event) => {
 			}
 		}
 
-		// A secret is mandatory when the webhook is enabled.
-		if (data.webhookEnabled && !data.webhookSecret?.trim()) {
+		// A secret is mandatory when the webhook is enabled (centralized only).
+		if (mode === 'centralized' && data.webhookEnabled && !data.webhookSecret?.trim()) {
 			return json({ error: WEBHOOK_SECRET_REQUIRED_ERROR }, { status: 400 });
 		}
 
-		// Create repository with basic fields and new sync/webhook settings
-		const repository = await createGitRepository({
-			name: data.name,
-			url: data.url,
-			branch: data.branch || 'main',
-			credentialId: data.credentialId || null,
-			autoUpdate: data.autoUpdate || false,
-			autoUpdateSchedule: data.autoUpdate ? (data.autoUpdateSchedule || 'daily') : undefined,
-			autoUpdateCron: data.autoUpdate ? (data.autoUpdateCron || '0 3 * * *') : undefined,
-			webhookEnabled: data.webhookEnabled || false,
-			webhookSecret: data.webhookSecret || null
-		});
+		// Create repository. Stack mode keeps it a thin record — no repo-level
+		// schedule/webhook and no clone on save (syncs/webhooks are per stack).
+		const repository = await createGitRepository(mode === 'centralized'
+			? {
+				name: data.name,
+				url: data.url,
+				branch: data.branch || 'main',
+				credentialId: data.credentialId || null,
+				autoUpdate: data.autoUpdate || false,
+				autoUpdateSchedule: data.autoUpdate ? (data.autoUpdateSchedule || 'daily') : undefined,
+				autoUpdateCron: data.autoUpdate ? (data.autoUpdateCron || '0 3 * * *') : undefined,
+				webhookEnabled: data.webhookEnabled || false,
+				webhookSecret: data.webhookSecret || null
+			}
+			: {
+				name: data.name,
+				url: data.url,
+				branch: data.branch || 'main',
+				credentialId: data.credentialId || null
+			}
+		);
 
 		// Audit log
 		await auditGitRepository(event, 'create', repository.id, repository.name);
 
-		// Register schedule if auto-update is enabled
-		if (repository.autoUpdate) {
+		// Register schedule if auto-update is enabled (centralized mode)
+		if (mode === 'centralized' && repository.autoUpdate) {
 			await registerSchedule(repository.id, 'git_repository_sync', null);
+		}
+
+		if (mode === 'stack') {
+			return json(repository);
 		}
 
 		// The web UI sends X-Dockhand-Async to get a background clone with live
 		// progress (returns immediately with a jobId to poll). Without the header
 		// the clone runs synchronously and the finished repository is returned,
-		// preserving the legacy contract old API token scripts rely on.
+		// preserving the synchronous contract old API token scripts rely on.
 		const asyncRequested = request.headers.get('x-dockhand-async') === '1';
 		if (asyncRequested) {
 			// Create a job to track the clone progress so the frontend can poll for the result
@@ -111,7 +132,7 @@ export const POST: RequestHandler = async (event) => {
 			return json({ ...repository, cloneStarted: true, jobId: job.id });
 		}
 
-		// Legacy/synchronous contract: wait for the clone to finish so callers
+		// Synchronous contract: wait for the clone to finish so callers
 		// that assumed it was done on return keep working. syncRepositoryExclusive
 		// never throws — failures are reported via the returned SyncResult and
 		// persisted on the repository row (syncStatus/syncError), so the response

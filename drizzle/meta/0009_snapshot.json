@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "a3022bf5-4f8b-4b29-a50a-1fa8f2433263",
-  "prevId": "ba8cc5c9-0cee-4d42-a1cb-9cb085fa90fb",
+  "id": "d682ab39-8342-49a4-86b2-895101a5845b",
+  "prevId": "3da291da-60a8-4d1e-8649-bd09cd7f4d79",
   "tables": {
     "api_tokens": {
       "name": "api_tokens",
@@ -1164,13 +1164,6 @@
           "notNull": false,
           "autoincrement": false
         },
-        "hawser_stacks_dir": {
-          "name": "hawser_stacks_dir",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
         "created_at": {
           "name": "created_at",
           "type": "text",
@@ -1491,13 +1484,6 @@
           "notNull": false,
           "autoincrement": false,
           "default": "'docker-compose.yml'"
-        },
-        "compose_paths": {
-          "name": "compose_paths",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
         },
         "env_file_path": {
           "name": "env_file_path",
@@ -2908,13 +2894,6 @@
         },
         "compose_path": {
           "name": "compose_path",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "compose_paths": {
-          "name": "compose_paths",
           "type": "text",
           "primaryKey": false,
           "notNull": false,

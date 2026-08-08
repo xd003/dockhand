@@ -5,6 +5,7 @@
 import {
 	getAllAutoUpdateSettings,
 	getAllAutoUpdateRepositories,
+	getAllAutoUpdateGitStacks,
 	getAllEnvUpdateCheckSettings,
 	getAllImagePruneSettings,
 	getBackupConfigs,
@@ -21,10 +22,11 @@ import {
 import { getNextRun, getSystemSchedules } from '$lib/server/scheduler';
 import { getGlobalScannerDefaults, getScannerSettingsWithDefaults } from '$lib/server/scanner';
 import { BACKUPS_ENABLED } from '$lib/server/features';
+import { getGitMode } from '$lib/server/git-mode';
 
 export interface ScheduleInfo {
 	id: number;
-	type: 'container_update' | 'git_repository_sync' | 'system_cleanup' | 'env_update_check' | 'image_prune' | 'backup' | 'repo_prune' | 'repo_check' | 'repo_verify';
+	type: 'container_update' | 'git_repository_sync' | 'git_stack_sync' | 'system_cleanup' | 'env_update_check' | 'image_prune' | 'backup' | 'repo_prune' | 'repo_check' | 'repo_verify';
 	name: string;
 	entityName: string;
 	description?: string;
@@ -84,26 +86,59 @@ export async function buildSchedulesList(): Promise<ScheduleInfo[]> {
 	schedules.push(...containerSchedules);
 
 	const gitRepos = await getAllAutoUpdateRepositories();
+	const gitStacks = await getAllAutoUpdateGitStacks();
 	const defaultTimezone = await getDefaultTimezone();
+	const gitMode = await getGitMode();
+	// Stack mode lists per-stack git_stack_sync schedules; centralized mode
+	// lists per-repository git_repository_sync schedules.
 	const gitSchedules = await Promise.all(
-		gitRepos.map(async (repo) => {
-			const [lastExecution, recentExecutions] = await Promise.all([
-				getLastExecutionForSchedule('git_repository_sync', repo.id),
-				getRecentExecutionsForSchedule('git_repository_sync', repo.id, 5)
+		(gitMode === 'centralized' ? gitRepos : gitStacks).map(async (entity) => {
+			if (gitMode === 'centralized') {
+				const repo = entity as (typeof gitRepos)[number];
+				const [lastExecution, recentExecutions] = await Promise.all([
+					getLastExecutionForSchedule('git_repository_sync', repo.id),
+					getRecentExecutionsForSchedule('git_repository_sync', repo.id, 5)
+				]);
+				const isEnabled = repo.autoUpdate ?? false;
+				const nextRun = isEnabled && repo.autoUpdateCron ? getNextRun(repo.autoUpdateCron, defaultTimezone) : null;
+
+				return {
+					id: repo.id,
+					type: 'git_repository_sync' as const,
+					name: `Git sync: ${repo.name}`,
+					entityName: repo.name,
+					environmentId: null,
+					environmentName: null,
+					enabled: isEnabled,
+					scheduleType: repo.autoUpdateSchedule ?? 'daily',
+					cronExpression: repo.autoUpdateCron ?? null,
+					nextRun: nextRun?.toISOString() ?? null,
+					lastExecution: lastExecution ?? null,
+					recentExecutions,
+					isSystem: false
+				};
+			}
+
+			const stack = entity as (typeof gitStacks)[number];
+			const [env, lastExecution, recentExecutions, timezone] = await Promise.all([
+				stack.environmentId ? getEnvironment(stack.environmentId) : null,
+				getLastExecutionForSchedule('git_stack_sync', stack.id),
+				getRecentExecutionsForSchedule('git_stack_sync', stack.id, 5),
+				stack.environmentId ? getEnvironmentTimezone(stack.environmentId) : defaultTimezone
 			]);
-			const isEnabled = repo.autoUpdate ?? false;
-			const nextRun = isEnabled && repo.autoUpdateCron ? getNextRun(repo.autoUpdateCron, defaultTimezone) : null;
+			const isEnabled = stack.autoUpdate ?? false;
+			const nextRun = isEnabled && stack.autoUpdateCron ? getNextRun(stack.autoUpdateCron, timezone) : null;
 
 			return {
-				id: repo.id,
-				type: 'git_repository_sync' as const,
-				name: `Git sync: ${repo.name}`,
-				entityName: repo.name,
-				environmentId: null,
-				environmentName: null,
+				id: stack.id,
+				type: 'git_stack_sync' as const,
+				name: `Git sync: ${stack.stackName}`,
+				entityName: stack.stackName,
+				environmentId: stack.environmentId ?? null,
+				environmentName: env?.name ?? null,
 				enabled: isEnabled,
-				scheduleType: repo.autoUpdateSchedule ?? 'daily',
-				cronExpression: repo.autoUpdateCron ?? null,
+				scheduleType: stack.autoUpdateSchedule ?? 'daily',
+				cronExpression: stack.autoUpdateCron ?? null,
 				nextRun: nextRun?.toISOString() ?? null,
 				lastExecution: lastExecution ?? null,
 				recentExecutions,

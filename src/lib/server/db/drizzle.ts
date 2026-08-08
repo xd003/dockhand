@@ -28,6 +28,14 @@ import { building } from '$app/environment';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+// vite build evaluates every server module — in the main build (`building` is false
+// there, but we're running under the vite CLI) and in the post-build analysis fork
+// (`building` is true). Opening the SQLite connection in either process leaves
+// better-sqlite3 statements alive at exit, which aborts Node 24 (SIGABRT).
+const isBuildTime =
+	building ||
+	(process.env.NODE_ENV === 'production' && (process.argv[1] ?? '').includes('vite'));
+
 // =============================================================================
 // CONFIGURATION
 // =============================================================================
@@ -870,19 +878,22 @@ async function seedDatabase(): Promise<void> {
 // STARTUP
 // =============================================================================
 
-// Seed the database on startup. Skipped during `vite build`: SvelteKit's post-build
-// analysis imports every server module, which would open a live SQLite connection and
-// crash better-sqlite3's native teardown at process exit on Node 24 (SIGABRT).
-if (!building) await seedDatabase();
+// Seed the database on startup. Skipped during `vite build`: SvelteKit imports every
+// server module at build time, which would open a live SQLite connection and crash
+// better-sqlite3's native teardown at process exit on Node 24 (SIGABRT).
+if (!isBuildTime) await seedDatabase();
 
 // =============================================================================
 // EXPORTS
 // =============================================================================
 
-// Create proxy to ensure database is initialized before access
+// Create proxy to ensure database is initialized before access.
+// During `vite build` the module is evaluated (SvelteKit build/analysis) with
+// seeding skipped, so return a no-op stub instead of throwing.
 const dbProxy = new Proxy({} as any, {
 	get(_target, prop) {
 		if (!initialized) {
+			if (isBuildTime) return undefined;
 			throw new Error('Database not initialized. This should not happen.');
 		}
 		return db[prop];
@@ -896,6 +907,7 @@ export { dbProxy as db, rawClient };
 const schemaProxy = new Proxy({} as any, {
 	get(_target, prop) {
 		if (!initialized || !schema) {
+			if (isBuildTime) return undefined;
 			throw new Error('Database not initialized. This should not happen.');
 		}
 		return schema[prop];

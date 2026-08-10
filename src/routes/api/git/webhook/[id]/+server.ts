@@ -41,9 +41,8 @@ export const POST: RequestHandler = async (event) => {
 	}
 };
 
-// GET is kept for simple polling/manual triggers, but the secret is no longer
-// passed in the URL (it leaked into access/proxy logs and Referer headers).
-// Auth: ?ts=<unix-seconds>&sig=<hex HMAC-SHA256(secret, ts)>, valid for 5 minutes.
+// GET is kept for simple polling/manual triggers, verified by the webhook
+// secret passed as the ?secret= query parameter.
 export const GET: RequestHandler = async (event) => {
 	try {
 		const disabled = await stackModeDisabled();

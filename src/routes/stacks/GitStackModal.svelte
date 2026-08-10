@@ -1409,7 +1409,7 @@
 						Call this webhook to force redeploy <strong>this stack only</strong>. The repository-level webhook redeploys all linked stacks with force redeployment enabled.
 					</p>
 					<p class="text-xs text-amber-600 dark:text-amber-400">
-						Stack mode: webhooks are configured on the <strong>Git repository</strong>. This endpoint is kept so existing integrations keep working — the repository webhook is enabled automatically when a stack webhook was already configured.
+						With a stack webhook enabled, the <strong>repository-level webhook skips this stack</strong> — it is only triggered by its own webhook, so one push won't deploy it twice.
 					</p>
 					{#if formStackWebhookEnabled}
 						{#if gitStack}

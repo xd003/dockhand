@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import type { RequestEvent } from '@sveltejs/kit';
-import { verifyWebhookSignature, verifyQuerySignature } from './webhook-signature';
+import { verifyWebhookSignature } from './webhook-signature';
 
 /**
  * Reject oversized payloads before buffering the body. These endpoints are
@@ -49,7 +49,7 @@ export interface GitWebhookHandlerOptions<TEntity extends GitWebhookEntity> {
 	 * When true the trigger is awaited and its result body is returned directly
 	 * (HEAD~1 stack-webhook contract: `{success, output, error, skipped}`).
 	 * When false (default) the trigger is expected to be non-blocking and a 202
-	 * is returned. Auth (ts/sig, signature headers, body cap) is identical in
+	 * is returned. Auth (signature headers, body cap) is identical in
 	 * both modes (F6/F7).
 	 */
 	synchronous?: boolean;
@@ -60,8 +60,7 @@ export interface GitWebhookHandlerOptions<TEntity extends GitWebhookEntity> {
  *
  * POST: verifies the provider signature (X-Hub-Signature-256 or
  * X-Gitlab-Token) over the raw body.
- * GET: verifies a time-windowed HMAC signature (?ts=&sig=) so the secret
- * never travels in the URL.
+ * GET: verifies the webhook secret passed as the ?secret= query parameter.
  * Both trigger the configured sync in the background and return 202.
  */
 export async function handleGitWebhookRequest<TEntity extends GitWebhookEntity>(
@@ -98,34 +97,13 @@ export async function handleGitWebhookRequest<TEntity extends GitWebhookEntity>(
 			return json({ error: options.secretNotConfiguredMessage }, { status: 401 });
 		}
 
-		// Optional insecure-compat path for GET ?secret= callers (F6/F19). This
-		// leaks the secret via URL/Referer logs, so it is ONLY enabled when the
-		// operator explicitly opts in and every use is audit-logged. Default (no
-		// env var) is ts/sig HMAC only.
-		const insecureCompat = process.env.DOCKHAND_GIT_INSECURE_WEBHOOK_SECRET_COMPAT === 'true';
-		if (insecureCompat && url.searchParams.get('secret') === entity.webhookSecret) {
+		// Verify secret via query parameter for GET requests.
+		const secret = url.searchParams.get('secret');
+		if (secret !== entity.webhookSecret) {
 			await options.audit(event, id, entity, {
-				method: 'GET', source: 'get', result: 'triggered', error: 'insecure_secret_compat'
+				method: 'GET', source: 'get', error: 'invalid_secret'
 			});
-			const result = await options.trigger(id);
-			if (!result.success) {
-				return json(result, { status: 500 });
-			}
-			return options.synchronous ? json(result) : json({
-				success: true,
-				message: options.successMessage,
-				...(options.deprecated ? { deprecated: true } : {})
-			}, { status: 202 });
-		}
-
-		// Verify the time-windowed HMAC signature (no secret in the query string).
-		const ts = url.searchParams.get('ts') ?? '';
-		const sig = url.searchParams.get('sig');
-		if (!verifyQuerySignature(entity.webhookSecret, ts, sig)) {
-			await options.audit(event, id, entity, {
-				method: 'GET', source: 'get', error: 'invalid_signature'
-			});
-			return json({ error: 'Invalid webhook signature' }, { status: 401 });
+			return json({ error: 'Invalid webhook secret' }, { status: 401 });
 		}
 
 		// Trigger the sync in the background and return 202 immediately.

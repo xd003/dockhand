@@ -15,9 +15,13 @@
 export const BACKUPS_ENABLED = process.env.FEAT_BACKUPS_ENABLED === 'true';
 
 /**
- * Git repository model: when `DOCKHAND_GIT_CENTRALIZED_MODE=true` the **desired**
- * mode is forced to `centralized` (env wins over the UI setting; only the exact
- * value `true` forces). Read once at boot — see git-mode.ts for how the desired
- * mode drives the (transition-job-controlled) effective mode.
+ * Git repository model: setting `DOCKHAND_GIT_CENTRALIZED_MODE=true` forces the
+ * **desired** mode to `centralized` (env wins over the UI setting; only the exact
+ * value `true` forces). Merely *setting* the variable to any other value locks the
+ * mode from the UI without forcing centralized — remove the variable to hand control
+ * back to Settings. Read once at boot — see git-mode.ts for how the desired mode
+ * drives the (transition-job-controlled) effective mode.
  */
-export const GIT_CENTRALIZED_MODE_ENV_FORCED = process.env.DOCKHAND_GIT_CENTRALIZED_MODE === 'true';
+export const GIT_CENTRALIZED_MODE_ENV_FORCED =
+	process.env.DOCKHAND_GIT_CENTRALIZED_MODE !== undefined &&
+	process.env.DOCKHAND_GIT_CENTRALIZED_MODE !== '';

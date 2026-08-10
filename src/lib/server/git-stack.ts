@@ -56,8 +56,10 @@ const STACK_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
  * Stack (per-stack) clone path:
  *  - git-repos/stack-<id> (fallback / older stacks)
  *  - git-repos/<envName>/<stackName> (env-scoped, consistent with internal stacks)
+ * Exported for the stack delete-preview route (upstream) to resolve the git dir
+ * it will report as removed.
  */
-async function getStackRepoPath(stackId: number, stackName?: string, environmentId?: number | null): Promise<string> {
+export async function getStackRepoPath(stackId: number, stackName?: string, environmentId?: number | null): Promise<string> {
 	if (stackName && environmentId) {
 		// Use old path if it already exists (backward compat), otherwise use name-based path
 		const oldPath = join(getGitReposDir(), `stack-${stackId}`);

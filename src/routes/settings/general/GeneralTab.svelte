@@ -8,12 +8,13 @@
 	import { TogglePill, ToggleSwitch } from '$lib/components/ui/toggle-pill';
 	import CronEditor from '$lib/components/cron-editor.svelte';
 	import TimezoneSelector from '$lib/components/TimezoneSelector.svelte';
-	import { Eye, Bell, Database, Calendar, ShieldCheck, FileText, AlertTriangle, HelpCircle, Globe, Activity, Clock, Info, Save, RotateCcw, LayoutDashboard, Tags, Archive, ChevronRight, ChevronDown, GitFork, Loader2 } from 'lucide-svelte';
+	import { Eye, Bell, Database, Calendar, ShieldCheck, FileText, AlertTriangle, HelpCircle, Globe, Activity, Clock, Info, Save, RotateCcw, LayoutDashboard, Tags, Archive, ChevronRight, ChevronDown, Compass, GitFork, Loader2 } from 'lucide-svelte';
 	import CodeEditor from '$lib/components/CodeEditor.svelte';
 	import { appSettings, type DateFormat, type DownloadFormat, type EventCollectionMode, type LabelFilterMode } from '$lib/stores/settings';
 	import { canAccess, authStore } from '$lib/stores/auth';
 	import { toast } from 'svelte-sonner';
 	import ThemeSelector from '$lib/components/ThemeSelector.svelte';
+	import NavigationSelector from '$lib/components/NavigationSelector.svelte';
 	import AnimateIconsToggle from '$lib/components/AnimateIconsToggle.svelte';
 	import ColoredActionsToggle from '$lib/components/ColoredActionsToggle.svelte';
 	import * as Tooltip from '$lib/components/ui/tooltip';
@@ -555,6 +556,18 @@ services:
 			<Card.Root>
 				<Card.Header>
 					<Card.Title class="text-sm font-medium flex items-center gap-2">
+						<Compass class="w-4 h-4" />
+						Navigation
+					</Card.Title>
+				</Card.Header>
+				<Card.Content>
+					<NavigationSelector />
+				</Card.Content>
+			</Card.Root>
+
+			<Card.Root>
+				<Card.Header>
+					<Card.Title class="text-sm font-medium flex items-center gap-2">
 						<Globe class="w-4 h-4" />
 						Scheduling
 					</Card.Title>
@@ -771,8 +784,8 @@ services:
 						{/if}
 						{#if gitModeForcedByEnv}
 							<p class="text-xs text-amber-600">
-								This option is locked because <code class="bg-muted px-1 rounded">DOCKHAND_GIT_CENTRALIZED_MODE=true</code> is set.
-								To change the repository model here, set <code class="bg-muted px-1 rounded">DOCKHAND_GIT_CENTRALIZED_MODE</code> to a value other than <code class="bg-muted px-1 rounded">true</code> (or remove the variable) and restart.
+								This option is locked because the <code class="bg-muted px-1 rounded">DOCKHAND_GIT_CENTRALIZED_MODE</code> environment variable is set.
+								To control the repository model from the UI, remove the <code class="bg-muted px-1 rounded">DOCKHAND_GIT_CENTRALIZED_MODE</code> variable and restart.
 							</p>
 						{/if}
 						{#if gitModeTransitionActive}

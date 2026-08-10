@@ -49,7 +49,11 @@ export async function getDesiredGitMode(): Promise<GitMode> {
 }
 
 export function isGitModeEnvForced(): boolean {
-	return process.env.DOCKHAND_GIT_CENTRALIZED_MODE === 'true';
+	// Presence of the variable locks the mode from the UI regardless of its value.
+	// Only an actual `true` (below in getDesiredGitMode) forces centralized; any
+	// other value just means "the operator owns this, not the UI".
+	const v = process.env.DOCKHAND_GIT_CENTRALIZED_MODE;
+	return v !== undefined && v !== '';
 }
 
 /** Set the desired mode. Rejected when env-forced or a transition is active. */

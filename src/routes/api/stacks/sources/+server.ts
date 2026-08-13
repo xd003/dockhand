@@ -37,7 +37,7 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 
 		// Convert to a map for easier lookup in the frontend.
 		// Resolve compose paths to absolute on-disk paths (git stacks store repo-relative paths).
-		const sourceMap: Record<string, { sourceType: string; composePath?: string | null; composePaths?: string | null; repository?: any }> = {};
+		const sourceMap: Record<string, { sourceType: string; composePath?: string | null; composePaths?: string | null; repository?: any; secretProviderId?: number | null }> = {};
 		for (const source of sources) {
 			const resolved = await resolveStackSourceDisplayPathsForEnv(
 				source,
@@ -48,7 +48,8 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 				sourceType: source.sourceType,
 				composePath: resolved.composePath,
 				composePaths: resolved.composePaths.length > 0 ? JSON.stringify(resolved.composePaths) : null,
-				repository: source.repository
+				repository: source.repository,
+				secretProviderId: source.secretProviderId
 			};
 		}
 

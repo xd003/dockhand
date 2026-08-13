@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { getGitStack, updateGitStack, deleteGitStack, deleteStackSource, updateStackSourceName, updateStackEnvVarsName, setStackEnvVars, getStackEnvVars, deleteStackEnvVars } from '$lib/server/db';
+import { getGitStack, updateGitStack, deleteGitStack, deleteStackSource, updateStackSourceName, updateStackEnvVarsName, setStackEnvVars, getStackEnvVars, deleteStackEnvVars, updateStackSource } from '$lib/server/db';
 import { deleteGitStackFiles, deployGitStack } from '$lib/server/git';
 import { getGitMode } from '$lib/server/git-mode';
 import { assertNotTransitioning } from '$lib/server/git-transition-guard';
@@ -57,6 +57,25 @@ export const PUT: RequestHandler = async (event) => {
 		// Refuse writes while a git mode transition is running (F9)
 		const locked = await assertNotTransitioning();
 		if (locked) return locked;
+
+		if (
+			'secretProviderId' in data &&
+			data.secretProviderId !== null &&
+			typeof data.secretProviderId !== 'number'
+		) {
+			return json({ error: 'secretProviderId must be a number or null' }, { status: 400 });
+		}
+
+		// Binding a secret provider resolves its secrets into the container at deploy;
+		// require the secrets permission so a stacks-only user can't exfiltrate a
+		// provider's secrets by binding it and reading the container env.
+		if (
+			typeof data.secretProviderId === 'number' &&
+			auth.authEnabled &&
+			!(await auth.can('secrets', 'view', existing.environmentId || undefined))
+		) {
+			return json({ error: 'Permission denied: binding a secret provider requires the secrets permission' }, { status: 403 });
+		}
 
 		// Validate stack name if it's being changed
 		if (data.stackName !== undefined) {
@@ -132,9 +151,16 @@ export const PUT: RequestHandler = async (event) => {
 			await updateStackEnvVarsName(oldStackName, data.stackName, existing.environmentId);
 		}
 
+		// Update secret provider binding
+		if ('secretProviderId' in data) {
+			await updateStackSource(updated.stackName, existing.environmentId, {
+				secretProviderId: data.secretProviderId ?? null
+			});
+		}
+
 		// Compute diff for audit (exclude sensitive fields)
 		const diff = computeAuditDiff(existing, updated, {
-			excludeFields: ['createdAt', 'updatedAt', 'lastSync', 'lastCommit', 'syncStatus', 'syncError']
+			excludeFields: ['webhookSecret', 'createdAt', 'updatedAt', 'lastSync', 'lastCommit', 'syncStatus', 'syncError']
 		});
 
 		// Audit log

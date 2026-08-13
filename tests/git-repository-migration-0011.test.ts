@@ -5,10 +5,10 @@ import { resolve } from 'node:path';
 import { Database } from 'bun:sqlite';
 
 const SQLITE_MIGRATION = resolve(
-	new URL('../drizzle/0010_centralized_git.sql', import.meta.url).pathname
+	new URL('../drizzle/0011_centralized_git.sql', import.meta.url).pathname
 );
 const PG_MIGRATION = resolve(
-	new URL('../drizzle-pg/0010_centralized_git.sql', import.meta.url).pathname
+	new URL('../drizzle-pg/0011_centralized_git.sql', import.meta.url).pathname
 );
 
 const COLUMNS_REQUIRED_BY_MIGRATION = `
@@ -57,7 +57,7 @@ function runMigration(): { stackColumns: string[]; sourceColumns: string[] } {
 	return { stackColumns, sourceColumns };
 }
 
-describe('migration 0010 (apply_commit_changes)', () => {
+describe('migration 0011 (apply_commit_changes)', () => {
 	it('is additive: adds compose_paths to git_stacks', () => {
 		const { stackColumns } = runMigration();
 		assert.ok(stackColumns.includes('compose_paths'), 'expected git_stacks to gain compose_paths');
@@ -76,7 +76,7 @@ describe('migration 0010 (apply_commit_changes)', () => {
 	});
 });
 
-describe('migration 0010 file guards', () => {
+describe('migration 0011 file guards', () => {
 	for (const [name, path] of [
 		['sqlite', SQLITE_MIGRATION],
 		['postgres', PG_MIGRATION]
@@ -96,11 +96,11 @@ describe('migration 0010 file guards', () => {
 			const sql = readFileSync(path, 'utf8');
 			assert.ok(
 				!/UPDATE\s+["`]?git_repositories/.test(sql),
-				'0010 must not mutate git_repositories data (moved to runtime backfill)'
+				'0011 must not mutate git_repositories data (moved to runtime backfill)'
 			);
 			assert.ok(
 				!/force_redeploy\s*=\s*1/.test(sql),
-				'0010 must not backfill force_redeploy (moved to runtime backfill)'
+				'0011 must not backfill force_redeploy (moved to runtime backfill)'
 			);
 		});
 	}

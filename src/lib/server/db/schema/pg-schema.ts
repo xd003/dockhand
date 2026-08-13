@@ -303,6 +303,19 @@ export const gitCredentials = pgTable('git_credentials', {
 	updatedAt: timestamp('updated_at', { mode: 'string' }).defaultNow()
 });
 
+// Pluggable secret providers (1Password, Infisical, HashiCorp Vault, ...).
+// `type` selects the backend; `config` is an encrypted JSON blob whose shape is
+// provider-specific (see src/lib/server/secretproviders/shared.ts). Mirrors the
+// notification_settings type+config pattern.
+export const secretProviders = pgTable('secret_providers', {
+	id: serial('id').primaryKey(),
+	type: text('type').notNull(),
+	name: text('name').notNull().unique(),
+	config: text('config').notNull(),
+	createdAt: timestamp('created_at', { mode: 'string' }).defaultNow(),
+	updatedAt: timestamp('updated_at', { mode: 'string' }).defaultNow()
+});
+
 export const gitRepositories = pgTable('git_repositories', {
 	id: serial('id').primaryKey(),
 	name: text('name').notNull().unique(),
@@ -363,6 +376,10 @@ export const stackSources = pgTable('stack_sources', {
 	composePath: text('compose_path'), // Primary compose file path (denormalized from composePaths[0])
 	composePaths: text('compose_paths'), // JSON array of ordered compose file paths
 	envPath: text('env_path'), // Custom path to .env file (for stacks with non-default location)
+	secretProviderId: integer('secret_provider_id').references(() => secretProviders.id, { onDelete: 'set null' }),
+	// Names (no values) of secret keys injected from the bound provider on the last
+	// deploy, so container inspect can mask them without a live provider call.
+	injectedSecretKeys: text('injected_secret_keys'),
 	createdAt: timestamp('created_at', { mode: 'string' }).defaultNow(),
 	updatedAt: timestamp('updated_at', { mode: 'string' }).defaultNow()
 }, (table) => ({

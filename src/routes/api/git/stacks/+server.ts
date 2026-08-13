@@ -71,6 +71,25 @@ export const POST: RequestHandler = async (event) => {
 			return json({ error: 'Stack name must be lowercase, start with a letter or number, and contain only letters, numbers, hyphens, and underscores' }, { status: 400 });
 		}
 
+		if (
+			'secretProviderId' in data &&
+			data.secretProviderId !== null &&
+			typeof data.secretProviderId !== 'number'
+		) {
+			return json({ error: 'secretProviderId must be a number or null' }, { status: 400 });
+		}
+
+		// Binding a secret provider resolves its secrets into the container at deploy;
+		// require the secrets permission so a stacks-only user can't exfiltrate a
+		// provider's secrets by binding it and reading the container env.
+		if (
+			typeof data.secretProviderId === 'number' &&
+			auth.authEnabled &&
+			!(await auth.can('secrets', 'view', data.environmentId || undefined))
+		) {
+			return json({ error: 'Permission denied: binding a secret provider requires the secrets permission' }, { status: 403 });
+		}
+
 		// Check for name conflicts with existing stacks (regular/external/git)
 		const existing = await getStackSource(trimmedStackName, data.environmentId || null);
 		if (existing) {
@@ -192,7 +211,8 @@ export const POST: RequestHandler = async (event) => {
 			environmentId: data.environmentId || null,
 			sourceType: 'git',
 			gitRepositoryId: repositoryId,
-			gitStackId: gitStack.id
+			gitStackId: gitStack.id,
+			secretProviderId: data.secretProviderId ?? null
 		});
 
 		// Audit log

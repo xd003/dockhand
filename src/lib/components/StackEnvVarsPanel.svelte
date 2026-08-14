@@ -574,13 +574,13 @@
 						<FileText class="h-3 w-3" />
 					</button>
 				</div>
-				{#if validation}
+				{#if effectiveValidation}
 					<div class="flex flex-wrap gap-1">
-						{#if validation.missing.length > 0}
-							<span class="inline-flex items-center rounded bg-red-100 px-1.5 py-0.5 text-2xs font-medium text-red-700 dark:bg-red-900/30 dark:text-red-300">{validation.missing.length} missing</span>
+						{#if effectiveValidation.missing.length > 0}
+							<span class="inline-flex items-center rounded bg-red-100 px-1.5 py-0.5 text-2xs font-medium text-red-700 dark:bg-red-900/30 dark:text-red-300">{effectiveValidation.missing.length} missing</span>
 						{/if}
-						{#if validation.required.length > 0}
-							<span class="inline-flex items-center rounded bg-green-100 px-1.5 py-0.5 text-2xs font-medium text-green-700 dark:bg-green-900/30 dark:text-green-300">{validation.required.length - validation.missing.length} defined</span>
+						{#if effectiveValidation.required.length > 0}
+							<span class="inline-flex items-center rounded bg-green-100 px-1.5 py-0.5 text-2xs font-medium text-green-700 dark:bg-green-900/30 dark:text-green-300">{effectiveValidation.required.length - effectiveValidation.missing.length} defined</span>
 						{/if}
 					</div>
 				{/if}
@@ -608,10 +608,10 @@
 				{/if}
 			</div>
 		</div>
-		{#if viewMode === 'form' && validation && validation.missing.length > 0 && !readonly}
+		{#if viewMode === 'form' && effectiveValidation && effectiveValidation.missing.length > 0 && !readonly}
 			<div class="flex flex-wrap items-center gap-1">
 				<span class="mr-1 text-xs text-muted-foreground">Add missing:</span>
-				{#each validation.missing as missing}
+				{#each effectiveValidation.missing as missing}
 					<button type="button" onclick={() => addMissingVariable(missing)} class="rounded bg-red-100 px-1.5 py-0.5 text-xs text-red-700 transition-colors hover:bg-red-200 dark:bg-red-900/30 dark:text-red-300 dark:hover:bg-red-900/50">{missing}</button>
 				{/each}
 			</div>

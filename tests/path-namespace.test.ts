@@ -27,6 +27,17 @@ describe('git path isolation (F2/F14)', () => {
 		assert.equal(stackRepoPath(42, 'production', 'webapp'), joinPath(GIT_REPOS_DIR, 'production/webapp'));
 	});
 
+	it('documents the reserved-name collision: env "shared" maps into the centralized namespace', () => {
+		// An env named "shared" would place its stack clones at
+		// git-repos/shared/<stackName> — the SAME namespace as centralized repo
+		// clones. validateEnvName refuses this on create/rename (H5), and the
+		// transition refuses to enter centralized while such an env exists, but
+		// the path-level collision itself is real and must stay documented here.
+		const stackPath = stackRepoPath(9, 'shared', 'webapp');
+		assert.equal(stackPath, joinPath(GIT_REPOS_DIR, 'shared/webapp'));
+		assert.equal(stackPath, getRepoPath('webapp'));
+	});
+
 	it('rejects traversal-prone repository names', () => {
 		// '..' survives sanitization (dots are allowed) and must be rejected.
 		assert.throws(() => getRepoPath('..'), /Invalid repository name/);

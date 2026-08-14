@@ -611,7 +611,9 @@ export async function gitTransitionActive(): Promise<boolean> {
 		const transition = await getGitModeTransition();
 		return transition !== null && transition.state !== 'idle';
 	} catch {
-		return false;
+		// Fail closed: a DB error during a transition must never let cron ticks
+		// race the state machine (M14).
+		return true;
 	}
 }
 

@@ -39,8 +39,13 @@ export async function getGitMode(): Promise<GitMode> {
 /** Desired mode — env var wins over the UI setting. */
 export async function getDesiredGitMode(): Promise<GitMode> {
 	if (cachedDesired) return cachedDesired;
-	if (process.env.DOCKHAND_GIT_CENTRALIZED_MODE === 'true') {
-		cachedDesired = 'centralized';
+	const envValue = process.env.DOCKHAND_GIT_CENTRALIZED_MODE;
+	if (envValue !== undefined && envValue !== '') {
+		// Any non-empty env value locks the mode; only exact `true` means
+		// centralized. `false`/`0`/anything-else force stack mode, so an operator
+		// who sets DOCKHAND_GIT_CENTRALIZED_MODE=false explicitly gets stack —
+		// never silently stuck centralized with no UI way out (M11).
+		cachedDesired = envValue === 'true' ? 'centralized' : 'stack';
 		return cachedDesired;
 	}
 	const raw = await getSetting(DESIRED_MODE_SETTING);
@@ -50,8 +55,8 @@ export async function getDesiredGitMode(): Promise<GitMode> {
 
 export function isGitModeEnvForced(): boolean {
 	// Presence of the variable locks the mode from the UI regardless of its value.
-	// Only an actual `true` (below in getDesiredGitMode) forces centralized; any
-	// other value just means "the operator owns this, not the UI".
+	// `true` forces centralized; any other non-empty value (`false`, `0`, ...)
+	// forces stack (see getDesiredGitMode) — either way the UI cannot change it.
 	const v = process.env.DOCKHAND_GIT_CENTRALIZED_MODE;
 	return v !== undefined && v !== '';
 }

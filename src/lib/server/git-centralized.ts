@@ -169,15 +169,19 @@ export async function syncRepository(repoId: number): Promise<SyncResult> {
 			// Fetch + hard-reset to the configured branch. Avoid `git pull`, which can
 			// create merge commits or leave the worktree in a conflicted state when
 			// the configured branch differs from the currently checked-out branch.
+			// Both commands carry the same SIGKILL timeout as the clone so a hung
+			// network fetch can never wedge syncStatus='syncing' (cleanupStaleSyncStates
+			// only runs at scheduler start).
 			assertSafeGitRef(repo.branch);
-			const fetchResult = await execGit(['fetch', 'origin', repo.branch], repoPath, env);
+			const fetchResult = await execGit(['fetch', 'origin', repo.branch], repoPath, env, CENTRALIZED_CLONE_TIMEOUT_MS);
 			if (fetchResult.code !== 0) {
 				throw new Error(`Git fetch failed: ${fetchResult.stderr}`);
 			}
 			const checkoutResult = await execGit(
 				['checkout', '-B', repo.branch, `origin/${repo.branch}`],
 				repoPath,
-				env
+				env,
+				CENTRALIZED_CLONE_TIMEOUT_MS
 			);
 			if (checkoutResult.code !== 0) {
 				throw new Error(`Git checkout failed: ${checkoutResult.stderr}`);
@@ -250,9 +254,9 @@ export async function checkForUpdates(repoId: number): Promise<{ hasUpdates: boo
 
 		// Fetch latest without merging. Guard the branch like every other
 		// exec path — a stored branch starting with '-' would be parsed as a
-		// git option.
+		// git option. Same SIGKILL timeout as the clone (M7).
 		assertSafeGitRef(repo.branch);
-		await execGit(['fetch', 'origin', repo.branch], repoPath, env);
+		await execGit(['fetch', 'origin', repo.branch], repoPath, env, CENTRALIZED_CLONE_TIMEOUT_MS);
 
 		// Get remote commit
 		const latestResult = await execGit(['rev-parse', `origin/${repo.branch}`], repoPath, env);

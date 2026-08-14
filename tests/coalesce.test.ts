@@ -28,7 +28,7 @@ describe('runCoalesced', () => {
 	it('serializes concurrent calls into one in-flight and one trailing run', async () => {
 		const slots = makeSlots();
 		const first = deferred<void>();
-		const calls: string[] = [];
+		const calls: unknown[] = [];
 
 		const p1 = runCoalesced(slots, 1, 'first', (a, b) => a + '+' + b, async (opts) => {
 			calls.push(opts);

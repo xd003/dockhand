@@ -36,6 +36,7 @@ import { refreshSystemJobs } from '$lib/server/scheduler';
 import { sendToEventSubprocess, sendToMetricsSubprocess } from '$lib/server/subprocess-manager';
 import { getGitMode, getDesiredGitMode, isGitModeEnvForced } from '$lib/server/git-mode';
 import { getGitModeTransition } from '$lib/server/db';
+import { audit } from '$lib/server/audit';
 import { DEFAULT_GRYPE_IMAGE, DEFAULT_TRIVY_IMAGE } from '$lib/server/scanner';
 import { DEFAULT_HELPER_IMAGE } from '$lib/server/backups/restic';
 
@@ -129,7 +130,7 @@ export interface GeneralSettings {
 	gitRepositoryDesiredMode: 'stack' | 'centralized';
 	gitRepositoryModeForcedByEnv: boolean;
 	gitModeTransition: {
-		state: 'idle' | 'draining' | 'provisioning' | 'cutting_over' | 'failed';
+		state: 'idle' | 'draining' | 'provisioning' | 'cutting_over';
 		mode: 'stack' | 'centralized';
 		jobId: string | null;
 		startedAt: string | null;
@@ -425,7 +426,8 @@ export const GET: RequestHandler = async ({ cookies }) => {
 	}
 };
 
-export const POST: RequestHandler = async ({ request, cookies }) => {
+export const POST: RequestHandler = async (event) => {
+	const { request, cookies } = event;
 	const auth = await authorize(cookies);
 	if (auth.authEnabled && !await auth.can('settings', 'edit')) {
 		return json({ error: 'Permission denied' }, { status: 403 });
@@ -464,6 +466,14 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
 					}
 					throw err;
 				}
+
+				// A mode change is a destructive clone-layout migration — audit it
+				// (best-effort; the audit helper swallows failures).
+				await audit(event, 'update', 'settings', {
+					entityName: 'Git repository model',
+					description: `Git repository mode changed to "${gitRepositoryDesiredMode}"`,
+					details: { gitRepositoryDesiredMode }
+				});
 			}
 		}
 

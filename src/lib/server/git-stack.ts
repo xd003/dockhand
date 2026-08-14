@@ -53,6 +53,19 @@ import { shouldDeployGitStack } from '../utils/git-deploy-gating';
 const STACK_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 
 /**
+ * In-flight stack-mode deploy counter. syncGitStack clears `syncStatus` to
+ * 'synced' BEFORE the deploy phase runs (cpSync + docker compose), so the
+ * transition drain cannot rely on that status column alone to detect a running
+ * deploy. Mirrors the centralized engine's coalesce-slot count (F15).
+ */
+let activeStackDeploys = 0;
+
+/** Number of stack-mode deploys currently in flight. Used by the transition drain. */
+export function getActiveStackDeployCount(): number {
+	return activeStackDeploys;
+}
+
+/**
  * Stack (per-stack) clone path:
  *  - git-repos/stack-<id> (fallback / older stacks)
  *  - git-repos/<envName>/<stackName> (env-scoped, consistent with internal stacks)
@@ -337,6 +350,18 @@ export async function deployGitStack(
 	stackId: number,
 	options?: { force?: boolean; ignoreForceRedeploy?: boolean }
 ): Promise<DeployGitStackResult> {
+	activeStackDeploys++;
+	try {
+		return await deployGitStackCore(stackId, options);
+	} finally {
+		activeStackDeploys--;
+	}
+}
+
+async function deployGitStackCore(
+	stackId: number,
+	options?: { force?: boolean; ignoreForceRedeploy?: boolean }
+): Promise<DeployGitStackResult> {
 	const force = options?.force ?? true; // Default to force for backward compatibility
 
 	const gitStack = await getGitStack(stackId);
@@ -412,6 +437,7 @@ export async function deployGitStack(
 		sourceDir: syncResult.composeDir, // Copy entire directory from git repo
 		composeFileName: syncResult.composeFileName, // Use original compose filename from repo
 		envFileName: syncResult.envFileName, // Env file relative to compose dir (for --env-file flag, optional)
+		composePaths: gitStack.composePaths ? parseComposePathsColumn(gitStack.composePaths) : undefined,
 		forceRecreate,
 		build: gitStack.buildOnDeploy,
 		noBuildCache: gitStack.noBuildCache,
@@ -491,6 +517,18 @@ export async function deleteGitStackFiles(stackId: number, stackName?: string, e
 }
 
 export async function deployGitStackWithProgress(
+	stackId: number,
+	onProgress: ProgressCallback
+): Promise<DeployGitStackResult> {
+	activeStackDeploys++;
+	try {
+		return await deployGitStackWithProgressCore(stackId, onProgress);
+	} finally {
+		activeStackDeploys--;
+	}
+}
+
+async function deployGitStackWithProgressCore(
 	stackId: number,
 	onProgress: ProgressCallback
 ): Promise<DeployGitStackResult> {
@@ -693,10 +731,12 @@ export async function deployGitStackWithProgress(
 			sourceDir: composeDir, // Copy entire directory from git repo
 			composeFileName: progressComposeFileName, // Compose filename relative to source dir
 			envFileName, // Env file relative to compose dir (for --env-file flag, optional)
+			composePaths: gitStack.composePaths ? parseComposePathsColumn(gitStack.composePaths) : undefined,
 			build: gitStack.buildOnDeploy,
 			noBuildCache: gitStack.noBuildCache,
 			pullPolicy: gitStack.repullImages ? 'always' : undefined,
-			filesToDelete: deletionData.plan.toDelete
+			filesToDelete: deletionData.plan.toDelete,
+			isGitDeploy: true // suppress stack_* notification; we emit git_sync_* below
 		});
 
 		if (result.success) {
@@ -742,6 +782,10 @@ export async function deployGitStackWithProgress(
 			throw new Error(result.error || 'Failed to deploy stack');
 		}
 
+		// git_sync_success for the actual deploy result. deployStack suppressed its
+		// stack_* notification (isGitDeploy), so this is the single one (matches
+		// deployGitStackCore). Failure notifies from the catch below.
+		await notifyGitSync(gitStack.stackName, gitStack.environmentId, result);
 		return result;
 	} catch (error: any) {
 		cleanupSshKey(credential);
@@ -750,6 +794,7 @@ export async function deployGitStackWithProgress(
 			syncError: error.message
 		});
 		onProgress({ status: 'error', error: error.message });
+		await notifyGitSync(gitStack.stackName, gitStack.environmentId, { success: false, error: error.message });
 		return { success: false, error: error.message };
 	}
 }

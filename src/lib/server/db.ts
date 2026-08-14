@@ -501,7 +501,9 @@ export async function listSettingsByPrefix(prefix: string): Promise<Array<{ key:
 // GIT MODE TRANSITION STATE (single-row table)
 // =============================================================================
 
-export type GitModeTransitionState = 'idle' | 'draining' | 'provisioning' | 'cutting_over' | 'failed';
+// Terminal outcome is `idle` (with `error` set on failure) — the transition job
+// never emits `failed`, so the 409 lock can never wedge on a stale state.
+export type GitModeTransitionState = 'idle' | 'draining' | 'provisioning' | 'cutting_over';
 
 export interface GitModeTransitionRow {
 	mode: string;

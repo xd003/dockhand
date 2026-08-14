@@ -86,7 +86,7 @@ export const settings = sqliteTable('settings', {
 export const gitModeTransition = sqliteTable('git_mode_transition', {
 	id: integer('id').primaryKey({ autoIncrement: true }),
 	mode: text('mode').default('stack'), // effective mode written at cutover
-	state: text('state').default('idle'), // idle | draining | provisioning | cutting_over | failed
+	state: text('state').default('idle'), // idle | draining | provisioning | cutting_over
 	jobId: text('job_id'),
 	startedAt: text('started_at'),
 	finishedAt: text('finished_at'),

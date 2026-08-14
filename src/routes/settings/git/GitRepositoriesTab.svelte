@@ -25,6 +25,10 @@
 		branch: string;
 		credentialId: number | null;
 		credentialName?: string;
+		autoUpdate: boolean;
+		autoUpdateCron: string;
+		webhookEnabled: boolean;
+		webhookSecret: string | null;
 		createdAt: string;
 	}
 

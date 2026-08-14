@@ -21,6 +21,11 @@ function bodyTooLarge(request: Request): boolean {
 	return Number.isFinite(contentLength) && contentLength > MAX_WEBHOOK_BODY_BYTES;
 }
 
+/** True when the request omits Content-Length entirely (cannot pre-cap the body). */
+function missingContentLength(request: Request): boolean {
+	return request.headers.get('content-length') === null;
+}
+
 export interface GitWebhookEntity {
 	webhookEnabled: boolean | null;
 	webhookSecret: string | null;
@@ -69,7 +74,7 @@ export async function handleGitWebhookRequest<TEntity extends GitWebhookEntity>(
 ): Promise<Response> {
 	const { params, request, url } = event;
 
-	const id = parseInt(params.id);
+	const id = parseInt(params.id ?? '');
 	if (isNaN(id)) {
 		return json({ error: options.invalidIdMessage }, { status: 400 });
 	}
@@ -154,6 +159,17 @@ export async function handleGitWebhookRequest<TEntity extends GitWebhookEntity>(
 			method: 'POST', source, error: 'payload_too_large'
 		});
 		return json({ error: 'Webhook payload too large' }, { status: 413 });
+	}
+
+	// A missing Content-Length means the body cannot be size-capped before
+	// request.text() buffers it (these routes are HMAC-only, so an attacker
+	// could otherwise OOM the process with a multi-GB body). Real providers
+	// (GitHub/GitLab/Gitea/Forgejo) always send Content-Length on webhook POSTs.
+	if (missingContentLength(request)) {
+		await options.audit(event, id, entity, {
+			method: 'POST', source, error: 'missing_content_length'
+		});
+		return json({ error: 'Webhook request must include a Content-Length header' }, { status: 411 });
 	}
 
 	const payload = await request.text();

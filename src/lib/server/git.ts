@@ -25,7 +25,7 @@ import {
 	getGitStack,
 	getEnvironments,
 	type GitRepository,
-	type GitCredential
+	type GitCredentialData
 } from './db';
 import { deployStack, getStackDir } from './stacks';
 import { sendEventNotification } from './notifications';
@@ -242,7 +242,7 @@ async function ensurePasswdEntry(env: GitEnv): Promise<void> {
 	}
 }
 
-export async function buildGitEnv(credential: GitCredential | null): Promise<GitEnv> {
+export async function buildGitEnv(credential: GitCredentialData | null): Promise<GitEnv> {
 	const env: GitEnv = {
 		...process.env as GitEnv,
 		GIT_TERMINAL_PROMPT: '0',
@@ -312,7 +312,7 @@ export async function buildGitEnv(credential: GitCredential | null): Promise<Git
 	return env;
 }
 
-export function cleanupSshKey(credential: GitCredential | null): void {
+export function cleanupSshKey(credential: GitCredentialData | null): void {
 	if (credential?.authType === 'ssh') {
 		const sshKeyPath = `/tmp/.ssh-key-${credential.id}`;
 		try {
@@ -325,7 +325,7 @@ export function cleanupSshKey(credential: GitCredential | null): void {
 	}
 }
 
-export function buildRepoUrl(url: string, credential: GitCredential | null): string {
+export function buildRepoUrl(url: string, credential: GitCredentialData | null): string {
 	assertSafeRepoUrl(url);
 	// Never embed credentials in the URL — they leak via /proc/<pid>/cmdline (see #1081).
 	// HTTPS credentials are injected via GIT_CONFIG_COUNT env vars in buildGitEnv().
@@ -384,7 +384,7 @@ export async function execGit(
  */
 export async function getChangedFilesInDir(
 	repoPath: string,
-	previousCommit: string,
+	previousCommit: string | null,
 	newCommit: string,
 	dirPath: string,
 	env: GitEnv
@@ -600,7 +600,7 @@ export function cleanGitError(stderr: string): string {
 export async function testRepositoryConnection(options: {
 	url: string;
 	branch: string;
-	credential: GitCredential | null;
+	credential: GitCredentialData | null;
 }): Promise<TestResult> {
 	const { url, branch, credential } = options;
 
@@ -948,9 +948,9 @@ export async function previewRepoEnvFiles(options: PreviewEnvOptions): Promise<P
 
 		// Build git environment with credentials
 		// Cast credential to GitCredential type (only uses id, authType, sshPrivateKey)
-		const env = await buildGitEnv(credential as GitCredential | null);
+		const env = await buildGitEnv(credential as GitCredentialData | null);
 		assertSafeGitRef(branch);
-		const authenticatedUrl = buildRepoUrl(repoUrl, credential as GitCredential | null);
+		const authenticatedUrl = buildRepoUrl(repoUrl, credential as GitCredentialData | null);
 
 		// Clone with depth 1 (shallow clone for speed)
 		const cloneProc = nodeSpawn(
@@ -1019,7 +1019,7 @@ export async function previewRepoEnvFiles(options: PreviewEnvOptions): Promise<P
 		return { vars: {}, sources: {}, error: error.message };
 	} finally {
 		// Always clean up temp directory
-		cleanupSshKey(credential as GitCredential | null);
+		cleanupSshKey(credential as GitCredentialData | null);
 		try {
 			if (existsSync(tempDir)) {
 				rmSync(tempDir, { recursive: true, force: true });

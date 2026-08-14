@@ -34,7 +34,9 @@ import { getDesiredGitMode, getGitMode, setEffectiveGitMode, ConflictError, type
 import { refreshAllSchedules } from './scheduler';
 import { getGitReposDir } from './git';
 import { CentralizedGitEngine, getActiveGitCoalesceCount } from './git-centralized';
-import { promoteStackSettingsToRepository, restoreBackfillSnapshot, type BackfillSnapshot, type ForceRedeploySnapshot } from './git-backfill';
+import { getActiveStackDeployCount } from './git-stack';
+import { computeBackfillSnapshot, applyBackfill, restoreBackfillSnapshot, type BackfillSnapshot, type ForceRedeploySnapshot } from './git-backfill';
+import { RESERVED_ENV_NAMES, RESERVED_ENV_NAME_RE } from '../utils/env-name';
 import { runWithConcurrency } from './run-with-concurrency';
 
 // Default drain window. A coalesce deploy slot is held for the whole
@@ -107,19 +109,6 @@ export async function ensureGitModeTransitionResolved(): Promise<void> {
 		await runTransitionCore(await getDesiredGitMode());
 		return;
 	}
-	if (row && row.state === 'failed') {
-		// A previous attempt failed — roll back any snapshot then settle to idle
-		// so a retry (or a fresh run below) can start cleanly.
-		if (row.snapshot) {
-			try {
-				await restoreBackfillSnapshot(JSON.parse(row.snapshot));
-			} catch (err) {
-				console.error('[GitTransition] Failed to restore snapshot at boot:', err);
-			}
-		}
-		await deleteSetting(FORCE_REDEPLOY_BASELINE_KEY);
-		await updateGitModeTransition({ state: 'idle', finishedAt: new Date().toISOString(), snapshot: null });
-	}
 	const desired = await getDesiredGitMode();
 	if ((await getGitMode()) !== desired) {
 		await runTransitionCore(desired);
@@ -137,6 +126,12 @@ async function runTransitionCore(desired: GitMode): Promise<void> {
 	// the cutover flip (setEffectiveGitMode / refreshAllSchedules) can never
 	// leave the app in the new mode with the old mode's data undone (N4).
 	const originalMode = await getGitMode();
+	// Once the effective mode has flipped, the cutover is COMMITTED. Post-flip
+	// steps (cleanup, idle-row write) must not trigger a rollback that restores
+	// the backfill or deletes the baseline — that would be the inverse of the
+	// original bug (clones already gone, mode flipped back). Only failures
+	// before the flip roll back.
+	let cutoverCommitted = false;
 	try {
 		// ---- DRAINING (both directions) ----
 		await setState('draining');
@@ -144,12 +139,56 @@ async function runTransitionCore(desired: GitMode): Promise<void> {
 
 		// ---- PROVISIONING (enter-centralized only) ----
 		if (desired === 'centralized') {
+			// Existing envs named like the reserved git-repos namespace can never
+			// be renamed retroactively by validateEnvName — refuse to enter
+			// centralized while one exists so per-stack clones can't mix with the
+			// shared/ namespace (F14).
+			const reservedEnvs = (await getEnvironments()).filter(
+				(e) => RESERVED_ENV_NAMES.has(e.name) || RESERVED_ENV_NAME_RE.test(e.name)
+			);
+			if (reservedEnvs.length > 0) {
+				throw new Error(
+					`Cannot enter centralized mode: environment name(s) ${reservedEnvs.map((e) => e.name).join(', ')} are reserved by the git-repos layout — rename them first`
+				);
+			}
+
 			await setState('provisioning');
-			snapshot = await promoteStackSettingsToRepository();
-			await updateGitModeTransition({ snapshot: JSON.stringify(snapshot) });
-			// Persist the original forceRedeploy values so a future toggle back to
-			// stack can restore them (F8/F13). Survives this transition's end.
-			await setSetting(FORCE_REDEPLOY_BASELINE_KEY, snapshot.forceRedeploy);
+			// Resume: reuse the persisted snapshot when one exists. A second
+			// computeBackfillSnapshot() would capture an EMPTY forceRedeploy map
+			// (stacks already backfilled) and clobber the baseline — the very
+			// bug this split removes (F13/N4).
+			const currentTransition = await getGitModeTransition();
+			if (currentTransition?.snapshot) {
+				try {
+					snapshot = JSON.parse(currentTransition.snapshot);
+					console.log('[GitTransition] Reusing persisted backfill snapshot from interrupted transition');
+				} catch {
+					snapshot = null;
+				}
+			}
+			if (!snapshot) {
+				// Fresh promotion. computeBackfillSnapshot() is READ-ONLY: it
+				// returns the originals + targets without mutating anything. The
+				// snapshot and baseline are persisted BEFORE applyBackfill() runs,
+				// so a crash between here and the apply (or mid-apply) resumes
+				// from the same snapshot instead of re-deriving an empty one.
+				snapshot = await computeBackfillSnapshot();
+				await updateGitModeTransition({ snapshot: JSON.stringify(snapshot) });
+				// Persist the original forceRedeploy values so a future toggle back to
+				// stack can restore them (F8/F13). Survives this transition's end.
+				await setSetting(FORCE_REDEPLOY_BASELINE_KEY, snapshot.forceRedeploy);
+			} else {
+				// Reuse path: a crash between the snapshot persist and the baseline
+				// write (Hole B) must not leave the baseline missing — restore it
+				// from the reused snapshot so toggle-back still works.
+				const existingBaseline = await getSetting(FORCE_REDEPLOY_BASELINE_KEY);
+				if (existingBaseline === null) {
+					await setSetting(FORCE_REDEPLOY_BASELINE_KEY, snapshot.forceRedeploy);
+				}
+			}
+			// Apply the recorded promotions. Idempotent: safe to re-run after a
+			// crash mid-apply (same target values; forceRedeploy=true is a no-op).
+			await applyBackfill(snapshot);
 
 			const repos = await getGitRepositories();
 			const results = await runWithConcurrency(
@@ -168,22 +207,27 @@ async function runTransitionCore(desired: GitMode): Promise<void> {
 
 		// ---- CUTTING OVER (both directions) ----
 		await setState('cutting_over');
-		// Run the side effects that touch the previous mode's data FIRST, while the
-		// effective mode is still the old one (N4). If either throws we roll back
-		// and retry cleanly; the irreversible flip (setEffectiveGitMode) stays the
-		// last step so failure can never leave the mode cut over without its data.
+		// The irreversible flip (setEffectiveGitMode) is the FIRST cutover step:
+		// the previous mode's per-stack clone trees are only deleted AFTER the
+		// flip succeeds, so a failure in the flip/rollback never destroys trees
+		// that a rolled-back stack mode still needs. Refresh the schedule family
+		// for the new mode, then sweep the old mode's clones (best-effort).
+		await setEffectiveGitMode(desired);
+		cutoverCommitted = true;
+		await refreshAllSchedules();
 		if (desired === 'centralized') {
-			// Delete only DB-known stack-mode clone trees; never shared/.
-			await cleanupStackCloneTrees();
+			// Delete only DB-known stack-mode clone trees; never shared/. This is
+			// best-effort: a failure here must NOT roll back a committed cutover.
+			try {
+				await cleanupStackCloneTrees();
+			} catch (cleanupErr) {
+				console.warn(`[GitTransition] Stack-clone cleanup failed after cutover (best-effort): ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`);
+			}
 		} else {
 			// Enter-stack: shared clones stay (inert); restore forceRedeploy that
 			// a previous enter-centralized backfill set (F8/F13).
 			await restoreForceRedeployBaseline();
 		}
-		await setEffectiveGitMode(desired);
-		// Rebuild cron jobs for the new mode; the opposite family is dropped
-		// because refreshAllSchedules clears activeJobs and re-registers.
-		await refreshAllSchedules();
 
 		await updateGitModeTransition({ state: 'idle', finishedAt: new Date().toISOString(), error: null, snapshot: null });
 		console.log(`[GitTransition] Mode transition to "${desired}" complete`);
@@ -191,29 +235,36 @@ async function runTransitionCore(desired: GitMode): Promise<void> {
 		const message = err instanceof Error ? err.message : String(err);
 		console.error(`[GitTransition] Transition to "${desired}" failed: ${message}`);
 		// ---- ROLLBACK (N4): never cut over on failure ----
-		try {
-			if (desired === 'centralized') {
-				const row = await getGitModeTransition();
-				if (row?.snapshot) {
-					await restoreBackfillSnapshot(JSON.parse(row.snapshot));
+		if (cutoverCommitted) {
+			// The flip already happened — do NOT undo it. Post-flip failures
+			// (cleanup, idle-row write) leave the mode flipped and the backfill
+			// applied; rolling back now would delete the baseline while the
+			// stacks are still backfilled. Log and settle idle with the error.
+			console.warn('[GitTransition] Cutover already committed — recording error without rollback');
+		} else {
+			try {
+				if (desired === 'centralized') {
+					const row = await getGitModeTransition();
+					if (row?.snapshot) {
+						await restoreBackfillSnapshot(JSON.parse(row.snapshot));
+					}
+					await deleteSetting(FORCE_REDEPLOY_BASELINE_KEY);
+				} else if (snapshot) {
+					await restoreBackfillSnapshot(snapshot);
 				}
-				await deleteSetting(FORCE_REDEPLOY_BASELINE_KEY);
-			} else if (snapshot) {
-				await restoreBackfillSnapshot(snapshot);
+				// If the cutover already flipped the effective mode (failure happened in
+				// setEffectiveGitMode/refreshAllSchedules), flip it back and rebuild the
+				// schedule family so the app matches the restored data.
+				if ((await getGitMode()) !== originalMode) {
+					await setEffectiveGitMode(originalMode);
+					await refreshAllSchedules();
+				}
+			} catch (rollbackErr) {
+				console.error('[GitTransition] Rollback failed:', rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr));
 			}
-			// If the cutover already flipped the effective mode (failure happened in
-			// setEffectiveGitMode/refreshAllSchedules), flip it back and rebuild the
-			// schedule family so the app matches the restored data.
-			if ((await getGitMode()) !== originalMode) {
-				await setEffectiveGitMode(originalMode);
-				await refreshAllSchedules();
-			}
-		} catch (rollbackErr) {
-			console.error('[GitTransition] Rollback failed:', rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr));
 		}
-		// End at `idle` (with the error recorded) so the 409 lock is released —
-		// a persistent `failed` state would otherwise block git operations until
-		// the next restart. The error is surfaced to the UI via the settings GET.
+		// End at `idle` (with the error recorded) so the 409 lock is released.
+		// The error is surfaced to the UI via the settings GET.
 		await updateGitModeTransition({ state: 'idle', finishedAt: new Date().toISOString(), error: message, snapshot: null });
 		throw err;
 	} finally {
@@ -226,21 +277,24 @@ async function runTransitionCore(desired: GitMode): Promise<void> {
  * 409 transition guard; in-flight work is detected via:
  *  - git_stacks.syncStatus = 'syncing' (both modes)
  *  - git_repositories.syncStatus = 'syncing' (centralized shared-clone syncs)
- *  - in-memory coalesce slots (stack deploys + repo fan-outs)
+ *  - in-memory coalesce slots (centralized stack deploys + repo fan-outs)
+ *  - in-memory stack-mode deploy counter (stack engine sets syncStatus back to
+ *    'synced' before the deploy phase, so the status column alone can't cover it)
  * Bounded wait — abort the transition if a stack never finishes.
  */
 async function waitForGitOpsToDrain(): Promise<void> {
 	const deadline = Date.now() + DRAIN_TIMEOUT_MS;
 	for (;;) {
-		const [busyStacks, busyRepos, coalesceCount] = await Promise.all([
+		const [busyStacks, busyRepos, coalesceCount, stackDeploys] = await Promise.all([
 			db.select({ id: gitStacks.id }).from(gitStacks).where(eq(gitStacks.syncStatus, 'syncing')),
 			db.select({ id: gitRepositories.id }).from(gitRepositories).where(eq(gitRepositories.syncStatus, 'syncing')),
-			getActiveGitCoalesceCount()
+			getActiveGitCoalesceCount(),
+			getActiveStackDeployCount()
 		]);
-		if (busyStacks.length === 0 && busyRepos.length === 0 && coalesceCount === 0) return;
+		if (busyStacks.length === 0 && busyRepos.length === 0 && coalesceCount === 0 && stackDeploys === 0) return;
 		if (Date.now() >= deadline) {
 			throw new Error(
-				`Git operations still in flight (${busyStacks.length} stack(s), ${busyRepos.length} repo(s), ${coalesceCount} coalesced) — aborting mode transition`
+				`Git operations still in flight (${busyStacks.length} stack(s), ${busyRepos.length} repo(s), ${coalesceCount} coalesced, ${stackDeploys} stack deploys) — aborting mode transition`
 			);
 		}
 		await new Promise((r) => setTimeout(r, DRAIN_POLL_MS));

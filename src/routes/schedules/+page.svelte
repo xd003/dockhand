@@ -1633,12 +1633,12 @@
 				{/if}
 
 				<!-- Stack summary for git_repository_sync -->
-				{#if selectedExecution.scheduleType === 'git_repository_sync' && selectedExecution.details?.stacks?.length > 0}
+				{#if selectedExecution.scheduleType === 'git_repository_sync' && ((selectedExecution.details as GitStackSyncDetails | null)?.stacks?.length ?? 0) > 0}
 					<div class="shrink-0">
 						<div class="text-xs text-muted-foreground mb-1.5">Stack sync results</div>
 						<div class="bg-muted/50 border border-border/50 rounded-lg max-h-48 overflow-auto">
 							<div class="divide-y divide-border/50">
-								{#each selectedExecution.details.stacks as stack}
+								{#each (selectedExecution.details as GitStackSyncDetails | null)?.stacks ?? [] as stack}
 									<div class="flex items-center justify-between gap-3 p-2.5 text-xs">
 										<div class="flex items-center gap-2 min-w-0">
 											{#if stack.status === 'deployed'}

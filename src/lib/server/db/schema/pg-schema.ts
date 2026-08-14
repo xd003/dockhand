@@ -89,7 +89,7 @@ export const settings = pgTable('settings', {
 export const gitModeTransition = pgTable('git_mode_transition', {
 	id: serial('id').primaryKey(),
 	mode: text('mode').default('stack'), // effective mode written at cutover
-	state: text('state').default('idle'), // idle | draining | provisioning | cutting_over | failed
+	state: text('state').default('idle'), // idle | draining | provisioning | cutting_over
 	jobId: text('job_id'),
 	startedAt: timestamp('started_at', { mode: 'string' }),
 	finishedAt: timestamp('finished_at', { mode: 'string' }),

@@ -5,6 +5,7 @@ import { join, resolve, isAbsolute, relative } from 'node:path';
 import { getGitRepository } from '$lib/server/db';
 import { syncRepositoryExclusive, getRepoPath } from '$lib/server/git';
 import { getGitMode } from '$lib/server/git-mode';
+import { assertNotTransitioning } from '$lib/server/git-transition-guard';
 import { authorize } from '$lib/server/authorize';
 import { isPathUnderRoot } from '$lib/server/path-utils';
 
@@ -25,10 +26,10 @@ interface FileEntry {
  * If the repository is not yet cloned, a blocking clone is triggered first
  * (so the first browse request is the only one that waits for cloning).
  *
- * The `path` query parameter is optional (relative to the repo root, or an
- * absolute path previously returned by this endpoint) — defaults to the
- * repository root. All paths are validated to stay within the clone root
- * (no directory traversal, no symlink escape, no .git internals).
+ * The `path` query parameter is optional (relative to the repo root) —
+ * defaults to the repository root. Absolute paths are rejected. All paths are
+ * validated to stay within the clone root (no directory traversal, no symlink
+ * escape, no .git internals).
  *
  * All paths in the response are RELATIVE to the repository root, so the
  * host filesystem layout (DATA_DIR etc.) is never exposed.
@@ -38,6 +39,12 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 	if (auth.authEnabled && !await auth.can('git', 'view')) {
 		return json({ error: 'Permission denied' }, { status: 403 });
 	}
+
+	// Refuse to browse while a mode transition is running — the blocking
+	// syncRepositoryExclusive below could otherwise start a clone mid-drain
+	// or mid-provision (M8).
+	const locked = await assertNotTransitioning();
+	if (locked) return locked;
 
 	const id = parseInt(params.id);
 	if (isNaN(id)) {
@@ -65,26 +72,29 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 		return json({ error: `Failed to sync repository: ${syncResult.error}` }, { status: 500 });
 	}
 
-	// Resolve the requested path (default to repo root). Relative paths are
-	// joined with the repo root; absolute paths are accepted so navigation
-	// works with previously returned entry paths, but they are re-validated
-	// against the (realpath'd) root below before anything is listed.
+	// Resolve the requested path (default to repo root). Absolute paths are
+	// rejected outright: responses are always relative to the repo root, so
+	// there is no legitimate absolute-path input, and accepting host paths
+	// would leak host-path existence via the 404/403 split below.
 	const requestedPath = url.searchParams.get('path') || '';
 	let targetPath: string;
 
 	if (!requestedPath || requestedPath === '/') {
 		targetPath = repoRoot;
 	} else if (isAbsolute(requestedPath)) {
-		targetPath = requestedPath;
+		return json({ error: 'Absolute paths are not supported; use a repo-relative path' }, { status: 400 });
 	} else {
 		targetPath = join(repoRoot, requestedPath);
 	}
 
 	// Resolve to eliminate any `..` components, then guard against traversal.
-	// Use realpath so a symlink inside the clone cannot escape to a sibling repo
-	// or host path; use sep-aware containment so `/repos/myrepo2` is not treated
-	// as inside `/repos/myrepo`.
+	// The lexical containment check runs BEFORE the filesystem probe so a
+	// crafted `../..` path can never be used as a host path-existence oracle
+	// (a path outside the root is denied regardless of whether it exists).
 	const resolvedTarget = resolve(targetPath);
+	if (!isPathUnderRoot(resolvedTarget, resolve(repoRoot))) {
+		return json({ error: 'Access denied: path is outside repository root' }, { status: 403 });
+	}
 	if (!existsSync(resolvedTarget)) {
 		return json({ error: 'Path not found' }, { status: 404 });
 	}

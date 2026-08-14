@@ -60,7 +60,7 @@ export interface AppSettings {
 	gitRepositoryDesiredMode: 'stack' | 'centralized';
 	gitRepositoryModeForcedByEnv: boolean;
 	gitModeTransition: {
-		state: 'idle' | 'draining' | 'provisioning' | 'cutting_over' | 'failed';
+		state: 'idle' | 'draining' | 'provisioning' | 'cutting_over';
 		mode: 'stack' | 'centralized';
 		jobId: string | null;
 		startedAt: string | null;

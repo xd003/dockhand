@@ -1,6 +1,6 @@
 /**
  * Idempotent promotion of stack-level scheduled-sync / webhook settings to the
- * repository, mirroring the original 0011 migration semantics (now moved out of
+ * repository, mirroring the original 0012 migration semantics (now moved out of
  * the DB migration into a runtime step — see the implementation plan, Phase 8).
  *
  * Only runs inside the enter-centralized transition. It snapshots the original

@@ -67,6 +67,13 @@ export interface AppSettings {
 		finishedAt: string | null;
 		error: string | null;
 	};
+	gitStackMigration: {
+		state: 'idle' | 'draining' | 'provisioning' | 'cutting_over';
+		jobId: string | null;
+		startedAt: string | null;
+		finishedAt: string | null;
+		error: string | null;
+	};
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -111,6 +118,7 @@ const DEFAULT_SETTINGS: AppSettings = {
 	gitRepositoryDesiredMode: 'stack',
 	gitRepositoryModeForcedByEnv: false,
 	gitModeTransition: { state: 'idle', mode: 'stack', jobId: null, startedAt: null, finishedAt: null, error: null },
+	gitStackMigration: { state: 'idle', jobId: null, startedAt: null, finishedAt: null, error: null },
 	defaultComposeTemplate: `version: "3.8"
 
 services:
@@ -205,7 +213,8 @@ function createSettingsStore() {
 					gitRepositoryMode: settings.gitRepositoryMode ?? DEFAULT_SETTINGS.gitRepositoryMode,
 					gitRepositoryDesiredMode: settings.gitRepositoryDesiredMode ?? DEFAULT_SETTINGS.gitRepositoryDesiredMode,
 					gitRepositoryModeForcedByEnv: settings.gitRepositoryModeForcedByEnv ?? DEFAULT_SETTINGS.gitRepositoryModeForcedByEnv,
-					gitModeTransition: settings.gitModeTransition ?? DEFAULT_SETTINGS.gitModeTransition
+					gitModeTransition: settings.gitModeTransition ?? DEFAULT_SETTINGS.gitModeTransition,
+					gitStackMigration: settings.gitStackMigration ?? DEFAULT_SETTINGS.gitStackMigration
 				});
 			}
 		} catch {
@@ -268,7 +277,8 @@ function createSettingsStore() {
 					gitRepositoryMode: updatedSettings.gitRepositoryMode ?? DEFAULT_SETTINGS.gitRepositoryMode,
 					gitRepositoryDesiredMode: updatedSettings.gitRepositoryDesiredMode ?? DEFAULT_SETTINGS.gitRepositoryDesiredMode,
 					gitRepositoryModeForcedByEnv: updatedSettings.gitRepositoryModeForcedByEnv ?? DEFAULT_SETTINGS.gitRepositoryModeForcedByEnv,
-					gitModeTransition: updatedSettings.gitModeTransition ?? DEFAULT_SETTINGS.gitModeTransition
+					gitModeTransition: updatedSettings.gitModeTransition ?? DEFAULT_SETTINGS.gitModeTransition,
+					gitStackMigration: updatedSettings.gitStackMigration ?? DEFAULT_SETTINGS.gitStackMigration
 				});
 			}
 		} catch (error) {
@@ -331,37 +341,13 @@ function createSettingsStore() {
 						gitRepositoryDesiredMode: updated.gitRepositoryDesiredMode ?? mode,
 						gitRepositoryMode: updated.gitRepositoryMode ?? current.gitRepositoryMode,
 						gitRepositoryModeForcedByEnv: updated.gitRepositoryModeForcedByEnv ?? current.gitRepositoryModeForcedByEnv,
-						gitModeTransition: updated.gitModeTransition ?? current.gitModeTransition
+						gitModeTransition: updated.gitModeTransition ?? current.gitModeTransition,
+						gitStackMigration: updated.gitStackMigration ?? current.gitStackMigration
 					}));
 				} catch { /* ignore response parse */ }
 
-				// Poll until the transition settles so the UI doesn't show a stale
-				// "in progress" state after the background job finishes.
-				const deadline = Date.now() + 10 * 60 * 1000;
-				for (;;) {
-					let settings: any;
-					try {
-						const res = await fetch('/api/settings/general');
-						settings = await res.json();
-					} catch {
-						break;
-					}
-					update((current) => ({
-						...current,
-						gitRepositoryMode: settings.gitRepositoryMode ?? current.gitRepositoryMode,
-						gitRepositoryDesiredMode: settings.gitRepositoryDesiredMode ?? current.gitRepositoryDesiredMode,
-						gitRepositoryModeForcedByEnv: settings.gitRepositoryModeForcedByEnv ?? current.gitRepositoryModeForcedByEnv,
-						gitModeTransition: settings.gitModeTransition ?? current.gitModeTransition
-					}));
-					const t = settings.gitModeTransition;
-					if (!t || t.state === 'idle') {
-						return t?.error ? { ok: false, status: 0, error: t.error } : { ok: true, status: response.status };
-					}
-					if (Date.now() >= deadline) {
-						return { ok: true, status: response.status, error: 'Mode transition is taking longer than expected — check the server logs.' };
-					}
-					await new Promise((r) => setTimeout(r, 1500));
-				}
+				// The default change is KV-only — no fleet cutover to poll for.
+				return { ok: true, status: response.status };
 			}
 			let error = '';
 			try {

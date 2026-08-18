@@ -2,8 +2,7 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getGitStack, updateGitStack, deleteGitStack, deleteStackSource, updateStackSourceName, updateStackEnvVarsName, setStackEnvVars, getStackEnvVars, deleteStackEnvVars, updateStackSource } from '$lib/server/db';
 import { deleteGitStackFiles, deployGitStack } from '$lib/server/git';
-import { getGitMode } from '$lib/server/git-mode';
-import { assertNotTransitioning } from '$lib/server/git-transition-guard';
+import { assertNotMigrating } from '$lib/server/git-migration-guard';
 import { registerSchedule, unregisterSchedule } from '$lib/server/scheduler';
 import { authorize } from '$lib/server/authorize';
 import { auditGitStack } from '$lib/server/audit';
@@ -14,6 +13,14 @@ import { WEBHOOK_SECRET_REQUIRED_ERROR } from '$lib/utils/webhook-secret';
 // Stack name validation: must start with alphanumeric, can contain alphanumeric, hyphens, underscores
 const STACK_NAME_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
 
+/**
+ * @openapi
+ * summary: Get one git stack
+ * path: id:integer The git stack id
+ * resp-403: Permission denied (needs stacks:view)
+ * resp-404: Git stack not found
+ * resp-500: Failed to load the git stack
+ */
 export const GET: RequestHandler = async ({ params, cookies }) => {
 	const auth = await authorize(cookies);
 
@@ -36,6 +43,16 @@ export const GET: RequestHandler = async ({ params, cookies }) => {
 	}
 };
 
+/**
+ * @openapi
+ * summary: Update a git stack (rename, schedule, webhook, secret-provider binding)
+ * path: id:integer The git stack id
+ * body: {stackName:string, secretProviderId:integer, webhookEnabled:boolean, webhookSecret:string}
+ * resp-400: Invalid stack name, or secretProviderId is not a number/null
+ * resp-403: Permission denied (needs stacks:edit; binding a secret provider also needs secrets:view)
+ * resp-404: Git stack not found
+ * resp-500: Failed to update the git stack
+ */
 export const PUT: RequestHandler = async (event) => {
 	const { params, request, cookies } = event;
 	const auth = await authorize(cookies);
@@ -54,8 +71,8 @@ export const PUT: RequestHandler = async (event) => {
 
 		const data = await request.json();
 
-		// Refuse writes while a git mode transition is running (F9)
-		const locked = await assertNotTransitioning();
+		// Block only when THIS stack or its repository is being migrated (narrow lock).
+		const locked = await assertNotMigrating([id], existing.repositoryId ? [existing.repositoryId] : []);
 		if (locked) return locked;
 
 		if (
@@ -98,8 +115,10 @@ export const PUT: RequestHandler = async (event) => {
 		}
 
 		const oldStackName = existing.stackName;
-		const mode = await getGitMode();
-		const updated = await updateGitStack(id, mode === 'centralized'
+		// Schedule/webhook field semantics follow THAT stack's model, not the
+		// global default (mixed installs edit stacks of both models).
+		const stackCentralized = existing.gitModel === 'centralized';
+		const updated = await updateGitStack(id, stackCentralized
 			? {
 				stackName: data.stackName,
 				composePath: data.composePath,
@@ -136,8 +155,8 @@ export const PUT: RequestHandler = async (event) => {
 			return json({ error: 'Failed to update git stack' }, { status: 500 });
 		}
 
-		// Stack mode: keep the per-stack schedule in sync with the stack-level setting.
-		if (mode === 'stack') {
+		// Stack model: keep the per-stack schedule in sync with the stack-level setting.
+		if (!stackCentralized) {
 			if (updated.autoUpdate && updated.autoUpdateCron) {
 				await registerSchedule(updated.id, 'git_stack_sync', updated.environmentId);
 			} else {
@@ -235,6 +254,14 @@ export const PUT: RequestHandler = async (event) => {
 	}
 };
 
+/**
+ * @openapi
+ * summary: Delete a git stack (removes its deploy files and stack source)
+ * path: id:integer The git stack id
+ * resp-403: Permission denied (needs stacks:delete)
+ * resp-404: Git stack not found
+ * resp-500: Failed to delete the git stack
+ */
 export const DELETE: RequestHandler = async (event) => {
 	const { params, cookies } = event;
 	const auth = await authorize(cookies);

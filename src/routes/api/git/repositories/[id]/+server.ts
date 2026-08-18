@@ -5,11 +5,11 @@ import {
 	updateGitRepository,
 	deleteGitRepository,
 	getGitCredentials,
-	getGitStacksByRepositoryId
+	getGitStacksByRepositoryId,
+	repositoryHasCentralizedStack
 } from '$lib/server/db';
 import { deleteRepositoryFiles, deleteGitStackFiles, renameRepositoryFiles, syncRepositoryExclusive, findRepoNameSanitizationCollision } from '$lib/server/git';
-import { getGitMode } from '$lib/server/git-mode';
-import { assertNotTransitioning } from '$lib/server/git-transition-guard';
+import { assertNotMigrating } from '$lib/server/git-migration-guard';
 import { createJob, completeJob, failJob } from '$lib/server/jobs';
 import { authorize } from '$lib/server/authorize';
 import { auditGitRepository } from '$lib/server/audit';
@@ -17,6 +17,16 @@ import { computeAuditDiff } from '$lib/utils/diff';
 import { registerSchedule, unregisterSchedule } from '$lib/server/scheduler';
 import { WEBHOOK_SECRET_REQUIRED_ERROR } from '$lib/utils/webhook-secret';
 
+/**
+ * @openapi
+ * summary: Get a single git repository by ID
+ * path: id:integer! Git repository ID (from GET /api/git/repositories)
+ * resp-200: {id:integer!, name:string!, url:string!, branch:string!, credentialId:integer}
+ * resp-400: The id path segment is not a valid integer
+ * resp-403: Caller lacks the git:view permission
+ * resp-404: No repository exists with that ID
+ * resp-500: Failed to read the git repository
+ */
 export const GET: RequestHandler = async ({ params, cookies }) => {
 	const auth = await authorize(cookies);
 	if (auth.authEnabled && !await auth.can('git', 'view')) {
@@ -41,6 +51,19 @@ export const GET: RequestHandler = async ({ params, cookies }) => {
 	}
 };
 
+/**
+ * @openapi
+ * summary: Update a git repository's basic fields (name/url/branch/credential)
+ * description: credentialId from GET /api/git/credentials.
+ * path: id:integer! Git repository ID (from GET /api/git/repositories)
+ * body: {name:string, url:string, branch:string, credentialId:integer}
+ * body-example: {"name":"homelab","url":"https://github.com/example/homelab.git","branch":"production","credentialId":2}
+ * resp-200: {id:integer!, name:string!, url:string!, branch:string!, credentialId:integer}
+ * resp-400: Invalid id, an invalid credentialId, or a duplicate repository name
+ * resp-403: Caller lacks the git:edit permission
+ * resp-404: No repository exists with that ID
+ * resp-500: The update failed or the repository could not be persisted
+ */
 export const PUT: RequestHandler = async (event) => {
 	const { params, request, cookies } = event;
 	const auth = await authorize(cookies);
@@ -61,11 +84,11 @@ export const PUT: RequestHandler = async (event) => {
 
 		const data = await request.json();
 
-		// Refuse writes while a git mode transition is running (F9)
-		const locked = await assertNotTransitioning();
+		// Block only when THIS repository is being provisioned by a migration (narrow lock).
+		const locked = await assertNotMigrating([], [id]);
 		if (locked) return locked;
 
-		const mode = await getGitMode();
+		const hasCentralized = await repositoryHasCentralizedStack(id);
 
 		// Validate credential if provided
 		if (data.credentialId) {
@@ -89,11 +112,11 @@ export const PUT: RequestHandler = async (event) => {
 		// Evaluate the effective post-update state (PUT is partial).
 		const effWebhookEnabled = data.webhookEnabled !== undefined ? data.webhookEnabled : existing.webhookEnabled;
 		const effWebhookSecret = data.webhookSecret !== undefined ? data.webhookSecret : existing.webhookSecret;
-		if (mode === 'centralized' && effWebhookEnabled && !effWebhookSecret?.trim()) {
+		if (hasCentralized && effWebhookEnabled && !effWebhookSecret?.trim()) {
 			return json({ error: WEBHOOK_SECRET_REQUIRED_ERROR }, { status: 400 });
 		}
 
-		const effAutoUpdate = mode === 'centralized' ? (data.autoUpdate ?? existing.autoUpdate) : undefined;
+		const effAutoUpdate = hasCentralized ? (data.autoUpdate ?? existing.autoUpdate) : undefined;
 		const effAutoUpdateSchedule = effAutoUpdate
 			? (data.autoUpdateSchedule ?? existing.autoUpdateSchedule ?? null)
 			: null;
@@ -101,9 +124,9 @@ export const PUT: RequestHandler = async (event) => {
 			? (data.autoUpdateCron ?? existing.autoUpdateCron ?? null)
 			: null;
 
-		// Update repository fields. Stack mode updates only identity fields —
-		// repo-level schedule/webhook are centralized concepts.
-		const repository = await updateGitRepository(id, mode === 'centralized'
+		// Update repository fields. Repos with no centralized stacks update only
+		// identity fields — repo-level schedule/webhook are centralized concepts.
+		const repository = await updateGitRepository(id, hasCentralized
 			? {
 				name: data.name,
 				url: data.url,
@@ -133,8 +156,8 @@ export const PUT: RequestHandler = async (event) => {
 		// Audit log
 		await auditGitRepository(event, 'update', repository.id, repository.name, diff);
 
-		if (mode === 'stack') {
-			// No on-disk clone, no repo-level schedule, no resync — thin record.
+		if (!hasCentralized) {
+			// No shared clone, no repo-level schedule, no resync — thin record.
 			return json(repository);
 		}
 
@@ -181,6 +204,17 @@ export const PUT: RequestHandler = async (event) => {
 	}
 };
 
+/**
+ * @openapi
+ * summary: Delete a git repository, first removing the clone directories of every git stack it backs
+ * path: id:integer! Git repository ID (from GET /api/git/repositories)
+ * resp-200: {success:boolean!}
+ * resp-200-example: {"success":true}
+ * resp-400: The id path segment is not a valid integer
+ * resp-403: Caller lacks the git:delete permission
+ * resp-404: No repository exists with that ID
+ * resp-500: The deletion failed
+ */
 export const DELETE: RequestHandler = async (event) => {
 	const { params, cookies } = event;
 	const auth = await authorize(cookies);
@@ -200,29 +234,28 @@ export const DELETE: RequestHandler = async (event) => {
 			return json({ error: 'Repository not found' }, { status: 404 });
 		}
 
-		// Refuse writes while a git mode transition is running (F9)
-		const locked = await assertNotTransitioning();
+		// Block only when THIS repository is being provisioned by a migration (narrow lock).
+		const locked = await assertNotMigrating([], [id]);
 		if (locked) return locked;
-
-		const mode = await getGitMode();
 
 		// Delete git stack clone directories before cascade deletes the DB rows
 		const stacks = await getGitStacksByRepositoryId(id);
 		console.log(`[GitStack] Repository "${repository.name}" (id=${id}) deletion affects ${stacks.length} stacks: ${stacks.map(s => s.stackName).join(', ')}`);
+		const hasCentralized = stacks.some((s) => s.gitModel === 'centralized');
 		for (const stack of stacks) {
-			// Stack mode: also drop any per-stack git_stack_sync schedule.
-			if (mode === 'stack') {
+			// Stack-model stacks also drop their per-stack git_stack_sync schedule.
+			if (stack.gitModel === 'stack') {
 				unregisterSchedule(stack.id, 'git_stack_sync');
 			}
 			await deleteGitStackFiles(stack.id, stack.stackName, stack.environmentId);
 		}
 
-		if (mode === 'centralized') {
+		if (hasCentralized) {
 			// Delete repository clone directory
 			deleteRepositoryFiles(repository.name, id);
 		}
 
-		// Unregister schedule (per-repo in centralized, per-stack handled above in stack mode)
+		// Unregister repo-level schedule (centralized stacks only).
 		unregisterSchedule(id, 'git_repository_sync');
 
 		const deleted = await deleteGitRepository(id);

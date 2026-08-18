@@ -18,6 +18,7 @@
 import { existsSync, mkdirSync, rmSync, chmodSync, readFileSync, writeFileSync, renameSync, readdirSync, realpathSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { spawn as nodeSpawn, spawnSync } from 'node:child_process';
+import { GIT_SSH_KEY_PATH_ENV, makeSshKeyPath, removeSshKey } from './git-ssh-key';
 import {
 	getGitRepository,
 	getGitRepositories,
@@ -276,7 +277,10 @@ export async function buildGitEnv(credential: GitCredentialData | null): Promise
 		// Write SSH key to /tmp instead of data volume — some filesystems (TrueNAS ZFS,
 		// NFS, CIFS) silently ignore chmod, leaving the key group-readable (e.g. 0670).
 		// SSH refuses keys that are accessible by others. /tmp is always a proper filesystem.
-		const sshKeyPath = `/tmp/.ssh-key-${credential.id}`;
+		// Unique per operation so concurrent syncs of the SAME credential don't share
+		// one file; otherwise one op's cleanup deletes the key mid-clone of another
+		// (#1413). The path is stashed in env for cleanupSshKey to remove exactly.
+		const sshKeyPath = makeSshKeyPath(credential.id);
 
 		// Ensure SSH key ends with a newline (newer SSH versions are strict about this)
 		let keyContent = credential.sshPrivateKey;
@@ -304,6 +308,7 @@ export async function buildGitEnv(credential: GitCredentialData | null): Promise
 
 		// Configure SSH to use ONLY this key (no agent, no default keys)
 		env.GIT_SSH_COMMAND = `ssh -i "${sshKeyPath}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentitiesOnly=yes`;
+		env[GIT_SSH_KEY_PATH_ENV] = sshKeyPath;
 	} else {
 		// No SSH credential - prevent using any keys (IdentitiesOnly=yes with no -i means no keys)
 		env.GIT_SSH_COMMAND = 'ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentitiesOnly=yes -o PasswordAuthentication=no -o PubkeyAuthentication=no';
@@ -312,16 +317,11 @@ export async function buildGitEnv(credential: GitCredentialData | null): Promise
 	return env;
 }
 
-export function cleanupSshKey(credential: GitCredentialData | null): void {
+export function cleanupSshKey(credential: GitCredentialData | null, env?: GitEnv): void {
 	if (credential?.authType === 'ssh') {
-		const sshKeyPath = `/tmp/.ssh-key-${credential.id}`;
-		try {
-			if (existsSync(sshKeyPath)) {
-				rmSync(sshKeyPath);
-			}
-		} catch {
-			// Ignore cleanup errors
-		}
+		// Removes the exact per-operation key this env created; falls back to the old
+		// deterministic path only if no env is available (legacy callers). See #1413.
+		removeSshKey(credential.id, env);
 	}
 }
 
@@ -665,7 +665,7 @@ export async function testRepositoryConnection(options: {
 	} catch (error: any) {
 		return { success: false, error: error.message };
 	} finally {
-		cleanupSshKey(credential);
+		cleanupSshKey(credential, env);
 	}
 }
 
@@ -771,7 +771,7 @@ export async function testGitStack(stackId: number): Promise<TestResult> {
 			env
 		);
 
-		cleanupSshKey(credential);
+		cleanupSshKey(credential, env);
 
 		if (result.code !== 0) {
 			return { success: false, error: result.stderr || 'Failed to connect to repository' };
@@ -793,7 +793,7 @@ export async function testGitStack(stackId: number): Promise<TestResult> {
 			lastCommit
 		};
 	} catch (error: any) {
-		cleanupSshKey(credential);
+		cleanupSshKey(credential, env);
 		return { success: false, error: error.message };
 	}
 }
@@ -942,13 +942,18 @@ export async function previewRepoEnvFiles(options: PreviewEnvOptions): Promise<P
 	console.log(`${logPrefix} Starting preview for ${repoUrl}`);
 	console.log(`${logPrefix} Temp directory: ${tempDir}`);
 
+	// Declared outside the try so the finally can pass it to cleanupSshKey (#1413):
+	// a block-scoped `const env` inside the try is out of scope in finally, which
+	// throws "env is not defined" before the real result/error is returned.
+	let env: GitEnv | undefined;
+
 	try {
 		// Ensure temp directory exists
 		mkdirSync(tempDir, { recursive: true });
 
 		// Build git environment with credentials
 		// Cast credential to GitCredential type (only uses id, authType, sshPrivateKey)
-		const env = await buildGitEnv(credential as GitCredentialData | null);
+		env = await buildGitEnv(credential as GitCredentialData | null);
 		assertSafeGitRef(branch);
 		const authenticatedUrl = buildRepoUrl(repoUrl, credential as GitCredentialData | null);
 
@@ -1019,7 +1024,7 @@ export async function previewRepoEnvFiles(options: PreviewEnvOptions): Promise<P
 		return { vars: {}, sources: {}, error: error.message };
 	} finally {
 		// Always clean up temp directory
-		cleanupSshKey(credential as GitCredentialData | null);
+		cleanupSshKey(credential as GitCredentialData | null, env);
 		try {
 			if (existsSync(tempDir)) {
 				rmSync(tempDir, { recursive: true, force: true });
@@ -1054,9 +1059,10 @@ export interface GitEngine {
 }
 
 /**
- * Resolve the engine for the current effective mode. Called once per top-level
- * operation — the mode is captured as an epoch and the same engine instance is
- * used for the whole operation, so a mid-flight toggle cannot split-brain (F9).
+ * Resolve an engine instance for the given mode (default: stack). Stack-level
+ * operations use getEngineForStack()/getEngineForRepository() so dispatch
+ * follows each stack's git_model, captured once per top-level operation so a
+ * mid-flight migrate cannot split-brain a single call (per-stack F9).
  */
 export async function getEngine(mode?: GitMode): Promise<GitEngine> {
 	const effectiveMode = mode ?? (await getGitMode());
@@ -1068,38 +1074,70 @@ export async function getEngine(mode?: GitMode): Promise<GitEngine> {
 	return StackGitEngine;
 }
 
+/**
+ * Resolve the engine for a git stack from its own git_model ('centralized' or
+ * 'stack'). The model is read once per top-level operation, so a concurrent
+ * migrate cutting over mid-operation cannot split-brain that call (per-stack
+ * F9). Rows missing a model (should not happen post-0012 backfill) fall back
+ * to the stack engine.
+ */
+export async function getEngineForStack(stackId: number): Promise<GitEngine> {
+	const { getGitStack } = await import('./db');
+	const stack = await getGitStack(stackId);
+	if (stack) {
+		return getEngine(stack.gitModel);
+	}
+	// No stack row (mid-delete) — default to the stack engine to keep delete
+	// lifecycle code safe.
+	return getEngine('stack');
+}
+
+/**
+ * Resolve the engine for repo-level operations from membership: the
+ * centralized engine only when the repository has at least one
+ * git_model='centralized' stack. Otherwise the stack engine answers, which has
+ * no repo-level methods and reproduces today's "not available in stack mode"
+ * errors. Mirrors the repo-level existence check used by the scheduler.
+ */
+export async function getEngineForRepository(repositoryId: number): Promise<GitEngine> {
+	const { getFullGitStacksByRepositoryId } = await import('./db');
+	const stacks = await getFullGitStacksByRepositoryId(repositoryId);
+	const hasCentralized = stacks.some((s) => s.gitModel === 'centralized');
+	return hasCentralized ? getEngine('centralized') : getEngine('stack');
+}
+
 export async function syncGitStack(stackId: number, onProgress?: ProgressCallback): Promise<SyncResult> {
-	return (await getEngine()).syncGitStack(stackId, onProgress);
+	return (await getEngineForStack(stackId)).syncGitStack(stackId, onProgress);
 }
 
 export async function deployGitStack(
 	stackId: number,
 	options?: { force?: boolean; ignoreForceRedeploy?: boolean }
 ): Promise<DeployGitStackResult> {
-	return (await getEngine()).deployGitStack(stackId, options);
+	return (await getEngineForStack(stackId)).deployGitStack(stackId, options);
 }
 
 export async function deployGitStackWithProgress(
 	stackId: number,
 	onProgress: ProgressCallback
 ): Promise<DeployGitStackResult> {
-	return (await getEngine()).deployGitStackWithProgress(stackId, onProgress);
+	return (await getEngineForStack(stackId)).deployGitStackWithProgress(stackId, onProgress);
 }
 
 export async function deleteGitStackFiles(stackId: number, stackName?: string, environmentId?: number | null): Promise<void> {
-	return (await getEngine()).deleteGitStackFiles(stackId, stackName, environmentId);
+	return (await getEngineForStack(stackId)).deleteGitStackFiles(stackId, stackName, environmentId);
 }
 
 export async function listGitStackEnvFiles(stackId: number): Promise<{ files: string[]; error?: string }> {
-	return (await getEngine()).listGitStackEnvFiles(stackId);
+	return (await getEngineForStack(stackId)).listGitStackEnvFiles(stackId);
 }
 
 export async function readGitStackEnvFile(stackId: number, envFilePath: string): Promise<{ vars: Record<string, string>; error?: string }> {
-	return (await getEngine()).readGitStackEnvFile(stackId, envFilePath);
+	return (await getEngineForStack(stackId)).readGitStackEnvFile(stackId, envFilePath);
 }
 
 export async function syncRepository(repoId: number): Promise<SyncResult> {
-	const engine = await getEngine();
+	const engine = await getEngineForRepository(repoId);
 	if (!engine.syncRepository) {
 		return { success: false, error: 'Repository-level sync is not available in stack mode' };
 	}
@@ -1107,18 +1145,28 @@ export async function syncRepository(repoId: number): Promise<SyncResult> {
 }
 
 export async function syncRepositoryExclusive(repoId: number): Promise<SyncResult> {
-	const engine = await getEngine();
+	const engine = await getEngineForRepository(repoId);
 	if (!engine.syncRepositoryExclusive) {
 		return { success: false, error: 'Repository-level sync is not available in stack mode' };
 	}
 	return engine.syncRepositoryExclusive(repoId);
 }
 
+/**
+ * Provision/refresh the shared clone for a repository WITHOUT the membership
+ * gate — used by the centralized create path and the per-stack migrate job
+ * while a repo has zero centralized stacks yet (provisioning phase).
+ */
+export async function provisionSharedClone(repoId: number): Promise<SyncResult> {
+	const { CentralizedGitEngine } = await import('./git-centralized');
+	return CentralizedGitEngine.syncRepositoryExclusive!(repoId);
+}
+
 export async function deployFromRepositoryWithFanOut(
 	repositoryId: number,
 	log?: (msg: string) => void
 ): Promise<FanOutResult> {
-	const engine = await getEngine();
+	const engine = await getEngineForRepository(repositoryId);
 	if (!engine.deployFromRepositoryWithFanOut) {
 		return { success: false, error: 'Repository-level webhooks are not available in stack mode', stacks: [] };
 	}
@@ -1126,7 +1174,7 @@ export async function deployFromRepositoryWithFanOut(
 }
 
 export async function checkForUpdates(repoId: number): Promise<{ hasUpdates: boolean; currentCommit?: string; latestCommit?: string; error?: string }> {
-	const engine = await getEngine();
+	const engine = await getEngineForRepository(repoId);
 	if (!engine.checkForUpdates) {
 		return { hasUpdates: false, error: 'Repository-level update checks are not available in stack mode' };
 	}
@@ -1135,8 +1183,8 @@ export async function checkForUpdates(repoId: number): Promise<{ hasUpdates: boo
 
 // Centralized-only lifecycle helper, re-exported for the environments route.
 // Mode-gated inside git-centralized.ts so stack-mode installs are never cleaned
-// up by the heuristic sweep (F10). Boot-time cleanup of the per-stack trees now
-// lives in git-transition.ts (cleanupStackCloneTreesAtBoot) — see Phase 8.
+// up by the heuristic sweep (F10). Per-stack clone cleanup now lives in the
+// per-stack migrate job (git-stack-migrate.ts) — see Phase 4.
 export { cleanupEnvGitReposDir } from './git-centralized';
 
 // Re-export shared types used across the codebase.

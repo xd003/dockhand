@@ -2,10 +2,10 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { statSync, readdirSync, existsSync, realpathSync } from 'node:fs';
 import { join, resolve, isAbsolute, relative } from 'node:path';
-import { getGitRepository } from '$lib/server/db';
-import { syncRepositoryExclusive, getRepoPath } from '$lib/server/git';
-import { getGitMode } from '$lib/server/git-mode';
-import { assertNotTransitioning } from '$lib/server/git-transition-guard';
+import { getGitRepository, repositoryHasCentralizedStack, getGitStacksByRepositoryId } from '$lib/server/db';
+import { syncRepositoryExclusive, provisionSharedClone, getRepoPath } from '$lib/server/git';
+import { getDesiredGitMode } from '$lib/server/git-mode';
+import { assertNotMigrating } from '$lib/server/git-migration-guard';
 import { authorize } from '$lib/server/authorize';
 import { isPathUnderRoot } from '$lib/server/path-utils';
 
@@ -40,26 +40,32 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 		return json({ error: 'Permission denied' }, { status: 403 });
 	}
 
-	// Refuse to browse while a mode transition is running — the blocking
-	// syncRepositoryExclusive below could otherwise start a clone mid-drain
-	// or mid-provision (M8).
-	const locked = await assertNotTransitioning();
-	if (locked) return locked;
-
+	// Block only while THIS repository is being provisioned by a migration — the
+	// blocking sync below could otherwise race a clone mid-provision.
 	const id = parseInt(params.id);
 	if (isNaN(id)) {
 		return json({ error: 'Invalid repository ID' }, { status: 400 });
 	}
+	const locked = await assertNotMigrating([], [id]);
+	if (locked) return locked;
 
 	const repo = await getGitRepository(id);
 	if (!repo) {
 		return json({ error: 'Repository not found' }, { status: 404 });
 	}
 
-	// Browse operates on the shared clone — a centralized-mode concept. Stack
-	// mode uses the host-filesystem browser instead.
-	if (await getGitMode() !== 'centralized') {
-		return json({ error: 'Repository browsing is not available in stack mode' }, { status: 404 });
+	// Browse operates on the shared clone — a repository-level concept. It is
+	// available when the repository has at least one centralized-model stack, or
+	// during centralized create provisioning: a repo with ZERO stacks under a
+	// centralized default is being prepared for a new centralized stack (the
+	// create flow needs the clone to pick compose paths). Repos that already
+	// have stack-model stacks (and no centralized members) are NOT provisioned
+	// just because the default is on.
+	const hasCentralized = await repositoryHasCentralizedStack(id);
+	const repoStacks = await getGitStacksByRepositoryId(id);
+	const provisioning = (await getDesiredGitMode()) === 'centralized' && repoStacks.length === 0;
+	if (!hasCentralized && !provisioning) {
+		return json({ error: 'Repository browsing is not available for stack-mode repositories' }, { status: 404 });
 	}
 
 	const repoRoot = getRepoPath(repo.name);
@@ -67,7 +73,9 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 	// Always sync (clone or pull) before listing so the browser shows up-to-date content.
 	// syncRepositoryExclusive joins any in-flight syncs (e.g. from just adding the repository).
 	console.log(`[BrowseAPI] Syncing repository ${id} before browse`);
-	const syncResult = await syncRepositoryExclusive(id);
+	const syncResult = hasCentralized
+		? await syncRepositoryExclusive(id)
+		: await provisionSharedClone(id);
 	if (!syncResult.success) {
 		return json({ error: `Failed to sync repository: ${syncResult.error}` }, { status: 500 });
 	}

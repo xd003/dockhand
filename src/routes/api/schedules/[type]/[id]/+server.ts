@@ -18,10 +18,19 @@ import {
 	updateBackupDestination
 } from '$lib/server/db';
 import { unregisterSchedule } from '$lib/server/scheduler';
-import { getGitMode } from '$lib/server/git-mode';
 import { resolveGitScheduleTarget, isGitScheduleType } from '$lib/server/git-schedule-target';
 import { authorize } from '$lib/server/authorize';
 
+/**
+ * @openapi
+ * summary: Delete (or disable, for policy-driven types) a schedule by type and id
+ * path: type:string! Schedule type (container_update, git_stack_sync, env_update_check, image_prune, backup, repo_prune, repo_check, repo_verify, system_cleanup)
+ * path: id:integer! Schedule id (semantics depend on type — container/git-stack/backup-config id, environment id, or a synthetic repo-policy id) (from GET /api/schedules)
+ * resp-200: {success:boolean!}
+ * resp-400: Invalid schedule id, invalid/unsupported type, or system_cleanup (cannot be removed)
+ * resp-404: Schedule (or backup destination, for repo_* types) not found
+ * resp-500: Unexpected error while deleting the schedule
+ */
 export const DELETE: RequestHandler = async ({ params, cookies }) => {
 	const auth = await authorize(cookies);
 
@@ -47,9 +56,8 @@ export const DELETE: RequestHandler = async ({ params, cookies }) => {
 			return json({ success: true });
 
 		} else if (isGitScheduleType(type)) {
-			// Git schedules resolve through the mode-aware target resolver (F12).
-			const mode = await getGitMode();
-			const target = await resolveGitScheduleTarget(mode, type, scheduleId);
+			// Git schedules resolve through the per-model target resolver (F12).
+			const target = await resolveGitScheduleTarget(type, scheduleId);
 			if (!target) {
 				return json({ error: 'Schedule not found' }, { status: 404 });
 			}

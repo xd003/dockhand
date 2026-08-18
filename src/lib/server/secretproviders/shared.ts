@@ -31,6 +31,8 @@ export type SecretProviderType =
 	| 'infisical'
 	| 'vault'
 	| 'doppler'
+	| 'bitwarden'
+	| 'proton'
 	// eslint-disable-next-line @typescript-eslint/no-redundant-type-constituents
 	| (string & {});
 
@@ -136,8 +138,15 @@ export interface ConnectConfig {
  */
 export interface InfisicalConfig {
 	host: string;
-	token: string;
-	projectId: string;
+	/** Static service/access token. Supply this OR clientId+clientSecret (Universal Auth). */
+	token?: string;
+	/** Universal Auth (Machine Identity) client ID. Paired with clientSecret. */
+	clientId?: string;
+	/** Universal Auth (Machine Identity) client secret. Paired with clientId. */
+	clientSecret?: string;
+	/** Required for Universal Auth / static non-`st.` tokens; optional for a service
+	 *  token (`st.*`), which carries its own project. */
+	projectId?: string;
 	environment?: string;
 	path?: string;
 }
@@ -169,13 +178,31 @@ export interface DopplerConfig {
 	config?: string;
 }
 
+/** Bitwarden Secrets Manager: a Machine Account access token. */
+export interface BitwardenConfig {
+	token: string;
+	/** Optional Bitwarden server base URL for EU or self-hosted instances. */
+	serverUrl?: string;
+}
+
+/**
+ * Proton Pass: a Personal Access Token (`pst_...::...`) authenticates an
+ * operator-installed pass-cli client. Bulk pulls one vault (selected by name);
+ * inline `pass://SHARE_ID/ITEM_ID[/FIELD]` references resolve a single field.
+ */
+export interface ProtonConfig {
+	token: string;
+}
+
 /** Persisted (encrypted) config, discriminated by the provider `type`. */
 export type SecretProviderConfig =
 	| ServiceAccountConfig
 	| ConnectConfig
 	| InfisicalConfig
 	| VaultConfig
-	| DopplerConfig;
+	| DopplerConfig
+	| BitwardenConfig
+	| ProtonConfig;
 
 /**
  * Config keys that hold a SECRET across every provider type. Only these are stripped
@@ -184,7 +211,7 @@ export type SecretProviderConfig =
  * a non-secret coordinate the user needs to see and edit. Keep in sync with the
  * `type: 'password'` fields in ProviderModal.svelte's PROVIDER_FIELDS.
  */
-export const SECRET_CONFIG_KEYS = new Set(['token']);
+export const SECRET_CONFIG_KEYS = new Set(['token', 'clientSecret']);
 
 /**
  * Merges an incoming (edit-form) config OVER the stored one for a write/test: the incoming

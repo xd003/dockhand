@@ -2,21 +2,32 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getGitStack } from '$lib/server/db';
 import { deployGitStack } from '$lib/server/git';
-import { assertNotTransitioning } from '$lib/server/git-transition-guard';
+import { assertNotMigrating } from '$lib/server/git-migration-guard';
 import { authorize } from '$lib/server/authorize';
 import { auditGitStack } from '$lib/server/audit';
 import { createJobResponse } from '$lib/server/sse';
 
+/**
+ * @openapi
+ * summary: Deploy a git stack, streaming the deploy log as SSE result events via the job-response channel
+ * path: id:integer! Git stack ID (from GET /api/git/stacks)
+ * resp-200: {}
+ * resp-200-desc: An SSE stream whose final `result` event carries {success, error}
+ * resp-403: Caller lacks the stacks:start permission for the stack's environment
+ * resp-404: No git stack exists with that ID
+ * resp-409: This stack is currently being migrated to centralized mode
+ * resp-500: Failed to start the deployment
+ */
 export const POST: RequestHandler = async (event) => {
 	const { params, cookies } = event;
 	const auth = await authorize(cookies);
 
 	try {
-		// Refuse to start a deploy while a git mode transition is running (F9)
-		const locked = await assertNotTransitioning();
+		const id = parseInt(params.id);
+		// Block only while THIS stack is being migrated (narrow lock).
+		const locked = await assertNotMigrating([id]);
 		if (locked) return locked;
 
-		const id = parseInt(params.id);
 		const gitStack = await getGitStack(id);
 		if (!gitStack) {
 			return json({ error: 'Git stack not found' }, { status: 404 });

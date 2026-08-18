@@ -1,5 +1,5 @@
 {
-  "id": "a5a0a4df-445d-470a-9c32-c6bbd892feb9",
+  "id": "5f9fe4e6-7799-406c-a232-c72726c6db27",
   "prevId": "670ff7d7-5e55-4d96-a6d8-c9d2e3c765b4",
   "version": "7",
   "dialect": "postgresql",
@@ -1120,12 +1120,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "hawser_stacks_dir": {
-          "name": "hawser_stacks_dir",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp",
@@ -1231,76 +1225,6 @@
           ]
         }
       },
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.git_mode_transition": {
-      "name": "git_mode_transition",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "serial",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "mode": {
-          "name": "mode",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "default": "'stack'"
-        },
-        "state": {
-          "name": "state",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "default": "'idle'"
-        },
-        "job_id": {
-          "name": "job_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "started_at": {
-          "name": "started_at",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "finished_at": {
-          "name": "finished_at",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "snapshot": {
-          "name": "snapshot",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "error": {
-          "name": "error",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": false,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false
@@ -1491,12 +1415,6 @@
           "primaryKey": false,
           "notNull": false,
           "default": "'docker-compose.yml'"
-        },
-        "compose_paths": {
-          "name": "compose_paths",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
         },
         "env_file_path": {
           "name": "env_file_path",
@@ -2201,6 +2119,19 @@
           "primaryKey": false,
           "notNull": true
         },
+        "has_image_update": {
+          "name": "has_image_update",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "newer_version": {
+          "name": "newer_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "checked_at": {
           "name": "checked_at",
           "type": "timestamp",
@@ -2531,6 +2462,65 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.secret_providers": {
+      "name": "secret_providers",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "type": {
+          "name": "type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "config": {
+          "name": "config",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "secret_providers_name_unique": {
+          "name": "secret_providers_name_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "name"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.sessions": {
       "name": "sessions",
       "schema": "",
@@ -2851,14 +2841,20 @@
           "primaryKey": false,
           "notNull": false
         },
-        "compose_paths": {
-          "name": "compose_paths",
+        "env_path": {
+          "name": "env_path",
           "type": "text",
           "primaryKey": false,
           "notNull": false
         },
-        "env_path": {
-          "name": "env_path",
+        "secret_provider_id": {
+          "name": "secret_provider_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "injected_secret_keys": {
+          "name": "injected_secret_keys",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -2876,18 +2872,6 @@
           "primaryKey": false,
           "notNull": false,
           "default": "now()"
-        },
-        "secret_provider_id": {
-          "name": "secret_provider_id",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "injected_secret_keys": {
-          "name": "injected_secret_keys",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {},
@@ -3480,65 +3464,6 @@
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.secret_providers": {
-      "name": "secret_providers",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "serial",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "type": {
-          "name": "type",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "name": {
-          "name": "name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "config": {
-          "name": "config",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": false,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": false,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "secret_providers_name_unique": {
-          "name": "secret_providers_name_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "name"
-          ]
-        }
-      },
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false

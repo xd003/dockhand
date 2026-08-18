@@ -44,6 +44,7 @@ import {
 	secretProviders,
 	stackSources,
 	gitModeTransition,
+	gitStackMigration,
 	vulnerabilityScans,
 	auditLogs,
 	containerEvents,
@@ -91,6 +92,7 @@ import { encrypt, decrypt, decryptStrict, isEncrypted } from './encryption.js';
 import { parseEnvInterpolation } from './env-interpolation';
 import { parseInjectedSecretKeys, serializeInjectedSecretKeys } from './stack-secret-keys';
 import { invalidateVulnerabilitiesCache } from './vulnerabilities-cache';
+import { filterStackModel, filterReposWithCentralizedMember } from '../utils/git-model-routing';
 
 // Re-export for backwards compatibility
 export { db, isPostgres, isSqlite };
@@ -561,6 +563,67 @@ export async function updateGitModeTransition(data: {
 	}
 }
 
+export type GitStackMigrationState = 'idle' | 'draining' | 'provisioning' | 'cutting_over';
+
+export interface GitStackMigrationRow {
+	state: GitStackMigrationState;
+	jobId: string | null;
+	stackIds: string | null; // JSON array of migrating stack ids
+	snapshot: string | null;
+	error: string | null;
+	startedAt: string | null;
+	finishedAt: string | null;
+}
+
+/**
+ * Read the single-row per-stack migration job state. Returns null when the
+ * table is empty (equivalent to an idle job).
+ */
+export async function getGitStackMigration(): Promise<GitStackMigrationRow | null> {
+	const rows = await db.select().from(gitStackMigration).limit(1);
+	if (!rows[0]) return null;
+	const row = rows[0];
+	return {
+		state: (row.state as GitStackMigrationState) ?? 'idle',
+		jobId: row.jobId,
+		stackIds: row.stackIds,
+		snapshot: row.snapshot,
+		error: row.error,
+		startedAt: row.startedAt,
+		finishedAt: row.finishedAt
+	};
+}
+
+/**
+ * Insert-or-update the single-row per-stack migration job. Only non-undefined
+ * fields are written, so callers can update a subset.
+ */
+export async function updateGitStackMigration(data: {
+	state?: GitStackMigrationState;
+	jobId?: string | null;
+	stackIds?: string | null;
+	snapshot?: string | null;
+	error?: string | null;
+	startedAt?: string | null;
+	finishedAt?: string | null;
+}): Promise<void> {
+	const existing = await db.select().from(gitStackMigration).limit(1);
+	const updates: Record<string, any> = { updatedAt: new Date().toISOString() };
+	if (data.state !== undefined) updates.state = data.state;
+	if (data.jobId !== undefined) updates.jobId = data.jobId;
+	if (data.stackIds !== undefined) updates.stackIds = data.stackIds;
+	if (data.snapshot !== undefined) updates.snapshot = data.snapshot;
+	if (data.error !== undefined) updates.error = data.error;
+	if (data.startedAt !== undefined) updates.startedAt = data.startedAt;
+	if (data.finishedAt !== undefined) updates.finishedAt = data.finishedAt;
+
+	if (existing[0]) {
+		await db.update(gitStackMigration).set(updates).where(eq(gitStackMigration.id, existing[0].id));
+	} else {
+		await db.insert(gitStackMigration).values(updates);
+	}
+}
+
 export async function getEnvSetting(key: string, envId?: number): Promise<any> {
 	if (envId !== undefined) {
 		const envKey = `env_${envId}_${key}`;
@@ -606,8 +669,9 @@ export async function getUserThemePreferences(userId: number): Promise<{
 	animateIcons: boolean;
 	coloredActionButtons: boolean;
 	actionIconSize: string;
+	editorIndentGuides: boolean;
 }> {
-	const [lightTheme, darkTheme, font, fontSize, gridFontSize, terminalFont, editorFont, animateIcons, coloredActionButtons, actionIconSize] = await Promise.all([
+	const [lightTheme, darkTheme, font, fontSize, gridFontSize, terminalFont, editorFont, animateIcons, coloredActionButtons, actionIconSize, editorIndentGuides] = await Promise.all([
 		getUserSetting(userId, 'light_theme'),
 		getUserSetting(userId, 'dark_theme'),
 		getUserSetting(userId, 'font'),
@@ -617,7 +681,8 @@ export async function getUserThemePreferences(userId: number): Promise<{
 		getUserSetting(userId, 'editor_font'),
 		getUserSetting(userId, 'animate_icons'),
 		getUserSetting(userId, 'colored_action_buttons'),
-		getUserSetting(userId, 'action_icon_size')
+		getUserSetting(userId, 'action_icon_size'),
+		getUserSetting(userId, 'editor_indent_guides')
 	]);
 	return {
 		lightTheme: lightTheme || 'default',
@@ -631,13 +696,15 @@ export async function getUserThemePreferences(userId: number): Promise<{
 		animateIcons: animateIcons === 'false' ? false : true,
 		// Default OFF — only true when explicitly stored
 		coloredActionButtons: coloredActionButtons === 'true',
-		actionIconSize: actionIconSize || 'normal'
+		actionIconSize: actionIconSize || 'normal',
+		// Default OFF — only true when explicitly stored (#1410)
+		editorIndentGuides: editorIndentGuides === 'true'
 	};
 }
 
 export async function setUserThemePreferences(
 	userId: number,
-	prefs: { lightTheme?: string; darkTheme?: string; font?: string; fontSize?: string; gridFontSize?: string; terminalFont?: string; editorFont?: string; animateIcons?: boolean; coloredActionButtons?: boolean; actionIconSize?: string }
+	prefs: { lightTheme?: string; darkTheme?: string; font?: string; fontSize?: string; gridFontSize?: string; terminalFont?: string; editorFont?: string; animateIcons?: boolean; coloredActionButtons?: boolean; actionIconSize?: string; editorIndentGuides?: boolean }
 ): Promise<void> {
 	const updates: Promise<void>[] = [];
 	if (prefs.lightTheme !== undefined) {
@@ -669,6 +736,9 @@ export async function setUserThemePreferences(
 	}
 	if (prefs.actionIconSize !== undefined) {
 		updates.push(setUserSetting(userId, 'action_icon_size', prefs.actionIconSize));
+	}
+	if (prefs.editorIndentGuides !== undefined) {
+		updates.push(setUserSetting(userId, 'editor_indent_guides', prefs.editorIndentGuides ? 'true' : 'false'));
 	}
 	await Promise.all(updates);
 }
@@ -1036,6 +1106,7 @@ export const NOTIFICATION_EVENT_TYPES = [
 	{ id: 'auto_update_failed', label: 'Auto-update failed', description: 'Container auto-update failed (pull error, start error)', group: 'auto_update', scope: 'environment' },
 	{ id: 'auto_update_blocked', label: 'Auto-update blocked', description: 'Update blocked due to vulnerability criteria', group: 'auto_update', scope: 'environment' },
 	{ id: 'updates_detected', label: 'Updates detected', description: 'Container image updates are available (scheduled check)', group: 'auto_update', scope: 'environment' },
+	{ id: 'newer_version_available', label: 'Newer version tag', description: 'A newer version tag is published for a pinned image (semver, advisory)', group: 'auto_update', scope: 'environment' },
 	{ id: 'batch_update_success', label: 'Batch update completed', description: 'Scheduled container updates completed successfully', group: 'auto_update', scope: 'environment' },
 
 	// Git stack events (environment-scoped)
@@ -2340,11 +2411,12 @@ export async function updateGitRepository(id: number, data: Partial<GitRepositor
 	return getGitRepository(id);
 }
 
-export async function getGitStacksByRepositoryId(repositoryId: number): Promise<Array<{ id: number; stackName: string; environmentId: number | null }>> {
+export async function getGitStacksByRepositoryId(repositoryId: number): Promise<Array<{ id: number; stackName: string; environmentId: number | null; gitModel: 'stack' | 'centralized' }>> {
 	return db.select({
 		id: gitStacks.id,
 		stackName: gitStacks.stackName,
-		environmentId: gitStacks.environmentId
+		environmentId: gitStacks.environmentId,
+		gitModel: gitStacks.gitModel
 	}).from(gitStacks).where(eq(gitStacks.repositoryId, repositoryId));
 }
 
@@ -2373,6 +2445,7 @@ export interface GitStackData {
 	forceRedeploy: boolean;
 	webhookEnabled: boolean;
 	webhookSecret: string | null;
+	gitModel: 'stack' | 'centralized';
 	// Stack-level scheduled sync — deprecated (repo-level in centralized mode)
 	// but the columns are preserved for downgrade compatibility and used by the
 	// stack git engine.
@@ -2398,6 +2471,20 @@ export interface GitStackWithRepo extends GitStackData {
 	};
 }
 
+/** Returns all git stacks using the given model ('stack' | 'centralized'). */
+export async function getGitStacksByModel(model: 'stack' | 'centralized'): Promise<GitStackWithRepo[]> {
+	return (await getGitStacks()).filter((s) => s.gitModel === model);
+}
+
+/** True when the repository has at least one centralized-model git stack. */
+export async function repositoryHasCentralizedStack(repositoryId: number): Promise<boolean> {
+	const rows = await db.select({ id: gitStacks.id })
+		.from(gitStacks)
+		.where(and(eq(gitStacks.repositoryId, repositoryId), eq(gitStacks.gitModel, 'centralized')))
+		.limit(1);
+	return rows.length > 0;
+}
+
 export async function getGitStacks(environmentId?: number): Promise<GitStackWithRepo[]> {
 	let rows;
 	if (environmentId !== undefined) {
@@ -2416,6 +2503,7 @@ export async function getGitStacks(environmentId?: number): Promise<GitStackWith
 			forceRedeploy: gitStacks.forceRedeploy,
 			webhookEnabled: gitStacks.webhookEnabled,
 			webhookSecret: gitStacks.webhookSecret,
+			gitModel: gitStacks.gitModel,
 			autoUpdate: gitStacks.autoUpdate,
 			autoUpdateSchedule: gitStacks.autoUpdateSchedule,
 			autoUpdateCron: gitStacks.autoUpdateCron,
@@ -2450,6 +2538,7 @@ export async function getGitStacks(environmentId?: number): Promise<GitStackWith
 			forceRedeploy: gitStacks.forceRedeploy,
 			webhookEnabled: gitStacks.webhookEnabled,
 			webhookSecret: gitStacks.webhookSecret,
+			gitModel: gitStacks.gitModel,
 			autoUpdate: gitStacks.autoUpdate,
 			autoUpdateSchedule: gitStacks.autoUpdateSchedule,
 			autoUpdateCron: gitStacks.autoUpdateCron,
@@ -2484,6 +2573,7 @@ export async function getGitStacks(environmentId?: number): Promise<GitStackWith
 		forceRedeploy: row.forceRedeploy ?? false,
 		webhookEnabled: row.webhookEnabled ?? false,
 		webhookSecret: row.webhookSecret ?? null,
+		gitModel: row.gitModel ?? 'stack',
 		autoUpdate: row.autoUpdate ?? false,
 		autoUpdateSchedule: row.autoUpdateSchedule ?? null,
 		autoUpdateCron: row.autoUpdateCron ?? null,
@@ -2508,8 +2598,10 @@ export async function getGitStacks(environmentId?: number): Promise<GitStackWith
 // =============================================================================
 
 /**
- * Returns all git stacks with stack-level autoUpdate=true (used by the stack
- * scheduler at startup). Restored from the pre-centralization layout.
+ * Returns all git stacks with stack-level autoUpdate=true AND git_model='stack'.
+ * Centralized-model stacks sync at the repository level (git_repository_sync),
+ * so they must never re-register git_stack_sync (fleet backfill does not clear
+ * the stack-level column). The model filter is the pure filterStackModel.
  */
 export async function getEnabledAutoUpdateGitStacks(): Promise<GitStackWithRepo[]> {
 	const rows = await db.select({
@@ -2527,6 +2619,7 @@ export async function getEnabledAutoUpdateGitStacks(): Promise<GitStackWithRepo[
 		forceRedeploy: gitStacks.forceRedeploy,
 		webhookEnabled: gitStacks.webhookEnabled,
 		webhookSecret: gitStacks.webhookSecret,
+		gitModel: gitStacks.gitModel,
 		lastSync: gitStacks.lastSync,
 		lastCommit: gitStacks.lastCommit,
 		syncStatus: gitStacks.syncStatus,
@@ -2542,7 +2635,7 @@ export async function getEnabledAutoUpdateGitStacks(): Promise<GitStackWithRepo[
 		.innerJoin(gitRepositories, eq(gitStacks.repositoryId, gitRepositories.id))
 		.where(eq(gitStacks.autoUpdate, true));
 
-	return rows.map((row: any) => ({
+	return filterStackModel(rows.map((row: any) => ({
 		id: row.id,
 		stackName: row.stackName,
 		environmentId: row.environmentId,
@@ -2557,6 +2650,7 @@ export async function getEnabledAutoUpdateGitStacks(): Promise<GitStackWithRepo[
 		forceRedeploy: row.forceRedeploy ?? false,
 		webhookEnabled: row.webhookEnabled ?? false,
 		webhookSecret: row.webhookSecret ?? null,
+		gitModel: row.gitModel ?? 'stack',
 		lastSync: row.lastSync,
 		lastCommit: row.lastCommit,
 		syncStatus: row.syncStatus,
@@ -2570,11 +2664,12 @@ export async function getEnabledAutoUpdateGitStacks(): Promise<GitStackWithRepo[
 			branch: row.repoBranch,
 			credentialId: row.repoCredentialId
 		}
-	})) as GitStackWithRepo[];
+	})) as GitStackWithRepo[]);
 }
 
 /**
- * Returns all git stacks with stack-level autoUpdate=true (no filters).
+ * Returns all git stacks with stack-level autoUpdate=true AND git_model='stack'
+ * (no filters beyond the model — an alias of getEnabledAutoUpdateGitStacks).
  */
 export async function getAllAutoUpdateGitStacks(): Promise<GitStackWithRepo[]> {
 	return getEnabledAutoUpdateGitStacks();
@@ -2597,6 +2692,7 @@ export async function getGitStacksForEnvironmentOnly(environmentId: number): Pro
 		forceRedeploy: gitStacks.forceRedeploy,
 		webhookEnabled: gitStacks.webhookEnabled,
 		webhookSecret: gitStacks.webhookSecret,
+		gitModel: gitStacks.gitModel,
 		autoUpdate: gitStacks.autoUpdate,
 		autoUpdateSchedule: gitStacks.autoUpdateSchedule,
 		autoUpdateCron: gitStacks.autoUpdateCron,
@@ -2631,6 +2727,7 @@ export async function getGitStacksForEnvironmentOnly(environmentId: number): Pro
 		forceRedeploy: row.forceRedeploy ?? false,
 		webhookEnabled: row.webhookEnabled ?? false,
 		webhookSecret: row.webhookSecret ?? null,
+		gitModel: row.gitModel ?? 'stack',
 		autoUpdate: row.autoUpdate ?? false,
 		autoUpdateSchedule: row.autoUpdateSchedule ?? null,
 		autoUpdateCron: row.autoUpdateCron ?? null,
@@ -2666,6 +2763,7 @@ export async function getGitStack(id: number): Promise<GitStackWithRepo | null> 
 		forceRedeploy: gitStacks.forceRedeploy,
 		webhookEnabled: gitStacks.webhookEnabled,
 		webhookSecret: gitStacks.webhookSecret,
+		gitModel: gitStacks.gitModel,
 		autoUpdate: gitStacks.autoUpdate,
 		autoUpdateSchedule: gitStacks.autoUpdateSchedule,
 		autoUpdateCron: gitStacks.autoUpdateCron,
@@ -2702,6 +2800,7 @@ export async function getGitStack(id: number): Promise<GitStackWithRepo | null> 
 		forceRedeploy: row.forceRedeploy ?? false,
 		webhookEnabled: row.webhookEnabled ?? false,
 		webhookSecret: row.webhookSecret ?? null,
+		gitModel: row.gitModel ?? 'stack',
 		autoUpdate: row.autoUpdate ?? false,
 		autoUpdateSchedule: row.autoUpdateSchedule ?? null,
 		autoUpdateCron: row.autoUpdateCron ?? null,
@@ -2738,6 +2837,7 @@ export async function getGitStackByName(stackName: string, environmentId?: numbe
 		forceRedeploy: gitStacks.forceRedeploy,
 		webhookEnabled: gitStacks.webhookEnabled,
 		webhookSecret: gitStacks.webhookSecret,
+		gitModel: gitStacks.gitModel,
 		lastSync: gitStacks.lastSync,
 		lastCommit: gitStacks.lastCommit,
 		syncStatus: gitStacks.syncStatus,
@@ -2775,6 +2875,7 @@ export async function getGitStackByName(stackName: string, environmentId?: numbe
 		forceRedeploy: row.forceRedeploy ?? false,
 		webhookEnabled: row.webhookEnabled ?? false,
 		webhookSecret: row.webhookSecret ?? null,
+		gitModel: row.gitModel ?? 'stack',
 		lastSync: row.lastSync,
 		lastCommit: row.lastCommit,
 		syncStatus: row.syncStatus,
@@ -2806,6 +2907,7 @@ export async function createGitStack(data: {
 	forceRedeploy?: boolean;
 	webhookEnabled?: boolean;
 	webhookSecret?: string | null;
+	gitModel?: 'stack' | 'centralized';
 	autoUpdate?: boolean;
 	autoUpdateSchedule?: string;
 	autoUpdateCron?: string;
@@ -2827,6 +2929,7 @@ export async function createGitStack(data: {
 		forceRedeploy: data.forceRedeploy ?? false,
 		webhookEnabled: data.webhookEnabled ?? false,
 		webhookSecret: data.webhookEnabled ? (data.webhookSecret ?? null) : null,
+		gitModel: data.gitModel ?? 'stack',
 		autoUpdate: data.autoUpdate ?? false,
 		autoUpdateSchedule: data.autoUpdate ? (data.autoUpdateSchedule ?? 'daily') : undefined,
 		autoUpdateCron: data.autoUpdate ? (data.autoUpdateCron ?? '0 3 * * *') : undefined
@@ -2857,6 +2960,7 @@ export async function updateGitStack(id: number, data: Partial<GitStackData> & {
 	if (data.forceRedeploy !== undefined) updateData.forceRedeploy = data.forceRedeploy;
 	if (data.webhookEnabled !== undefined) updateData.webhookEnabled = data.webhookEnabled;
 	if (data.webhookSecret !== undefined) updateData.webhookSecret = data.webhookEnabled ? data.webhookSecret : null;
+	if (data.gitModel !== undefined) updateData.gitModel = data.gitModel;
 	if (data.autoUpdate !== undefined) updateData.autoUpdate = data.autoUpdate;
 	if (data.autoUpdateSchedule !== undefined) updateData.autoUpdateSchedule = data.autoUpdateSchedule;
 	if (data.autoUpdateCron !== undefined) updateData.autoUpdateCron = data.autoUpdateCron;
@@ -2888,14 +2992,18 @@ export async function renameGitStack(id: number, newName: string): Promise<boole
 // =============================================================================
 
 /**
- * Returns all repositories with autoUpdate=true (used by scheduler at startup).
+ * Returns all repositories with autoUpdate=true that have at least one
+ * centralized-model stack (used by the scheduler at startup). Repos whose stacks
+ * are all stack-model keep per-stack sync and must not register a repo-level
+ * sync. The membership filter is the pure filterReposWithCentralizedMember.
  */
 export async function getEnabledAutoUpdateRepositories(): Promise<GitRepositoryData[]> {
 	const results = await db
 		.select()
 		.from(gitRepositories)
 		.where(eq(gitRepositories.autoUpdate, true));
-	return results as GitRepositoryData[];
+	const stacks = await getGitStacks();
+	return filterReposWithCentralizedMember(results as GitRepositoryData[], stacks);
 }
 
 /**
@@ -2936,6 +3044,7 @@ export async function getFullGitStacksByRepositoryId(repositoryId: number): Prom
 		forceRedeploy: gitStacks.forceRedeploy,
 		webhookEnabled: gitStacks.webhookEnabled,
 		webhookSecret: gitStacks.webhookSecret,
+		gitModel: gitStacks.gitModel,
 		lastSync: gitStacks.lastSync,
 		lastCommit: gitStacks.lastCommit,
 		syncStatus: gitStacks.syncStatus,
@@ -2968,6 +3077,7 @@ export async function getFullGitStacksByRepositoryId(repositoryId: number): Prom
 		forceRedeploy: row.forceRedeploy ?? false,
 		webhookEnabled: row.webhookEnabled ?? false,
 		webhookSecret: row.webhookSecret ?? null,
+		gitModel: row.gitModel ?? 'stack',
 		lastSync: row.lastSync,
 		lastCommit: row.lastCommit,
 		syncStatus: row.syncStatus,
@@ -3570,7 +3680,7 @@ export async function deleteOldScans(keepDays = 30): Promise<number> {
 export type AuditAction =
 	| 'create' | 'update' | 'delete' | 'start' | 'stop' | 'restart' | 'down'
 	| 'pause' | 'unpause' | 'pull' | 'push' | 'prune' | 'login'
-	| 'logout' | 'view' | 'exec' | 'connect' | 'disconnect' | 'deploy' | 'sync' | 'rename' | 'webhook'
+	| 'logout' | 'view' | 'exec' | 'connect' | 'disconnect' | 'deploy' | 'sync' | 'rename' | 'webhook' | 'migrate'
 	| 'backup' | 'restore' | 'verify';
 
 export type AuditEntityType =
@@ -4970,6 +5080,12 @@ export interface EnvUpdateCheckSettings {
 	cron: string;
 	autoUpdate: boolean;
 	vulnerabilityCriteria: VulnerabilityCriteria;
+	// Semver (newer-version-tag) detection — optional so pre-existing rows (which
+	// never had these) parse as "off" without any migration.
+	checkPinnedVersions?: boolean;
+	semverMaxBump?: 'patch' | 'minor' | 'major';
+	semverMatchFlavor?: boolean;
+	semverIncludePrerelease?: boolean;
 }
 
 export async function getEnvUpdateCheckSettings(envId: number): Promise<EnvUpdateCheckSettings | null> {
@@ -5546,8 +5662,15 @@ export async function addPendingContainerUpdate(
 	environmentId: number,
 	containerId: string,
 	containerName: string,
-	currentImage: string
+	currentImage: string,
+	// A row can exist for a digest update, a newer-version-tag (semver) suggestion,
+	// or both. Both flags default to the classic "digest update only" shape so
+	// existing callers keep working unchanged.
+	options: { hasImageUpdate?: boolean; newerVersion?: unknown | null } = {}
 ): Promise<void> {
+	const hasImageUpdate = options.hasImageUpdate ?? true;
+	const newerVersion = options.newerVersion != null ? JSON.stringify(options.newerVersion) : null;
+	const now = new Date().toISOString();
 	// Use insert with onConflictDoUpdate for upsert behavior
 	await db.insert(pendingContainerUpdates)
 		.values({
@@ -5555,14 +5678,18 @@ export async function addPendingContainerUpdate(
 			containerId,
 			containerName,
 			currentImage,
-			checkedAt: new Date().toISOString()
+			hasImageUpdate,
+			newerVersion,
+			checkedAt: now
 		})
 		.onConflictDoUpdate({
 			target: [pendingContainerUpdates.environmentId, pendingContainerUpdates.containerId],
 			set: {
 				containerName,
 				currentImage,
-				checkedAt: new Date().toISOString()
+				hasImageUpdate,
+				newerVersion,
+				checkedAt: now
 			}
 		});
 }

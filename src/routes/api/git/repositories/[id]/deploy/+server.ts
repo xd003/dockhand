@@ -2,10 +2,20 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getGitRepository } from '$lib/server/db';
 import { deployFromRepositoryWithFanOut } from '$lib/server/git';
-import { assertNotTransitioning } from '$lib/server/git-transition-guard';
+import { assertNotMigrating } from '$lib/server/git-migration-guard';
 import { auditGitRepository } from '$lib/server/audit';
 import { authorize } from '$lib/server/authorize';
 
+/**
+ * @openapi
+ * summary: Deploy the compose stack(s) defined in a git repository (clones/pulls, then runs docker compose)
+ * path: id:integer! Git repository ID (from GET /api/git/repositories)
+ * resp-200: {success:boolean!, error:string}
+ * resp-200-example: {"success":true}
+ * resp-400: The id path segment is not a valid integer
+ * resp-404: No repository exists with that ID
+ * resp-500: The deployment failed
+ */
 export const POST: RequestHandler = async (event) => {
 	const { params, cookies } = event;
 	const auth = await authorize(cookies);
@@ -14,14 +24,14 @@ export const POST: RequestHandler = async (event) => {
 	}
 
 	try {
-		// Refuse to start a fan-out while a git mode transition is running (F9)
-		const locked = await assertNotTransitioning();
-		if (locked) return locked;
-
 		const id = parseInt(params.id);
 		if (isNaN(id)) {
 			return json({ error: 'Invalid repository ID' }, { status: 400 });
 		}
+
+		// Block only while THIS repository is being provisioned by a migration.
+		const locked = await assertNotMigrating([], [id]);
+		if (locked) return locked;
 
 		const repository = await getGitRepository(id);
 		if (!repository) {

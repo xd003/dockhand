@@ -22,7 +22,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { createHash } from 'node:crypto';
 import { building } from '$app/environment';
 
@@ -639,9 +639,21 @@ async function initializeDatabase() {
 
 		// Run migrations
 		const migrationsFolder = './drizzle-pg';
+		const preRunPending = (await getMigrationState(rawClient, true, migrationsFolder)).pendingMigrations;
 		const result = await runMigrations(db, rawClient, true, migrationsFolder);
 		if (!result.success && result.error) {
 			handleMigrationFailure(result.error, true);
+		}
+		// Backfill when 0012 just applied, or retry when it was already applied but
+		// a previous backfill never completed (sentinel absent).
+		if (preRunPending.includes('0012_centralized_git') && result.applied > 0) {
+			// 0012 (re)applied this boot: the column default 'stack' backfilled any
+			// pre-existing rows, so re-run even if a sentinel from a previous install
+			// survived a downgrade.
+			await db.delete(schema.settings).where(eq(schema.settings.key, 'git_stack_model_backfilled'));
+			await backfillGitStackModel();
+		} else if (result.applied === 0 && !preRunPending.includes('0012_centralized_git')) {
+			await backfillGitStackModel();
 		}
 	} else {
 		// SQLite via better-sqlite3
@@ -681,13 +693,71 @@ async function initializeDatabase() {
 
 		// Run migrations
 		const migrationsFolder = './drizzle';
+		const preRunPending = (await getMigrationState(rawClient, false, migrationsFolder)).pendingMigrations;
 		const result = await runMigrations(db, rawClient, false, migrationsFolder);
 		if (!result.success && result.error) {
 			handleMigrationFailure(result.error, false);
 		}
+		// Backfill when 0012 just applied, or retry when it was already applied but
+		// a previous backfill never completed (sentinel absent).
+		if (preRunPending.includes('0012_centralized_git') && result.applied > 0) {
+			// 0012 (re)applied this boot: the column default 'stack' backfilled any
+			// pre-existing rows, so re-run even if a sentinel from a previous install
+			// survived a downgrade.
+			await db.delete(schema.settings).where(eq(schema.settings.key, 'git_stack_model_backfilled'));
+			await backfillGitStackModel();
+		} else if (result.applied === 0 && !preRunPending.includes('0012_centralized_git')) {
+			await backfillGitStackModel();
+		}
 	}
 
 	initialized = true;
+}
+
+/**
+ * One-time backfill of git_stacks.git_model from the effective
+ * git_repository_mode setting.
+ *
+ * Runs exactly-once per successful backfill: the git_stack_model_backfilled
+ * sentinel setting is written only on success, so a FAILED backfill is retried
+ * on the next boot (otherwise an already-centralized install would stay on the
+ * 'stack' column default forever). The sentinel also guarantees the backfill
+ * never re-runs over later per-stack migrate results. settings.value is
+ * JSON-encoded by setSetting(), so parse it; missing/invalid falls back to
+ * 'stack'. The raw table access avoids a circular import of db.ts's
+ * getSetting().
+ */
+async function backfillGitStackModel(): Promise<void> {
+	try {
+		const sentinel = await db
+			.select({ key: schema.settings.key })
+			.from(schema.settings)
+			.where(eq(schema.settings.key, 'git_stack_model_backfilled'));
+		if (sentinel[0]) return;
+
+		const rows = await db
+			.select({ value: schema.settings.value })
+			.from(schema.settings)
+			.where(eq(schema.settings.key, 'git_repository_mode'));
+		let mode = 'stack';
+		if (rows[0]?.value != null) {
+			try {
+				const parsed: unknown = JSON.parse(rows[0].value);
+				if (parsed === 'stack' || parsed === 'centralized') mode = parsed;
+			} catch {
+				const raw = rows[0].value;
+				if (raw === 'stack' || raw === 'centralized') mode = raw;
+			}
+		}
+		const result = await db
+			.update(schema.gitStacks)
+			.set({ gitModel: mode })
+			.where(sql`1 = 1`);
+		await db.insert(schema.settings).values({ key: 'git_stack_model_backfilled', value: JSON.stringify('done') });
+		logStep(`Backfilled git_stacks.git_model to "${mode}" (${result.changes ?? result.rowCount ?? 0} row(s))`);
+	} catch (error) {
+		logWarning(`git_stacks.git_model backfill failed (will retry next boot): ${error instanceof Error ? error.message : String(error)}`);
+	}
 }
 
 // =============================================================================
@@ -923,6 +993,7 @@ export const hawserTokens = schemaProxy.hawserTokens;
 export const registries = schemaProxy.registries;
 export const settings = schemaProxy.settings;
 export const gitModeTransition = schemaProxy.gitModeTransition;
+export const gitStackMigration = schemaProxy.gitStackMigration;
 export const stackEvents = schemaProxy.stackEvents;
 export const hostMetrics = schemaProxy.hostMetrics;
 export const configSets = schemaProxy.configSets;
@@ -964,6 +1035,8 @@ export type {
 	NewSetting,
 	GitModeTransition,
 	NewGitModeTransition,
+	GitStackMigration,
+	NewGitStackMigration,
 	User,
 	NewUser,
 	Session,

@@ -59,10 +59,17 @@ const STACK_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
  * deploy. Mirrors the centralized engine's coalesce-slot count (F15).
  */
 let activeStackDeploys = 0;
+/** Stack ids with a stack-engine deploy in flight (per-selected-stack drain). */
+const activeStackDeployIds = new Set<number>();
 
-/** Number of stack-mode deploys currently in flight. Used by the transition drain. */
+/** Number of stack-mode deploys currently in flight. Used by the migration drain. */
 export function getActiveStackDeployCount(): number {
 	return activeStackDeploys;
+}
+
+/** Stack ids with a stack-engine deploy in flight (per-stack migration drain). */
+export function getActiveStackDeployIds(): number[] {
+	return [...activeStackDeployIds];
 }
 
 /**
@@ -309,7 +316,7 @@ export async function syncGitStack(stackId: number, _onProgress?: ProgressCallba
 			syncError: null
 		});
 
-		cleanupSshKey(credential);
+		cleanupSshKey(credential, env);
 
 		console.log(`${logPrefix} ----------------------------------------`);
 		console.log(`${logPrefix} SYNC GIT STACK COMPLETE`);
@@ -336,7 +343,7 @@ export async function syncGitStack(stackId: number, _onProgress?: ProgressCallba
 			previousManifest: deletionData.previousManifest
 		};
 	} catch (error: any) {
-		cleanupSshKey(credential);
+		cleanupSshKey(credential, env);
 		await updateGitStack(stackId, {
 			syncStatus: 'error',
 			syncError: error.message
@@ -351,10 +358,12 @@ export async function deployGitStack(
 	options?: { force?: boolean; ignoreForceRedeploy?: boolean }
 ): Promise<DeployGitStackResult> {
 	activeStackDeploys++;
+	activeStackDeployIds.add(stackId);
 	try {
 		return await deployGitStackCore(stackId, options);
 	} finally {
 		activeStackDeploys--;
+		activeStackDeployIds.delete(stackId);
 	}
 }
 
@@ -521,10 +530,12 @@ export async function deployGitStackWithProgress(
 	onProgress: ProgressCallback
 ): Promise<DeployGitStackResult> {
 	activeStackDeploys++;
+	activeStackDeployIds.add(stackId);
 	try {
 		return await deployGitStackWithProgressCore(stackId, onProgress);
 	} finally {
 		activeStackDeploys--;
+		activeStackDeployIds.delete(stackId);
 	}
 }
 
@@ -684,7 +695,7 @@ async function deployGitStackWithProgressCore(
 			syncError: null
 		});
 
-		cleanupSshKey(credential);
+		cleanupSshKey(credential, env);
 
 		// Show the git file changes BEFORE the deploy starts, so the user sees
 		// what changed while the deploy runs and the deploy start/result lines
@@ -788,7 +799,7 @@ async function deployGitStackWithProgressCore(
 		await notifyGitSync(gitStack.stackName, gitStack.environmentId, result);
 		return result;
 	} catch (error: any) {
-		cleanupSshKey(credential);
+		cleanupSshKey(credential, env);
 		await updateGitStack(stackId, {
 			syncStatus: 'error',
 			syncError: error.message

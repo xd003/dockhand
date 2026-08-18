@@ -96,6 +96,24 @@ export const gitModeTransition = sqliteTable('git_mode_transition', {
 });
 
 // =============================================================================
+// GIT STACK MIGRATION TABLE (per-stack, single-row state machine)
+// =============================================================================
+// Persists the per-stack migrate-to-centralized job (git-stack-migrate.ts).
+// Only one row is ever written; state drives a narrow 409 lock-out scoped to
+// the migrating stack ids / repos being provisioned (not the whole Git API).
+export const gitStackMigration = sqliteTable('git_stack_migration', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	state: text('state').notNull().default('idle'), // idle | draining | provisioning | cutting_over
+	jobId: text('job_id'),
+	stackIds: text('stack_ids'), // JSON array of migrating stack ids
+	snapshot: text('snapshot'), // JSON BackfillSnapshot scoped to this job
+	error: text('error'),
+	startedAt: text('started_at'),
+	finishedAt: text('finished_at'),
+	updatedAt: text('updated_at').default(sql`CURRENT_TIMESTAMP`)
+});
+
+// =============================================================================
 // EVENT TRACKING TABLES
 // =============================================================================
 
@@ -347,6 +365,7 @@ export const gitStacks = sqliteTable('git_stacks', {
 	autoUpdateCron: text('auto_update_cron').default('0 3 * * *'),
 	webhookEnabled: integer('webhook_enabled', { mode: 'boolean' }).default(false),
 	webhookSecret: text('webhook_secret'),
+	gitModel: text('git_model').notNull().default('stack'), // 'stack' | 'centralized' — per-stack engine selection
 	contextDir: text('context_dir'), // Working directory relative to repo root (null = compose file's directory)
 	buildOnDeploy: integer('build_on_deploy', { mode: 'boolean' }).default(false),
 	noBuildCache: integer('no_build_cache', { mode: 'boolean' }).default(false),
@@ -501,6 +520,12 @@ export const pendingContainerUpdates = sqliteTable('pending_container_updates', 
 	containerId: text('container_id').notNull(),
 	containerName: text('container_name').notNull(),
 	currentImage: text('current_image').notNull(),
+	// True when a digest image update is pending (the classic amber icon). Defaults
+	// true so pre-existing rows keep behaving exactly as before.
+	hasImageUpdate: integer('has_image_update', { mode: 'boolean' }).notNull().default(true),
+	// A newer VERSION tag (semver) for a pinned image, as JSON {tag,bump,skipped}.
+	// Null when there's no semver suggestion. Advisory - never auto-applied.
+	newerVersion: text('newer_version'),
 	checkedAt: text('checked_at').default(sql`CURRENT_TIMESTAMP`),
 	createdAt: text('created_at').default(sql`CURRENT_TIMESTAMP`)
 }, (table) => ({
@@ -617,6 +642,9 @@ export type NewSetting = typeof settings.$inferInsert;
 
 export type GitModeTransition = typeof gitModeTransition.$inferSelect;
 export type NewGitModeTransition = typeof gitModeTransition.$inferInsert;
+
+export type GitStackMigration = typeof gitStackMigration.$inferSelect;
+export type NewGitStackMigration = typeof gitStackMigration.$inferInsert;
 
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;

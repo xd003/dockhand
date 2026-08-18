@@ -39,8 +39,6 @@ import {
 	getBackupDestination
 } from '../db';
 import { db, gitStacks, eq } from '../db/drizzle.js';
-import { getGitMode } from '../git-mode';
-import { getGitModeTransition } from '../db';
 import {
 	cleanupStaleVolumeHelpers,
 	cleanupExpiredVolumeHelpers
@@ -295,39 +293,44 @@ export async function refreshAllSchedules(): Promise<void> {
 		console.error('[Scheduler] Error loading container schedules:', errorMsg);
 	}
 
-	// Register git sync schedules — per-stack in stack mode, per-repository in
-	// centralized mode. Only the effective mode's family is registered (F1).
+	// Register git sync schedules — BOTH families live in mixed mode:
+	//  - git_stack_sync for stack-model stacks with autoUpdate (the helper is
+	//    filtered to git_model='stack').
+	//  - git_repository_sync for repositories that have at least one
+	//    centralized-model stack AND repo autoUpdate (the helper is filtered to
+	//    repos with a centralized member).
 	let gitRepoCount = 0;
 	try {
-		const mode = await getGitMode();
-		if (mode === 'centralized') {
-			const gitRepos = await getEnabledAutoUpdateRepositories();
-			for (const repo of gitRepos) {
-				if (repo.autoUpdateCron) {
-					const registered = await registerSchedule(
-						repo.id,
-						'git_repository_sync',
-						null
-					);
-					if (registered) gitRepoCount++;
-				}
-			}
-		} else {
-			const gitStacks = await getEnabledAutoUpdateGitStacks();
-			for (const stack of gitStacks) {
-				if (stack.autoUpdateCron) {
-					const registered = await registerSchedule(
-						stack.id,
-						'git_stack_sync',
-						stack.environmentId
-					);
-					if (registered) gitRepoCount++;
-				}
+		const gitRepos = await getEnabledAutoUpdateRepositories();
+		for (const repo of gitRepos) {
+			if (repo.autoUpdateCron) {
+				const registered = await registerSchedule(
+					repo.id,
+					'git_repository_sync',
+					null
+				);
+				if (registered) gitRepoCount++;
 			}
 		}
 	} catch (error) {
 		const errorMsg = error instanceof Error ? error.message : String(error);
-		console.error('[Scheduler] Error loading git schedules:', errorMsg);
+		console.error('[Scheduler] Error loading git repository schedules:', errorMsg);
+	}
+	try {
+		const gitStacks = await getEnabledAutoUpdateGitStacks();
+		for (const stack of gitStacks) {
+			if (stack.autoUpdateCron) {
+				const registered = await registerSchedule(
+					stack.id,
+					'git_stack_sync',
+					stack.environmentId
+				);
+				if (registered) gitRepoCount++;
+			}
+		}
+	} catch (error) {
+		const errorMsg = error instanceof Error ? error.message : String(error);
+		console.error('[Scheduler] Error loading git stack schedules:', errorMsg);
 	}
 
 	// Register environment update check schedules
@@ -520,14 +523,10 @@ export async function registerSchedule(
 			} else if (type === 'git_repository_sync') {
 				const repo = await getGitRepository(scheduleId);
 				if (!repo || !repo.autoUpdate) return;
-				// Never start a sync while a mode transition is running (the 409
-				// HTTP guard can't cover cron ticks — see git-transition.ts).
-				if (await gitTransitionActive()) return;
 				await runGitRepositorySync(scheduleId, repo.name, 'cron');
 			} else if (type === 'git_stack_sync') {
 				const stack = await getGitStack(scheduleId);
 				if (!stack || !stack.autoUpdate) return;
-				if (await gitTransitionActive()) return;
 				await runGitStackSync(scheduleId, stack.stackName, stack.environmentId, 'cron');
 			} else if (type === 'env_update_check') {
 				const config = await getEnvUpdateCheckSettings(scheduleId);
@@ -605,26 +604,6 @@ export function getActiveScheduleKeys(): string[] {
 	return Array.from(activeJobs.keys());
 }
 
-/** True while a git repository mode transition is running (cron tick guard). */
-export async function gitTransitionActive(): Promise<boolean> {
-	try {
-		const transition = await getGitModeTransition();
-		return transition !== null && transition.state !== 'idle';
-	} catch {
-		// Fail closed: a DB error during a transition must never let cron ticks
-		// race the state machine (M14).
-		return true;
-	}
-}
-
-/** Error object returned by git trigger functions when a transition is running. */
-async function transitionRejected(): Promise<{ success: boolean; error?: string } | null> {
-	if (await gitTransitionActive()) {
-		return { success: false, error: 'Git repository mode transition in progress' };
-	}
-	return null;
-}
-
 /**
  * Refresh all schedules for a specific environment.
  * Called when an environment's timezone changes to re-register jobs with the new timezone.
@@ -652,19 +631,19 @@ export async function refreshSchedulesForEnvironment(environmentId: number): Pro
 		console.error('[Scheduler] Error refreshing container schedules:', errorMsg);
 	}
 
-	// Re-register git stack auto-sync schedules for this environment (stack mode only)
+	// Re-register git stack auto-sync schedules for this environment. The helper
+	// is filtered to stack-model stacks, so this is independent of the global
+	// default (mixed installs keep per-stack sync for un-migrated stacks).
 	try {
-		if (await getGitMode() === 'stack') {
-			const stacks = await getEnabledAutoUpdateGitStacks();
-			for (const stack of stacks) {
-				if (stack.environmentId === environmentId && stack.autoUpdateCron) {
-					const registered = await registerSchedule(
-						stack.id,
-						'git_stack_sync',
-						stack.environmentId
-					);
-					if (registered) refreshedCount++;
-				}
+		const stacks = await getEnabledAutoUpdateGitStacks();
+		for (const stack of stacks) {
+			if (stack.environmentId === environmentId && stack.autoUpdateCron) {
+				const registered = await registerSchedule(
+					stack.id,
+					'git_stack_sync',
+					stack.environmentId
+				);
+				if (registered) refreshedCount++;
 			}
 		}
 	} catch (error) {
@@ -822,8 +801,6 @@ export async function triggerContainerUpdate(settingId: number): Promise<{ succe
  */
 export async function triggerGitStackSync(stackId: number): Promise<{ success: boolean; executionId?: number; error?: string }> {
 	try {
-		const rejected = await transitionRejected();
-		if (rejected) return rejected;
 		const stack = await getGitStack(stackId);
 		if (!stack) {
 			return { success: false, error: 'Git stack not found' };
@@ -847,8 +824,6 @@ export async function triggerGitStackSync(stackId: number): Promise<{ success: b
  */
 export async function triggerGitStackSyncFromWebhook(stackId: number): Promise<{ success: boolean; executionId?: number; error?: string }> {
 	try {
-		const rejected = await transitionRejected();
-		if (rejected) return rejected;
 		const stack = await getGitStack(stackId);
 		if (!stack) {
 			return { success: false, error: 'Git stack not found' };
@@ -870,8 +845,6 @@ export async function triggerGitStackSyncFromWebhook(stackId: number): Promise<{
  */
 export async function triggerGitRepositorySync(repositoryId: number): Promise<{ success: boolean; executionId?: number; error?: string }> {
 	try {
-		const rejected = await transitionRejected();
-		if (rejected) return rejected;
 		const repo = await getGitRepository(repositoryId);
 		if (!repo) {
 			return { success: false, error: 'Git repository not found' };
@@ -893,8 +866,6 @@ export async function triggerGitRepositorySync(repositoryId: number): Promise<{ 
  */
 export async function triggerGitRepositorySyncFromWebhook(repositoryId: number): Promise<{ success: boolean; executionId?: number; error?: string }> {
 	try {
-		const rejected = await transitionRejected();
-		if (rejected) return rejected;
 		const repo = await getGitRepository(repositoryId);
 		if (!repo) {
 			return { success: false, error: 'Git repository not found' };

@@ -8,7 +8,7 @@
 	import { TogglePill, ToggleSwitch } from '$lib/components/ui/toggle-pill';
 	import CronEditor from '$lib/components/cron-editor.svelte';
 	import TimezoneSelector from '$lib/components/TimezoneSelector.svelte';
-	import { Eye, Bell, Database, Calendar, ShieldCheck, FileText, AlertTriangle, HelpCircle, Globe, Activity, Clock, Info, Save, RotateCcw, LayoutDashboard, Tags, Archive, ChevronRight, ChevronDown, Compass, GitFork, Loader2 } from 'lucide-svelte';
+	import { Eye, Bell, Database, Calendar, ShieldCheck, FileText, AlertTriangle, HelpCircle, Globe, Activity, Clock, Info, Save, RotateCcw, LayoutDashboard, Tags, Archive, ChevronRight, ChevronDown, Compass, GitFork } from 'lucide-svelte';
 	import CodeEditor from '$lib/components/CodeEditor.svelte';
 	import { appSettings, type DateFormat, type DownloadFormat, type EventCollectionMode, type LabelFilterMode } from '$lib/stores/settings';
 	import { canAccess, authStore } from '$lib/stores/auth';
@@ -16,6 +16,7 @@
 	import ThemeSelector from '$lib/components/ThemeSelector.svelte';
 	import NavigationSelector from '$lib/components/NavigationSelector.svelte';
 	import AnimateIconsToggle from '$lib/components/AnimateIconsToggle.svelte';
+	import IndentGuidesToggle from '$lib/components/IndentGuidesToggle.svelte';
 	import ColoredActionsToggle from '$lib/components/ColoredActionsToggle.svelte';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 
@@ -31,32 +32,21 @@
 	let showWhatsNew = $derived($appSettings.showWhatsNew);
 	let timeFormat = $derived($appSettings.timeFormat);
 	let gitModeDesired = $derived($appSettings.gitRepositoryDesiredMode);
-	let gitModeEffective = $derived($appSettings.gitRepositoryMode);
 	let gitModeForcedByEnv = $derived($appSettings.gitRepositoryModeForcedByEnv);
-	let gitModeTransition = $derived($appSettings.gitModeTransition);
-	let gitModeTransitionActive = $derived(gitModeTransition.state !== 'idle');
-	let pendingGitMode: 'stack' | 'centralized' | null = $state(null);
 	let gitModeSaving = $state(false);
 
-	const gitModeLabel: Record<'stack' | 'centralized', string> = {
-		stack: 'Stack (per-stack)',
-		centralized: 'Centralized (shared clone)'
-	};
-
-	async function confirmGitModeChange(): Promise<void> {
-		if (!pendingGitMode) return;
+	// The global setting is a DEFAULT for NEW Git stacks — no fleet cutover, no
+	// destructive confirm. Existing stacks keep their model until migrated.
+	async function saveGitRepositoryDefault(mode: 'stack' | 'centralized'): Promise<void> {
 		gitModeSaving = true;
-		const res = await appSettings.saveGitRepositoryMode(pendingGitMode);
+		const res = await appSettings.saveGitRepositoryMode(mode);
 		gitModeSaving = false;
 		if (res.ok) {
-			toast.success(`Git repository model set to ${gitModeLabel[pendingGitMode]}`);
-			pendingGitMode = null;
+			toast.success(`Default for new Git stacks set to ${mode === 'centralized' ? 'centralized (shared clone)' : 'per-stack clones'}`);
 		} else if (res.status === 409) {
-			toast.error('A git repository mode transition is already in progress');
-			pendingGitMode = null;
+			toast.error('A git migration is already in progress');
 		} else {
-			toast.error(res.error || 'Failed to change git repository model');
-			pendingGitMode = null;
+			toast.error(res.error || 'Failed to change Git stack default');
 		}
 	}
 	let dateFormat = $derived($appSettings.dateFormat);
@@ -540,6 +530,7 @@ services:
 							<ThemeSelector />
 							<ColoredActionsToggle />
 							<AnimateIconsToggle />
+							<IndentGuidesToggle />
 							{#if $authStore.authEnabled}
 								<div class="text-xs text-muted-foreground flex items-start gap-1.5 mt-2 p-2 bg-muted/50 rounded-md">
 									<HelpCircle class="w-3.5 h-3.5 shrink-0 mt-0.5" />
@@ -738,79 +729,35 @@ services:
 						<GitFork class="w-4 h-4" />
 						Git repositories
 					</Card.Title>
-					<p class="text-xs text-muted-foreground">How git repositories are cloned, synced, scheduled and webhooked.</p>
+					<p class="text-xs text-muted-foreground">Choose the Git model used for NEW stacks. Existing stacks keep their current model until you migrate them individually.</p>
 				</Card.Header>
 				<Card.Content class="space-y-3">
 					<div class="space-y-1">
 						<div class="flex items-center gap-3">
-							<Label>Repository model</Label>
-							<Select.Root
-								type="single"
+							<Label>Centralized Git mode</Label>
+							<ToggleSwitch
 								value={gitModeDesired}
-								onValueChange={(value) => {
+								leftValue="stack"
+								rightValue="centralized"
+								leftLabel="Per-stack clone"
+								rightLabel="Centralized (shared clone)"
+								onchange={(value) => {
 									if (value === 'stack' || value === 'centralized') {
-										pendingGitMode = value;
+										saveGitRepositoryDefault(value);
 									}
 								}}
-								disabled={!$canAccess('settings', 'edit') || gitModeForcedByEnv || gitModeTransitionActive || gitModeSaving}
-							>
-								<Select.Trigger class="w-[220px]">
-									<span>{gitModeLabel[gitModeDesired]}</span>
-								</Select.Trigger>
-								<Select.Content>
-									<Select.Item value="stack">
-										<div class="flex flex-col">
-											<span>Stack (per-stack)</span>
-											<span class="text-xs text-muted-foreground">Each stack clones its own repository; syncs and webhooks are per stack.</span>
-										</div>
-									</Select.Item>
-									<Select.Item value="centralized">
-										<div class="flex flex-col">
-											<span>Centralized (shared clone)</span>
-											<span class="text-xs text-muted-foreground">One clone per repository; syncs and webhooks are per repository.</span>
-										</div>
-									</Select.Item>
-								</Select.Content>
-							</Select.Root>
+								disabled={!$canAccess('settings', 'edit') || gitModeForcedByEnv || gitModeSaving}
+							/>
 						</div>
-						{#if gitModeEffective !== gitModeDesired && !gitModeTransitionActive}
-							<p class="text-xs text-amber-600">
-								Desired: {gitModeLabel[gitModeDesired]} — currently running {gitModeLabel[gitModeEffective]}. Switching mode is applied as a migration and takes a moment.
-							</p>
-						{:else}
-							<p class="text-xs text-muted-foreground">
-								Effective model: {gitModeLabel[gitModeEffective]}. Switching affects all git stacks on this instance and re-points webhooks — confirm carefully.
-							</p>
-						{/if}
+						<p class="text-xs text-muted-foreground">
+							New Git stacks will use a shared repository clone (centralized) or per-stack clones (stack). Existing stacks are unchanged until you migrate them, use the migrate action on a stack or the Git settings page.
+						</p>
 						{#if gitModeForcedByEnv}
 							<p class="text-xs text-amber-600">
-								This option is locked because the <code class="bg-muted px-1 rounded">DOCKHAND_GIT_CENTRALIZED_MODE</code> environment variable is set.
-								To control the repository model from the UI, remove the <code class="bg-muted px-1 rounded">DOCKHAND_GIT_CENTRALIZED_MODE</code> variable and restart.
-							</p>
-						{/if}
-						{#if gitModeTransitionActive}
-							<p class="text-xs text-blue-600 flex items-center gap-1.5">
-								<Loader2 class="w-3.5 h-3.5 animate-spin" />
-								Mode transition in progress ({gitModeTransition.state}) — git operations are temporarily locked.
+								This option is locked because the <code class="bg-muted px-1 rounded">DOCKHAND_GIT_CENTRALIZED_MODE</code> environment variable is set. It only sets the DEFAULT for new Git stacks — it does not migrate existing stacks (migrate them individually). To control the default from the UI, remove the <code class="bg-muted px-1 rounded">DOCKHAND_GIT_CENTRALIZED_MODE</code> variable and restart.
 							</p>
 						{/if}
 					</div>
-					{#if pendingGitMode && pendingGitMode !== gitModeDesired}
-						<div class="flex flex-col gap-2 rounded-md border border-amber-300/60 dark:border-amber-700/60 bg-amber-50 dark:bg-amber-950/30 p-3">
-							<p class="text-xs text-amber-700 dark:text-amber-400">
-								Switch the repository model to <strong>{gitModeLabel[pendingGitMode]}</strong>? This is a destructive topology change: git stacks will be re-cloned, and external webhook URLs may change.
-							</p>
-							<div class="flex gap-2">
-								<Button size="sm" variant="destructive" onclick={confirmGitModeChange} disabled={gitModeSaving}>
-									{#if gitModeSaving}<Loader2 class="w-3.5 h-3.5 animate-spin" />{/if}
-									Confirm switch
-								</Button>
-								<Button size="sm" variant="ghost" onclick={() => (pendingGitMode = null)} disabled={gitModeSaving}>
-									Cancel
-								</Button>
-							</div>
-						</div>
-					{/if}
 				</Card.Content>
 			</Card.Root>
 

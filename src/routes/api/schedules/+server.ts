@@ -11,6 +11,12 @@ import { buildSchedulesList, type ScheduleInfo } from '$lib/server/schedules-lis
 
 export type { ScheduleInfo };
 
+/**
+ * @openapi
+ * summary: List all schedules (container/env auto-updates, git syncs, image-prune, backups, repo maintenance, system jobs)
+ * resp-200: {schedules:array<{id:integer!, type:string!, name:string!, entityName:string!, environmentId:integer, enabled:boolean!, cronExpression:string, nextRun:string, isSystem:boolean!}>!}
+ * resp-500: Unexpected error while assembling the schedule list
+ */
 export const GET: RequestHandler = async ({ cookies }) => {
 	const auth = await authorize(cookies);
 

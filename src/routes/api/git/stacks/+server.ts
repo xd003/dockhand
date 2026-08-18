@@ -11,8 +11,9 @@ import {
 	getStackSource
 } from '$lib/server/db';
 import { deployGitStack } from '$lib/server/git';
-import { getGitMode } from '$lib/server/git-mode';
-import { assertNotTransitioning } from '$lib/server/git-transition-guard';
+import { getDesiredGitMode } from '$lib/server/git-mode';
+import { createStackModel } from '$lib/utils/git-model-routing';
+import { assertNotMigrating } from '$lib/server/git-migration-guard';
 import { authorize } from '$lib/server/authorize';
 import { auditGitStack } from '$lib/server/audit';
 import { createJobResponse } from '$lib/server/sse';
@@ -23,6 +24,13 @@ import { WEBHOOK_SECRET_REQUIRED_ERROR } from '$lib/utils/webhook-secret';
 // letter or number, and contain only lowercase letters, numbers, hyphens, underscores
 const STACK_NAME_REGEX = /^[a-z0-9][a-z0-9_-]*$/;
 
+/**
+ * @openapi
+ * summary: List git-deployed stacks (optionally scoped to one environment)
+ * query: env:integer Filter to a single environment id
+ * resp-403: Permission denied (needs stacks:view)
+ * resp-500: Failed to list git stacks
+ */
 export const GET: RequestHandler = async ({ url, cookies }) => {
 	const auth = await authorize(cookies);
 
@@ -44,6 +52,15 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 	}
 };
 
+/**
+ * @openapi
+ * summary: Create a git-deployed stack (from an existing repo or new repo url/branch)
+ * body: {stackName:string!, environmentId:integer, repositoryId:integer, secretProviderId:integer, webhookEnabled:boolean, webhookSecret:string}
+ * resp-400: Invalid stack name, or secretProviderId is not a number/null
+ * resp-403: Permission denied (needs stacks:create; binding a secret provider also needs secrets:view)
+ * resp-409: A git stack with this name already exists in the environment
+ * resp-500: Failed to create the git stack
+ */
 export const POST: RequestHandler = async (event) => {
 	const { request, cookies } = event;
 	const auth = await authorize(cookies);
@@ -51,8 +68,9 @@ export const POST: RequestHandler = async (event) => {
 	try {
 		const data = await request.json();
 
-		// Refuse writes while a git mode transition is running (F9)
-		const locked = await assertNotTransitioning();
+		// Block only when the target repository is being provisioned by a migration.
+		// New stacks themselves are never in an active job's scope (narrow lock).
+		const locked = await assertNotMigrating([], typeof data?.repositoryId === 'number' ? [data.repositoryId] : []);
 		if (locked) return locked;
 
 		// Permission check with environment context
@@ -60,7 +78,9 @@ export const POST: RequestHandler = async (event) => {
 			return json({ error: 'Permission denied' }, { status: 403 });
 		}
 
-		const mode = await getGitMode();
+		// New stacks inherit the GLOBAL DEFAULT (env lock wins). Any model sent by
+		// the client is ignored — there is no per-stack chooser (createStackModel).
+		const model = createStackModel(await getDesiredGitMode(), data.gitModel);
 
 		if (!data.stackName || typeof data.stackName !== 'string') {
 			return json({ error: 'Stack name is required' }, { status: 400 });
@@ -122,7 +142,7 @@ export const POST: RequestHandler = async (event) => {
 			// Create the repository first
 			const repoName = data.repoName || data.stackName;
 			try {
-				if (mode === 'centralized') {
+				if (model === 'centralized') {
 					const repo = await createGitRepository({
 						name: repoName,
 						url: data.url,
@@ -163,7 +183,7 @@ export const POST: RequestHandler = async (event) => {
 			}
 		}
 
-		const gitStack = await createGitStack(mode === 'centralized'
+		const gitStack = await createGitStack(model === 'centralized'
 			? {
 				stackName: trimmedStackName,
 				environmentId: data.environmentId || null,
@@ -176,6 +196,7 @@ export const POST: RequestHandler = async (event) => {
 				noBuildCache: data.noBuildCache ?? false,
 				repullImages: data.repullImages ?? false,
 				forceRedeploy: data.forceRedeploy ?? false,
+				gitModel: model,
 				webhookEnabled: data.forceRedeploy ? (data.webhookEnabled || false) : false,
 				webhookSecret: (data.forceRedeploy && data.webhookEnabled) ? (data.webhookSecret || null) : null
 			}
@@ -192,6 +213,7 @@ export const POST: RequestHandler = async (event) => {
 				noBuildCache: data.noBuildCache ?? false,
 				repullImages: data.repullImages ?? false,
 				forceRedeploy: data.forceRedeploy ?? false,
+				gitModel: model,
 				webhookEnabled: data.webhookEnabled || false,
 				webhookSecret: data.webhookEnabled ? (data.webhookSecret || null) : null,
 				autoUpdate: data.autoUpdate || false,
@@ -201,7 +223,7 @@ export const POST: RequestHandler = async (event) => {
 		);
 
 		// Stack mode: register the per-stack schedule when scheduled sync is enabled.
-		if (mode === 'stack' && gitStack.autoUpdate && gitStack.autoUpdateCron) {
+		if (model === 'stack' && gitStack.autoUpdate && gitStack.autoUpdateCron) {
 			await registerSchedule(gitStack.id, 'git_stack_sync', gitStack.environmentId);
 		}
 

@@ -58,13 +58,45 @@
 	let formWebhookEnabled = $state(false);
 	let formWebhookSecret = $state('');
 
-	// Repo-level schedule/webhook and the clone-progress modal are centralized
-	// concepts; stack mode keeps repositories as thin records (F11).
-	const isCentralizedMode = $derived($appSettings.gitRepositoryMode === 'centralized');
+	// Repo-level schedule/webhook and the clone-progress modal apply when the
+	// repo is (or is about to be) used in centralized mode:
+	//  - Editing an existing repo: repo-LEVEL fields follow MEMBERSHIP — shown
+	//    when the repo already has a centralized-model stack (server PUT gates on
+	//    repositoryHasCentralizedStack), or when a zero-stack repo is being
+	//    prepared under a centralized default (fresh repo for a new centralized
+	//    stack).
+	//  - Creating a new repo: the global DEFAULT governs.
+	let repoStacks = $state<{ repositoryId: number; gitModel: string }[]>([]);
+
+	async function loadRepoStacks() {
+		try {
+			const res = await fetch('/api/git/stacks');
+			if (res.ok) {
+				const stacks = await res.json();
+				repoStacks = (Array.isArray(stacks) ? stacks : []).map((s: any) => ({
+					repositoryId: s.repositoryId,
+					gitModel: s.gitModel === 'centralized' ? 'centralized' : 'stack'
+				}));
+			}
+		} catch {
+			// membership is best-effort; fall back to the default below
+		}
+	}
+
+	const isCentralizedMode = $derived(
+		repository
+			? (repoStacks.some((s) => s.repositoryId === repository.id && s.gitModel === 'centralized')
+				|| (repoStacks.filter((s) => s.repositoryId === repository.id).length === 0 && $appSettings.gitRepositoryDesiredMode === 'centralized'))
+			: $appSettings.gitRepositoryDesiredMode === 'centralized'
+	);
 
 	onMount(() => {
 		// F11: sync the client's git mode with the server before showing the modal.
 		appSettings.reload();
+	});
+
+	$effect(() => {
+		if (open) void loadRepoStacks();
 	});
 
 	function getWebhookUrl(repoId: number): string {

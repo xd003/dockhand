@@ -6,15 +6,23 @@ import {
 	createGitRepository,
 	getGitCredentials
 } from '$lib/server/db';
-import { syncRepositoryExclusive, findRepoNameSanitizationCollision } from '$lib/server/git';
-import { getGitMode } from '$lib/server/git-mode';
-import { assertNotTransitioning } from '$lib/server/git-transition-guard';
+import { provisionSharedClone, findRepoNameSanitizationCollision } from '$lib/server/git';
+import { getDesiredGitMode } from '$lib/server/git-mode';
+import { assertNotMigrating } from '$lib/server/git-migration-guard';
 import { createJob, completeJob, failJob } from '$lib/server/jobs';
 import { authorize } from '$lib/server/authorize';
 import { auditGitRepository } from '$lib/server/audit';
 import { registerSchedule } from '$lib/server/scheduler';
 import { WEBHOOK_SECRET_REQUIRED_ERROR } from '$lib/utils/webhook-secret';
 
+/**
+ * @openapi
+ * summary: List all git repositories (repositories are global, not scoped to an environment)
+ * resp-200: array<{id:integer!, name:string!, url:string!, branch:string!, credentialId:integer}>
+ * resp-200-example: [{"id":1,"name":"homelab","url":"https://github.com/example/homelab.git","branch":"main","credentialId":2}]
+ * resp-403: Caller lacks the git:view permission
+ * resp-500: Failed to read git repositories
+ */
 export const GET: RequestHandler = async ({ url, cookies }) => {
 	const auth = await authorize(cookies);
 	if (auth.authEnabled && !await auth.can('git', 'view')) {
@@ -32,6 +40,17 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 	}
 };
 
+/**
+ * @openapi
+ * summary: Create a git repository (branch defaults to main); deployment config lives on git stacks, not here
+ * description: credentialId from GET /api/git/credentials.
+ * body: {name:string!, url:string!, branch:string, credentialId:integer}
+ * body-example: {"name":"homelab","url":"https://github.com/example/homelab.git","branch":"main","credentialId":2}
+ * resp-200: {id:integer!, name:string!, url:string!, branch:string!, credentialId:integer}
+ * resp-400: Missing name/url, an invalid credentialId, or a duplicate repository name
+ * resp-403: Caller lacks the git:create permission
+ * resp-500: Failed to create the git repository
+ */
 export const POST: RequestHandler = async (event) => {
 	const { request, cookies } = event;
 	const auth = await authorize(cookies);
@@ -42,8 +61,9 @@ export const POST: RequestHandler = async (event) => {
 	try {
 		const data = await request.json();
 
-		// Refuse writes while a git mode transition is running (F9)
-		const locked = await assertNotTransitioning();
+		// A migration only locks the repos it is provisioning; a brand-new repo is
+		// never in scope, so no narrow-lock ids to pass (create is always allowed).
+		const locked = await assertNotMigrating();
 		if (locked) return locked;
 
 		if (!data.name || typeof data.name !== 'string') {
@@ -54,7 +74,7 @@ export const POST: RequestHandler = async (event) => {
 			return json({ error: 'Repository URL is required' }, { status: 400 });
 		}
 
-		const mode = await getGitMode();
+		const model = await getDesiredGitMode();
 
 		const nameCollision = await findRepoNameSanitizationCollision(data.name);
 		if (nameCollision) {
@@ -73,13 +93,13 @@ export const POST: RequestHandler = async (event) => {
 		}
 
 		// A secret is mandatory when the webhook is enabled (centralized only).
-		if (mode === 'centralized' && data.webhookEnabled && !data.webhookSecret?.trim()) {
+		if (model === 'centralized' && data.webhookEnabled && !data.webhookSecret?.trim()) {
 			return json({ error: WEBHOOK_SECRET_REQUIRED_ERROR }, { status: 400 });
 		}
 
 		// Create repository. Stack mode keeps it a thin record — no repo-level
 		// schedule/webhook and no clone on save (syncs/webhooks are per stack).
-		const repository = await createGitRepository(mode === 'centralized'
+		const repository = await createGitRepository(model === 'centralized'
 			? {
 				name: data.name,
 				url: data.url,
@@ -103,11 +123,11 @@ export const POST: RequestHandler = async (event) => {
 		await auditGitRepository(event, 'create', repository.id, repository.name);
 
 		// Register schedule if auto-update is enabled (centralized mode)
-		if (mode === 'centralized' && repository.autoUpdate) {
+		if (model === 'centralized' && repository.autoUpdate) {
 			await registerSchedule(repository.id, 'git_repository_sync', null);
 		}
 
-		if (mode === 'stack') {
+		if (model === 'stack') {
 			return json(repository);
 		}
 
@@ -119,7 +139,7 @@ export const POST: RequestHandler = async (event) => {
 		if (asyncRequested) {
 			// Create a job to track the clone progress so the frontend can poll for the result
 			const job = createJob();
-			syncRepositoryExclusive(repository.id).then((result) => {
+			provisionSharedClone(repository.id).then((result) => {
 				if (result.success) {
 					completeJob(job, { success: true, commit: result.commit });
 				} else {
@@ -137,7 +157,7 @@ export const POST: RequestHandler = async (event) => {
 		// never throws — failures are reported via the returned SyncResult and
 		// persisted on the repository row (syncStatus/syncError), so the response
 		// always carries the repo in its final state.
-		const syncResult = await syncRepositoryExclusive(repository.id);
+		const syncResult = await provisionSharedClone(repository.id);
 		const refreshed = (await getGitRepository(repository.id)) ?? repository;
 		if (!syncResult.success) {
 			return json({

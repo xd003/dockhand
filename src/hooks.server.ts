@@ -13,7 +13,8 @@ import { detectHostDataDir } from '$lib/server/host-path';
 import { listContainers, removeContainer } from '$lib/server/docker';
 import { migrateCredentials } from '$lib/server/encryption';
 import { validateStacksDirAtStartup, migrateLocalStacksToStacksDir } from '$lib/server/stacks';
-import { cleanupStackCloneTreesAtBoot, ensureGitModeTransitionResolved } from '$lib/server/git-transition';
+import { settleLegacyGitModeTransition } from '$lib/server/git-transition';
+import { ensureGitStackMigrationsResolved } from '$lib/server/git-stack-migrate';
 import { gzipSync } from 'node:zlib';
 import { rmSync, readdirSync, existsSync } from 'fs';
 import { join } from 'path';
@@ -21,7 +22,7 @@ import type { HandleServerError, Handle } from '@sveltejs/kit';
 import { redirect } from '@sveltejs/kit';
 import { startRssTracker, stopRssTracker, rssBeforeOp, rssAfterOp } from '$lib/server/rss-tracker';
 import { getClientIp } from '$lib/server/client-ip';
-import { BACKUPS_ENABLED } from '$lib/server/features';
+import { BACKUPS_ENABLED, API_DOCS_ENABLED } from '$lib/server/features';
 // Side-effect import: installs globalThis.__authenticateWsUpgrade and
 // globalThis.__canAccessEnvForUser used by the raw WS upgrade handlers in
 // server.js / vite.config.ts to authenticate /api/containers/*/exec.
@@ -165,15 +166,20 @@ if (!initialized) {
 			process.exit(1);
 		});
 
-		// Resolve any desired git-repository mode transition (env-forced or an
-		// interrupted job) BEFORE the git-repos cleanup and scheduler start, so
-		// the effective mode is settled and shared clones are provisioned (N3).
-		const gitTransitionReady = ensureGitModeTransitionResolved().catch((err) => {
-			console.error('[GitTransition] Boot transition failed:', err);
+		// Settle any stale legacy fleet-transition row BEFORE the scheduler starts.
+		// The fleet machine is retired (per-stack migration replaces it): boot no
+		// longer resumes or starts it, and the settle marks an interrupted
+		// pre-upgrade row idle so it can never block live git or show a phantom
+		// "transitioning" state. Env default mismatches never cut the fleet over —
+		// the global setting only governs NEW stacks.
+		const fleetSettleReady = settleLegacyGitModeTransition().catch((err) => {
+			console.error('[GitTransition] Boot fleet settle failed:', err);
 		});
 
-		const repoMigrationReady = gitTransitionReady.then(() => cleanupStackCloneTreesAtBoot()).catch((err) => {
-			console.error('[Git] Env-scoped git-repos migration failed:', err);
+		// Resume an interrupted PER-STACK migration job only (never migrates
+		// stacks that were not selected).
+		const migrationReady = fleetSettleReady.then(() => ensureGitStackMigrationsResolved()).catch((err) => {
+			console.error('[GitStackMigrate] Boot migration resume failed:', err);
 		});
 
 		// Migrate plain text credentials to encrypted storage.
@@ -206,10 +212,10 @@ if (!initialized) {
 			console.error('Failed to cleanup orphaned scanner containers:', err);
 		});
 		// Start background subprocesses and the scheduler only AFTER credential
-		// migration/rotation and the git-repos migration have settled, so a
+		// migration/rotation and git-mode resolution have settled, so a
 		// scheduled backup can't decrypt a destination password mid-rotation (new
 		// key against old-key ciphertext) or a sync hit mid-migration state.
-		Promise.all([credentialsReady, stacksDirReady, repoMigrationReady]).then(() => {
+		Promise.all([credentialsReady, stacksDirReady, migrationReady]).then(() => {
 			startSubprocesses().catch(err => {
 				console.error('Failed to start background subprocesses:', err);
 			});
@@ -303,7 +309,8 @@ const PUBLIC_PATHS = [
 	'/api/changelog',
 	'/api/dependencies',
 	'/api/health',
-	'/api/settings/theme'
+	'/api/settings/theme',
+	'/api/docs'
 ];
 
 // Check if path is public
@@ -341,6 +348,17 @@ export const handle: Handle = async ({ event, resolve }) => {
 	if (!BACKUPS_ENABLED) {
 		const p = event.url.pathname;
 		if (p === '/backups' || p.startsWith('/backups/') || p.startsWith('/api/backup/')) {
+			return new Response('Not found', { status: 404 });
+		}
+	}
+
+	// API docs gate (see $lib/server/features.ts). Enforced HERE, not in the
+	// docs +page.server load, because the app runs ssr=false so a page load
+	// never fires on a cold server render. Single chokepoint covers the spec
+	// endpoint and the Scalar viewer.
+	if (!API_DOCS_ENABLED) {
+		const p = event.url.pathname.replace(/\/$/, '');
+		if (p === '/api/docs' || p === '/api/docs/ui') {
 			return new Response('Not found', { status: 404 });
 		}
 	}

@@ -99,6 +99,24 @@ export const gitModeTransition = pgTable('git_mode_transition', {
 });
 
 // =============================================================================
+// GIT STACK MIGRATION TABLE (per-stack, single-row state machine)
+// =============================================================================
+// Persists the per-stack migrate-to-centralized job (git-stack-migrate.ts).
+// Only one row is ever written; state drives a narrow 409 lock-out scoped to
+// the migrating stack ids / repos being provisioned (not the whole Git API).
+export const gitStackMigration = pgTable('git_stack_migration', {
+	id: serial('id').primaryKey(),
+	state: text('state').notNull().default('idle'), // idle | draining | provisioning | cutting_over
+	jobId: text('job_id'),
+	stackIds: text('stack_ids'), // JSON array of migrating stack ids
+	snapshot: text('snapshot'), // JSON BackfillSnapshot scoped to this job
+	error: text('error'),
+	startedAt: timestamp('started_at', { mode: 'string' }),
+	finishedAt: timestamp('finished_at', { mode: 'string' }),
+	updatedAt: timestamp('updated_at', { mode: 'string' }).defaultNow()
+});
+
+// =============================================================================
 // EVENT TRACKING TABLES
 // =============================================================================
 
@@ -350,6 +368,7 @@ export const gitStacks = pgTable('git_stacks', {
 	autoUpdateCron: text('auto_update_cron').default('0 3 * * *'),
 	webhookEnabled: boolean('webhook_enabled').default(false),
 	webhookSecret: text('webhook_secret'),
+	gitModel: text('git_model').notNull().default('stack'), // 'stack' | 'centralized' — per-stack engine selection
 	contextDir: text('context_dir'), // Working directory relative to repo root (null = compose file's directory)
 	buildOnDeploy: boolean('build_on_deploy').default(false),
 	noBuildCache: boolean('no_build_cache').default(false),
@@ -504,6 +523,12 @@ export const pendingContainerUpdates = pgTable('pending_container_updates', {
 	containerId: text('container_id').notNull(),
 	containerName: text('container_name').notNull(),
 	currentImage: text('current_image').notNull(),
+	// True when a digest image update is pending (the classic amber icon). Defaults
+	// true so pre-existing rows keep behaving exactly as before.
+	hasImageUpdate: boolean('has_image_update').notNull().default(true),
+	// A newer VERSION tag (semver) for a pinned image, as JSON {tag,bump,skipped}.
+	// Null when there's no semver suggestion. Advisory - never auto-applied.
+	newerVersion: text('newer_version'),
 	checkedAt: timestamp('checked_at', { mode: 'string' }).defaultNow(),
 	createdAt: timestamp('created_at', { mode: 'string' }).defaultNow()
 }, (table) => ({

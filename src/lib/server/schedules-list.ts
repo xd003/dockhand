@@ -6,6 +6,7 @@ import {
 	getAllAutoUpdateSettings,
 	getAllAutoUpdateRepositories,
 	getAllAutoUpdateGitStacks,
+	getGitStacks,
 	getAllEnvUpdateCheckSettings,
 	getAllImagePruneSettings,
 	getBackupConfigs,
@@ -21,8 +22,8 @@ import {
 } from '$lib/server/db';
 import { getNextRun, getSystemSchedules } from '$lib/server/scheduler';
 import { getGlobalScannerDefaults, getScannerSettingsWithDefaults } from '$lib/server/scanner';
+import { filterReposWithCentralizedMember } from '$lib/utils/git-model-routing';
 import { BACKUPS_ENABLED } from '$lib/server/features';
-import { getGitMode } from '$lib/server/git-mode';
 
 export interface ScheduleInfo {
 	id: number;
@@ -88,38 +89,39 @@ export async function buildSchedulesList(): Promise<ScheduleInfo[]> {
 	const gitRepos = await getAllAutoUpdateRepositories();
 	const gitStacks = await getAllAutoUpdateGitStacks();
 	const defaultTimezone = await getDefaultTimezone();
-	const gitMode = await getGitMode();
-	// Stack mode lists per-stack git_stack_sync schedules; centralized mode
-	// lists per-repository git_repository_sync schedules.
-	const gitSchedules = await Promise.all(
-		(gitMode === 'centralized' ? gitRepos : gitStacks).map(async (entity) => {
-			if (gitMode === 'centralized') {
-				const repo = entity as (typeof gitRepos)[number];
-				const [lastExecution, recentExecutions] = await Promise.all([
-					getLastExecutionForSchedule('git_repository_sync', repo.id),
-					getRecentExecutionsForSchedule('git_repository_sync', repo.id, 5)
-				]);
-				const isEnabled = repo.autoUpdate ?? false;
-				const nextRun = isEnabled && repo.autoUpdateCron ? getNextRun(repo.autoUpdateCron, defaultTimezone) : null;
+	// Mixed mode lists BOTH families: git_repository_sync for repositories that
+	// have at least one centralized-model stack, git_stack_sync for stack-model
+	// stacks. getAllAutoUpdateGitStacks is filtered to stack-model rows, so the
+	// stack family is already correct. Repos with zero centralized members must
+	// not appear as git_repository_sync rows (the scheduler never registers them,
+	// and slotting a stack-mode repo here would be a ghost schedule).
+	const gitRepoList = filterReposWithCentralizedMember(gitRepos, await getGitStacks());
+	const gitSchedules = await Promise.all([
+		...gitRepoList.map(async (repo) => {
+			const [lastExecution, recentExecutions] = await Promise.all([
+				getLastExecutionForSchedule('git_repository_sync', repo.id),
+				getRecentExecutionsForSchedule('git_repository_sync', repo.id, 5)
+			]);
+			const isEnabled = repo.autoUpdate ?? false;
+			const nextRun = isEnabled && repo.autoUpdateCron ? getNextRun(repo.autoUpdateCron, defaultTimezone) : null;
 
-				return {
-					id: repo.id,
-					type: 'git_repository_sync' as const,
-					name: `Git sync: ${repo.name}`,
-					entityName: repo.name,
-					environmentId: null,
-					environmentName: null,
-					enabled: isEnabled,
-					scheduleType: repo.autoUpdateSchedule ?? 'daily',
-					cronExpression: repo.autoUpdateCron ?? null,
-					nextRun: nextRun?.toISOString() ?? null,
-					lastExecution: lastExecution ?? null,
-					recentExecutions,
-					isSystem: false
-				};
-			}
-
-			const stack = entity as (typeof gitStacks)[number];
+			return {
+				id: repo.id,
+				type: 'git_repository_sync' as const,
+				name: `Git sync: ${repo.name}`,
+				entityName: repo.name,
+				environmentId: null,
+				environmentName: null,
+				enabled: isEnabled,
+				scheduleType: repo.autoUpdateSchedule ?? 'daily',
+				cronExpression: repo.autoUpdateCron ?? null,
+				nextRun: nextRun?.toISOString() ?? null,
+				lastExecution: lastExecution ?? null,
+				recentExecutions,
+				isSystem: false
+			};
+		}),
+		...gitStacks.map(async (stack) => {
 			const [env, lastExecution, recentExecutions, timezone] = await Promise.all([
 				stack.environmentId ? getEnvironment(stack.environmentId) : null,
 				getLastExecutionForSchedule('git_stack_sync', stack.id),
@@ -145,7 +147,7 @@ export async function buildSchedulesList(): Promise<ScheduleInfo[]> {
 				isSystem: false
 			};
 		})
-	);
+	]);
 	schedules.push(...gitSchedules);
 
 	const envUpdateCheckConfigs = await getAllEnvUpdateCheckSettings();

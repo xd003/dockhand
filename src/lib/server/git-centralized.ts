@@ -26,6 +26,7 @@ import { deployStack, getStackDir } from './stacks';
 import { assertSafeGitRef, repoFilePath } from './git-url-safety';
 import { isPathUnderRoot } from './path-utils';
 import { parseComposePathsColumn } from './compose-files';
+import { filterCentralizedStacks } from '../utils/git-model-routing';
 import { collectProcess } from './process-utils';
 import { redactEnvVarsForLog } from './log-utils';
 import {
@@ -215,7 +216,7 @@ export async function syncRepository(repoId: number): Promise<SyncResult> {
 			syncError: null
 		});
 
-		cleanupSshKey(credential);
+		cleanupSshKey(credential, env);
 
 		return {
 			success: true,
@@ -224,7 +225,7 @@ export async function syncRepository(repoId: number): Promise<SyncResult> {
 			updated
 		};
 	} catch (error: any) {
-		cleanupSshKey(credential);
+		cleanupSshKey(credential, env);
 		await updateGitRepository(repoId, {
 			syncStatus: 'error',
 			syncError: error.message
@@ -262,7 +263,7 @@ export async function checkForUpdates(repoId: number): Promise<{ hasUpdates: boo
 		const latestResult = await execGit(['rev-parse', `origin/${repo.branch}`], repoPath, env);
 		const latestCommit = latestResult.stdout.substring(0, 7);
 
-		cleanupSshKey(credential);
+		cleanupSshKey(credential, env);
 
 		return {
 			hasUpdates: currentCommit !== latestCommit,
@@ -270,7 +271,7 @@ export async function checkForUpdates(repoId: number): Promise<{ hasUpdates: boo
 			latestCommit
 		};
 	} catch (error: any) {
-		cleanupSshKey(credential);
+		cleanupSshKey(credential, env);
 		return { hasUpdates: false, error: error.message };
 	}
 }
@@ -332,6 +333,19 @@ export function getActiveGitCoalesceCount(): number {
 	return stackDeploySlots.size + repoFanOutSlots.size;
 }
 
+/**
+ * Per-id view of in-flight coalesced git operations: centralized stack deploys
+ * (keyed by stack id) and repo fan-outs (keyed by repository id). Used by the
+ * per-selected-stack migration drain so migrating stack 2 never waits on stack
+ * 1's deploy.
+ */
+export function getActiveGitCoalesceIds(): { stacks: number[]; repos: number[] } {
+	return {
+		stacks: [...stackDeploySlots.keys()],
+		repos: [...repoFanOutSlots.keys()]
+	};
+}
+
 function mergeFanOutOpts(a: FanOutOpts, b: FanOutOpts): FanOutOpts {
 	// Prefer the newer caller's logger so its schedule-execution log is populated
 	return { log: b.log ?? a.log };
@@ -384,14 +398,16 @@ async function deployFromRepositoryWithFanOutImpl(
 
 	_log(`[Git] Starting fan-out deployment for repository "${repo.name}" (ID: ${repositoryId})`);
 
-	// Get all stacks tied to this repository
-	const stacks = await getFullGitStacksByRepositoryId(repositoryId);
+	// Get all stacks tied to this repository that run in centralized mode.
+	// Stack-model siblings keep their own per-stack clone + webhook contract and
+	// must NOT be deployed from the shared clone's fan-out (mixed repos).
+	const stacks = filterCentralizedStacks(await getFullGitStacksByRepositoryId(repositoryId));
 	if (stacks.length === 0) {
-		_log(`[Git] No stacks linked to repository "${repo.name}".`);
+		_log(`[Git] No centralized stacks linked to repository "${repo.name}".`);
 		return { success: true, stacks: [] };
 	}
 
-	_log(`[Git] Found ${stacks.length} stack(s) linked to this repository.`);
+	_log(`[Git] Found ${stacks.length} centralized stack(s) linked to this repository.`);
 
 	// Concurrent stack-level webhooks coalesce inside deployGitStack (stronger
 	// intent wins), and stacks with their own webhook are deferred there.
@@ -609,7 +625,7 @@ export async function syncGitStack(stackId: number, onProgress?: ProgressCallbac
 			syncError: null
 		});
 
-		cleanupSshKey(credential);
+		cleanupSshKey(credential, env);
 
 		console.log(`${logPrefix} ----------------------------------------`);
 		console.log(`${logPrefix} SYNC GIT STACK COMPLETE`);
@@ -636,7 +652,7 @@ export async function syncGitStack(stackId: number, onProgress?: ProgressCallbac
 			previousManifest: deletionData.previousManifest
 		};
 	} catch (error: any) {
-		cleanupSshKey(credential);
+		cleanupSshKey(credential, env);
 		await updateGitStack(stackId, {
 			syncStatus: 'error',
 			syncError: error.message

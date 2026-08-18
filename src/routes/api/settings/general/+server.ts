@@ -35,7 +35,7 @@ import { authorize } from '$lib/server/authorize';
 import { refreshSystemJobs } from '$lib/server/scheduler';
 import { sendToEventSubprocess, sendToMetricsSubprocess } from '$lib/server/subprocess-manager';
 import { getGitMode, getDesiredGitMode, isGitModeEnvForced } from '$lib/server/git-mode';
-import { getGitModeTransition } from '$lib/server/db';
+import { getGitModeTransition, getGitStackMigration } from '$lib/server/db';
 import { audit } from '$lib/server/audit';
 import { DEFAULT_GRYPE_IMAGE, DEFAULT_TRIVY_IMAGE } from '$lib/server/scanner';
 import { DEFAULT_HELPER_IMAGE } from '$lib/server/backups/restic';
@@ -120,6 +120,8 @@ export interface GeneralSettings {
 	showWhatsNew: boolean;
 	// Whether spinning icons (animate-spin etc.) are animated (#1169)
 	animateIcons: boolean;
+	// Vertical indentation guides in the code editor (#1410)
+	editorIndentGuides: boolean;
 	// Skip Dockhand's scanner images (grype, trivy) during 'prune all unused' (#625)
 	protectScannerImages: boolean;
 	// Scanner Advanced settings (#1219). Empty = use auto-detection.
@@ -132,6 +134,13 @@ export interface GeneralSettings {
 	gitModeTransition: {
 		state: 'idle' | 'draining' | 'provisioning' | 'cutting_over';
 		mode: 'stack' | 'centralized';
+		jobId: string | null;
+		startedAt: string | null;
+		finishedAt: string | null;
+		error: string | null;
+	};
+	gitStackMigration: {
+		state: 'idle' | 'draining' | 'provisioning' | 'cutting_over';
 		jobId: string | null;
 		startedAt: string | null;
 		finishedAt: string | null;
@@ -176,6 +185,7 @@ const DEFAULT_SETTINGS: Omit<GeneralSettings, 'scheduleRetentionDays' | 'eventRe
 	showImageChangelogLinks: true,
 	showWhatsNew: true,
 	animateIcons: true,
+	editorIndentGuides: false,
 	protectScannerImages: true,
 	defaultScannerNetworkMode: '',
 	defaultScannerDns: [],
@@ -183,6 +193,7 @@ const DEFAULT_SETTINGS: Omit<GeneralSettings, 'scheduleRetentionDays' | 'eventRe
 	gitRepositoryDesiredMode: 'stack',
 	gitRepositoryModeForcedByEnv: false,
 	gitModeTransition: { state: 'idle', mode: 'stack', jobId: null, startedAt: null, finishedAt: null, error: null },
+	gitStackMigration: { state: 'idle', jobId: null, startedAt: null, finishedAt: null, error: null },
 	defaultComposeTemplate: `version: "3.8"
 
 services:
@@ -231,6 +242,12 @@ function parseScannerDnsStorage(raw: string | null | undefined): string[] {
 	return trimmed.split(',').map((s) => s.trim()).filter(Boolean);
 }
 
+/**
+ * @openapi
+ * summary: Get global (instance-wide) general settings
+ * resp-401: Not authenticated
+ * resp-500: Failed to load settings
+ */
 export const GET: RequestHandler = async ({ cookies }) => {
 	const auth = await authorize(cookies);
 	// UI preferences (time format, date format) should be available to all authenticated users
@@ -288,6 +305,7 @@ export const GET: RequestHandler = async ({ cookies }) => {
 			showImageChangelogLinks,
 			showWhatsNew,
 			animateIcons,
+			editorIndentGuides,
 			protectScannerImages,
 			defaultScannerNetworkMode,
 			defaultScannerDnsRaw
@@ -338,6 +356,7 @@ export const GET: RequestHandler = async ({ cookies }) => {
 			getSetting('show_image_changelog_links'),
 			getSetting('show_whats_new'),
 			getSetting('animate_icons'),
+			getSetting('editor_indent_guides'),
 			getSetting('protect_scanner_images'),
 			getSetting('default_scanner_network_mode'),
 			getSetting('default_scanner_dns')
@@ -392,16 +411,18 @@ export const GET: RequestHandler = async ({ cookies }) => {
 			showImageChangelogLinks: showImageChangelogLinks ?? DEFAULT_SETTINGS.showImageChangelogLinks,
 			showWhatsNew: showWhatsNew ?? DEFAULT_SETTINGS.showWhatsNew,
 			animateIcons: animateIcons ?? DEFAULT_SETTINGS.animateIcons,
+			editorIndentGuides: editorIndentGuides ?? DEFAULT_SETTINGS.editorIndentGuides,
 			protectScannerImages: protectScannerImages ?? DEFAULT_SETTINGS.protectScannerImages,
 			defaultScannerNetworkMode: defaultScannerNetworkMode ?? DEFAULT_SETTINGS.defaultScannerNetworkMode,
 			defaultScannerDns: parseScannerDnsStorage(defaultScannerDnsRaw)
 		};
 
 		// Git repository model — fetched separately (cheap, keeps the bulk fetch untouched)
-		const [effectiveMode, desiredMode, transition] = await Promise.all([
+		const [effectiveMode, desiredMode, transition, stackMigration] = await Promise.all([
 			getGitMode(),
 			getDesiredGitMode(),
-			getGitModeTransition()
+			getGitModeTransition(),
+			getGitStackMigration()
 		]);
 
 		const settings: GeneralSettings = {
@@ -416,6 +437,13 @@ export const GET: RequestHandler = async ({ cookies }) => {
 				startedAt: transition?.startedAt ?? null,
 				finishedAt: transition?.finishedAt ?? null,
 				error: transition?.error ?? null
+			},
+			gitStackMigration: {
+				state: stackMigration?.state ?? 'idle',
+				jobId: stackMigration?.jobId ?? null,
+				startedAt: stackMigration?.startedAt ?? null,
+				finishedAt: stackMigration?.finishedAt ?? null,
+				error: stackMigration?.error ?? null
 			}
 		};
 
@@ -426,6 +454,14 @@ export const GET: RequestHandler = async ({ cookies }) => {
 	}
 };
 
+/**
+ * @openapi
+ * summary: Update global general settings (all fields optional; only supplied keys are written)
+ * description: A large flat settings bag - theme/fonts, scanner defaults, cleanup schedules, event/metrics collection, editor options (e.g. editorIndentGuides), and more.
+ * body: {animateIcons:boolean, editorIndentGuides:boolean, coloredActionButtons:boolean, lightTheme:string, darkTheme:string, defaultTimezone:string, logBufferSizeKb:integer, externalStackPaths:string}
+ * resp-403: Permission denied (needs settings:edit)
+ * resp-500: Failed to save settings
+ */
 export const POST: RequestHandler = async (event) => {
 	const { request, cookies } = event;
 	const auth = await authorize(cookies);
@@ -435,7 +471,7 @@ export const POST: RequestHandler = async (event) => {
 
 	try {
 		const body = await request.json();
-		const { confirmDestructive, showStoppedContainers, highlightUpdates, coloredActionButtons, actionIconSize, timeFormat, dateFormat, downloadFormat, defaultGrypeArgs, defaultTrivyArgs, scheduleRetentionDays, eventRetentionDays, scheduleCleanupCron, eventCleanupCron, scheduleCleanupEnabled, eventCleanupEnabled, scannerCleanupCron, scannerCleanupEnabled, logBufferSizeKb, logMaxLines, defaultTimezone, eventCollectionMode, eventPollInterval, metricsCollectionInterval, lightTheme, darkTheme, font, fontSize, gridFontSize, terminalFont, editorFont, compactPorts, showExposedPorts, showGitCommitHash, formatLogTimestamps, externalStackPaths, primaryStackLocation, defaultGrypeImage, defaultTrivyImage, defaultComposeTemplate, labelFilterMode, defaultBackupImage, honorProxyLabels, showImageChangelogLinks, animateIcons, protectScannerImages, showWhatsNew, defaultScannerNetworkMode, defaultScannerDns, gitRepositoryDesiredMode } = body;
+const { confirmDestructive, showStoppedContainers, highlightUpdates, coloredActionButtons, actionIconSize, timeFormat, dateFormat, downloadFormat, defaultGrypeArgs, defaultTrivyArgs, scheduleRetentionDays, eventRetentionDays, scheduleCleanupCron, eventCleanupCron, scheduleCleanupEnabled, eventCleanupEnabled, scannerCleanupCron, scannerCleanupEnabled, logBufferSizeKb, logMaxLines, defaultTimezone, eventCollectionMode, eventPollInterval, metricsCollectionInterval, lightTheme, darkTheme, font, fontSize, gridFontSize, terminalFont, editorFont, compactPorts, showExposedPorts, showGitCommitHash, formatLogTimestamps, externalStackPaths, primaryStackLocation, defaultGrypeImage, defaultTrivyImage, defaultComposeTemplate, labelFilterMode, defaultBackupImage, honorProxyLabels, showImageChangelogLinks, animateIcons, editorIndentGuides, protectScannerImages, showWhatsNew, defaultScannerNetworkMode, defaultScannerDns, gitRepositoryDesiredMode } = body;
 
 		// Git repository model change — validated up-front so a bad/mid-transition
 		// toggle never falls through to the bulk setting writes. Only an actual
@@ -449,29 +485,15 @@ export const POST: RequestHandler = async (event) => {
 				if (isGitModeEnvForced()) {
 					return json({ error: 'Git repository mode is managed by the DOCKHAND_GIT_CENTRALIZED_MODE environment variable' }, { status: 400 });
 				}
-				const activeTransition = await getGitModeTransition();
-				if (activeTransition && activeTransition.state !== 'idle') {
-					return json({ error: 'A git repository mode transition is already in progress' }, { status: 409 });
-				}
-				const { setDesiredGitMode, ConflictError } = await import('$lib/server/git-mode');
+				const { setDesiredGitMode } = await import('$lib/server/git-mode');
 				await setDesiredGitMode(gitRepositoryDesiredMode);
-				// Kick off the mode transition job (git-transition.ts) — runs in the
-				// background; the response carries the resulting transition state.
-				try {
-					const { startGitModeTransition } = await import('$lib/server/git-transition');
-					await startGitModeTransition(gitRepositoryDesiredMode);
-				} catch (err) {
-					if (err instanceof ConflictError) {
-						return json({ error: err.message }, { status: 409 });
-					}
-					throw err;
-				}
 
-				// A mode change is a destructive clone-layout migration — audit it
-				// (best-effort; the audit helper swallows failures).
+				// The global setting is a DEFAULT for NEW Git stacks, not a
+				// fleet cutover: no transition job is started. Existing stacks
+				// keep their current engine until explicitly migrated.
 				await audit(event, 'update', 'settings', {
-					entityName: 'Git repository model',
-					description: `Git repository mode changed to "${gitRepositoryDesiredMode}"`,
+					entityName: 'Git repository default',
+					description: `Git repository default set to "${gitRepositoryDesiredMode}" (applies to new Git stacks)`,
 					details: { gitRepositoryDesiredMode }
 				});
 			}
@@ -639,6 +661,9 @@ export const POST: RequestHandler = async (event) => {
 		if (animateIcons !== undefined && typeof animateIcons === 'boolean') {
 			await setSetting('animate_icons', animateIcons);
 		}
+		if (editorIndentGuides !== undefined && typeof editorIndentGuides === 'boolean') {
+			await setSetting('editor_indent_guides', editorIndentGuides);
+		}
 		if (protectScannerImages !== undefined && typeof protectScannerImages === 'boolean') {
 			await setSetting('protect_scanner_images', protectScannerImages);
 		}
@@ -705,6 +730,7 @@ export const POST: RequestHandler = async (event) => {
 			showImageChangelogLinksVal,
 			showWhatsNewVal,
 			animateIconsVal,
+			editorIndentGuidesVal,
 			protectScannerImagesVal,
 			defaultScannerNetworkModeVal,
 			defaultScannerDnsRawVal
@@ -755,6 +781,7 @@ export const POST: RequestHandler = async (event) => {
 			getSetting('show_image_changelog_links'),
 			getSetting('show_whats_new'),
 			getSetting('animate_icons'),
+			getSetting('editor_indent_guides'),
 			getSetting('protect_scanner_images'),
 			getSetting('default_scanner_network_mode'),
 			getSetting('default_scanner_dns')
@@ -810,14 +837,16 @@ export const POST: RequestHandler = async (event) => {
 			showImageChangelogLinks: showImageChangelogLinksVal ?? DEFAULT_SETTINGS.showImageChangelogLinks,
 			showWhatsNew: showWhatsNewVal ?? DEFAULT_SETTINGS.showWhatsNew,
 			animateIcons: animateIconsVal ?? DEFAULT_SETTINGS.animateIcons,
+			editorIndentGuides: editorIndentGuidesVal ?? DEFAULT_SETTINGS.editorIndentGuides,
 			defaultScannerNetworkMode: defaultScannerNetworkModeVal ?? DEFAULT_SETTINGS.defaultScannerNetworkMode,
 			defaultScannerDns: parseScannerDnsStorage(defaultScannerDnsRawVal)
 		};
 
-		const [effectiveModeVal, desiredModeVal, transitionVal] = await Promise.all([
+		const [effectiveModeVal, desiredModeVal, transitionVal, stackMigrationVal] = await Promise.all([
 			getGitMode(),
 			getDesiredGitMode(),
-			getGitModeTransition()
+			getGitModeTransition(),
+			getGitStackMigration()
 		]);
 
 		const settings: GeneralSettings = {
@@ -832,6 +861,13 @@ export const POST: RequestHandler = async (event) => {
 				startedAt: transitionVal?.startedAt ?? null,
 				finishedAt: transitionVal?.finishedAt ?? null,
 				error: transitionVal?.error ?? null
+			},
+			gitStackMigration: {
+				state: stackMigrationVal?.state ?? 'idle',
+				jobId: stackMigrationVal?.jobId ?? null,
+				startedAt: stackMigrationVal?.startedAt ?? null,
+				finishedAt: stackMigrationVal?.finishedAt ?? null,
+				error: stackMigrationVal?.error ?? null
 			}
 		};
 

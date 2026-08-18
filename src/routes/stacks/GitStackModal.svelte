@@ -68,6 +68,7 @@
 		forceRedeploy: boolean;
 		webhookEnabled: boolean;
 		webhookSecret: string | null;
+		gitModel?: 'stack' | 'centralized';
 		// Stack-level scheduled sync (deprecated in centralized mode)
 		autoUpdate?: boolean;
 		autoUpdateSchedule?: string | null;
@@ -262,7 +263,38 @@
 	let formSaving = $state(false);
 	let showExistsWarning = $state(false);
 	let errors = $state<{ stackName?: string; repository?: string; repoName?: string; repoUrl?: string; newRepoWebhookSecret?: string; stackWebhookSecret?: string; stackAutoUpdateCron?: string }>({});
-	const isCentralizedMode = $derived($appSettings.gitRepositoryMode === 'centralized');
+	// Per-stack model: new stacks inherit the global DEFAULT (no chooser); editing
+	// follows the stack's own gitModel. This drives which fields/contracts apply.
+	const isCentralizedMode = $derived(
+		gitStack ? (gitStack.gitModel === 'centralized') : ($appSettings.gitRepositoryDesiredMode === 'centralized')
+	);
+	const instanceDefaultLabel = $derived($appSettings.gitRepositoryDesiredMode === 'centralized'
+		? 'centralized (shared clone)'
+		: 'per-stack clones');
+	let migrating = $state(false);
+
+	async function migrateStack() {
+		if (!gitStack || gitStack.gitModel !== 'stack') return;
+		if (!window.confirm(
+			`Migrate "${gitStack.stackName}" to centralized Git mode?\n\nThis stack will move onto the shared repository clone, its per-stack sync schedule and webhook URL may change, and the per-stack clone will be removed after the shared clone is ready. This only affects this stack.`
+		)) return;
+		migrating = true;
+		try {
+			const res = await fetch(`/api/git/stacks/${gitStack.id}/migrate`, { method: 'POST' });
+			const data = await res.json();
+			if (res.ok) {
+				toast.success('Migration started for this stack');
+				onSaved();
+				onClose();
+			} else {
+				toast.error(data.error || 'Failed to start migration');
+			}
+		} catch {
+			toast.error('Failed to start migration');
+		} finally {
+			migrating = false;
+		}
+	}
 
 	// Stack name validation: must start with alphanumeric, can contain alphanumeric, hyphens, underscores
 	const STACK_NAME_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
@@ -994,6 +1026,20 @@
 						<Dialog.Description class="text-xs text-zinc-500 dark:text-zinc-400">
 							{gitStack ? 'Update git stack settings' : 'Deploy a compose stack from a Git repository'}
 						</Dialog.Description>
+						<div class="flex items-center gap-2 mt-1">
+							<Badge variant="outline" class="text-2xs py-0 px-1.5">
+								{gitStack
+									? (gitStack.gitModel === 'centralized' ? 'Centralized (shared clone)' : 'Per-stack clone')
+									: (isCentralizedMode ? 'Centralized (shared clone)' : 'Per-stack clone')}
+								{gitStack ? '' : ' — instance default'}
+							</Badge>
+							{#if gitStack && gitStack.gitModel === 'stack'}
+								<Button size="sm" variant="outline" class="h-5 px-2 text-2xs" onclick={migrateStack} disabled={migrating}>
+									{#if migrating}<Loader2 class="w-3 h-3 animate-spin" />{/if}
+									Migrate to centralized
+								</Button>
+							{/if}
+						</div>
 					</div>
 				</div>
 

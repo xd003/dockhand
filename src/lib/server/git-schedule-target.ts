@@ -31,7 +31,7 @@ export async function resolveGitScheduleTarget(
 	if (type === 'git_stack_sync') {
 		const stack = await getGitStack(id);
 		if (!stack) return null;
-		if (resolveGitStackScheduleKind(stack.gitModel) === 'repository') {
+		if (resolveGitStackScheduleKind(stack.engine) === 'repository') {
 			// Centralized stacks live on the shared clone: git_stack_sync is a
 			// deprecated alias — target the repository.
 			if (!stack.repositoryId) return null;

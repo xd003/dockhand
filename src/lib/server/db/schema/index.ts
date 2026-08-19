@@ -79,29 +79,12 @@ export const settings = sqliteTable('settings', {
 });
 
 // =============================================================================
-// GIT MODE TRANSITION TABLE (single-row state machine)
-// =============================================================================
-// Persists the git-repository mode transition job (see git-transition.ts).
-// Only one row is ever written; state drives a 409 lock-out of git mutations.
-export const gitModeTransition = sqliteTable('git_mode_transition', {
-	id: integer('id').primaryKey({ autoIncrement: true }),
-	mode: text('mode').default('stack'), // effective mode written at cutover
-	state: text('state').default('idle'), // idle | draining | provisioning | cutting_over
-	jobId: text('job_id'),
-	startedAt: text('started_at'),
-	finishedAt: text('finished_at'),
-	snapshot: text('snapshot'), // JSON: original force_redeploy per stack + original repo-level fields
-	error: text('error'),
-	updatedAt: text('updated_at').default(sql`CURRENT_TIMESTAMP`)
-});
-
-// =============================================================================
 // GIT STACK MIGRATION TABLE (per-stack, single-row state machine)
 // =============================================================================
 // Persists the per-stack migrate-to-centralized job (git-stack-migrate.ts).
 // Only one row is ever written; state drives a narrow 409 lock-out scoped to
 // the migrating stack ids / repos being provisioned (not the whole Git API).
-export const gitStackMigration = sqliteTable('git_stack_migration', {
+export const gitMigrationState = sqliteTable('git_migration_state', {
 	id: integer('id').primaryKey({ autoIncrement: true }),
 	state: text('state').notNull().default('idle'), // idle | draining | provisioning | cutting_over
 	jobId: text('job_id'),
@@ -365,7 +348,7 @@ export const gitStacks = sqliteTable('git_stacks', {
 	autoUpdateCron: text('auto_update_cron').default('0 3 * * *'),
 	webhookEnabled: integer('webhook_enabled', { mode: 'boolean' }).default(false),
 	webhookSecret: text('webhook_secret'),
-	gitModel: text('git_model').notNull().default('stack'), // 'stack' | 'centralized' — per-stack engine selection
+	engine: text('engine').notNull().default('stack'), // 'stack' | 'centralized' — per-stack engine selection
 	contextDir: text('context_dir'), // Working directory relative to repo root (null = compose file's directory)
 	buildOnDeploy: integer('build_on_deploy', { mode: 'boolean' }).default(false),
 	noBuildCache: integer('no_build_cache', { mode: 'boolean' }).default(false),
@@ -640,11 +623,8 @@ export type NewHawserToken = typeof hawserTokens.$inferInsert;
 export type Setting = typeof settings.$inferSelect;
 export type NewSetting = typeof settings.$inferInsert;
 
-export type GitModeTransition = typeof gitModeTransition.$inferSelect;
-export type NewGitModeTransition = typeof gitModeTransition.$inferInsert;
-
-export type GitStackMigration = typeof gitStackMigration.$inferSelect;
-export type NewGitStackMigration = typeof gitStackMigration.$inferInsert;
+export type GitMigrationState = typeof gitMigrationState.$inferSelect;
+export type NewGitMigrationState = typeof gitMigrationState.$inferInsert;
 
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;

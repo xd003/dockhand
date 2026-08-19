@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getGitStack } from '$lib/server/db';
-import { startGitStackMigration } from '$lib/server/git-stack-migrate';
+import { startGitMigration } from '$lib/server/git-stack-migrate';
 import { ConflictError } from '$lib/server/git-mode';
 import { authorize } from '$lib/server/authorize';
 import { auditGitStack } from '$lib/server/audit';
@@ -35,7 +35,7 @@ export const POST: RequestHandler = async (event) => {
 			return json({ error: 'Permission denied' }, { status: 403 });
 		}
 
-		if (stack.gitModel === 'centralized') {
+		if (stack.engine === 'centralized') {
 			return json({ error: 'This stack is already using centralized Git mode' }, { status: 409 });
 		}
 
@@ -44,7 +44,7 @@ export const POST: RequestHandler = async (event) => {
 		}
 
 		try {
-			await startGitStackMigration([id]);
+			await startGitMigration([id]);
 		} catch (err) {
 			if (err instanceof ConflictError) {
 				return json({ error: err.message }, { status: 409 });

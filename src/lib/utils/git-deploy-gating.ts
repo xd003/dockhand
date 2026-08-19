@@ -59,6 +59,40 @@ export function repoFanOutDefersStack(stack: {
 	return stack.forceRedeploy && stack.webhookEnabled;
 }
 
+/**
+ * Which of the given stacks may be deployed by this caller. `canDeploy` is
+ * resolved per stack against its environment (stacks:start), so an env-scoped
+ * user never deploys stacks in environments they cannot access via the
+ * repo-level fan-out. A stack without an environment resolves against the
+ * global permission.
+ */
+export async function filterStacksByEnvAccess<T extends { id: number; environmentId: number | null }>(
+	stacks: T[],
+	canDeploy: (environmentId: number | null) => Promise<boolean>
+): Promise<number[]> {
+	const allowed: number[] = [];
+	for (const stack of stacks) {
+		if (await canDeploy(stack.environmentId)) {
+			allowed.push(stack.id);
+		}
+	}
+	return allowed;
+}
+
+/**
+ * Merge two concurrent fan-out stack filters (coalesced repo deploys) by
+ * union: a stack is deployed if ANY caller may deploy it, so neither caller's
+ * authorized stacks are dropped.
+ */
+export function mergeFanOutStackIds(
+	a: number[] | undefined,
+	b: number[] | undefined
+): number[] | undefined {
+	// Either caller deploys all stacks, so the merged fan-out must too.
+	if (a === undefined || b === undefined) return undefined;
+	return [...new Set([...a, ...b])];
+}
+
 export interface FanOutStack {
 	id: number;
 	stackName: string;
@@ -78,6 +112,17 @@ export interface FanOutStacksResult {
 }
 
 /**
+ * Per-stack cap on fan-out deploys: one stack's deploy runs several bounded
+ * subprocesses in sequence (clone -> pull -> up), each with its own ~900s
+ * budget, so without this a single pathological stack stalls the whole repo's
+ * fan-out. Configurable; a legit-but-slow deploy that exceeds it is marked
+ * failed and the fan-out moves on.
+ */
+export const GIT_STACK_DEPLOY_TIMEOUT_MS = Number(
+	process.env.DOCKHAND_GIT_STACK_DEPLOY_TIMEOUT_MS ?? 30 * 60_000
+);
+
+/**
  * Fan a repository webhook out over its stacks (deployGitStack per stack):
  * - a stack with its own webhook (forceRedeploy + webhookEnabled) is skipped
  *   ENTIRELY — it is triggered independently by its own webhook, and deploying
@@ -91,7 +136,8 @@ export async function fanOutDeployStacks(
 		stackId: number,
 		opts: DeployGitStackOpts
 	) => Promise<{ success: boolean; skipped?: boolean; error?: string }>,
-	log?: (msg: string) => void
+	log?: (msg: string) => void,
+	timeoutMs?: number
 ): Promise<FanOutStacksResult> {
 	const _log = log ?? (() => {});
 	const results: FanOutStackResult[] = [];
@@ -106,8 +152,20 @@ export async function fanOutDeployStacks(
 			continue;
 		}
 
+		const opts: DeployGitStackOpts = { force: false, ignoreForceRedeploy: false };
+		const perStackTimeout = timeoutMs ?? GIT_STACK_DEPLOY_TIMEOUT_MS;
+		// ponytail: raced deploy keeps running in the background to its own subprocess
+		// timeouts — the cap bounds the fan-out, not the subprocess.
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const deployWithTimeout = Promise.race([
+			deploy(stack.id, opts),
+			new Promise<never>((_, reject) => {
+				timer = setTimeout(() => reject(new Error(`deploy timed out after ${perStackTimeout}ms`)), perStackTimeout);
+			})
+		]);
+
 		try {
-			const deployResult = await deploy(stack.id, { force: false, ignoreForceRedeploy: false });
+			const deployResult = await deployWithTimeout;
 
 			if (deployResult.success) {
 				if (deployResult.skipped) {
@@ -126,6 +184,8 @@ export async function fanOutDeployStacks(
 			_log(`[Git] Stack "${stack.stackName}" threw an error: ${err.message}`);
 			hasError = true;
 			results.push({ id: stack.id, name: stack.stackName, status: 'failed', error: err.message });
+		} finally {
+			clearTimeout(timer);
 		}
 	}
 

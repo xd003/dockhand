@@ -9,7 +9,7 @@
  *    stacks keep their engine until explicitly migrated (git-stack-migrate.ts).
  *  - **effective** mode (git_repository_mode): a legacy value from the retired
  *    whole-fleet transition. Engines/scheduler/webhooks no longer dispatch on
- *    it — per-stack dispatch uses git_stacks.git_model. Kept only for the
+ *    it — per-stack dispatch uses git_stacks.engine. Kept only for the
  *    settings status readout and the getEngine() fallback.
  *
  * getGitMode() never short-circuits on the env var: the env var only

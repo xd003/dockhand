@@ -241,10 +241,10 @@ export const DELETE: RequestHandler = async (event) => {
 		// Delete git stack clone directories before cascade deletes the DB rows
 		const stacks = await getGitStacksByRepositoryId(id);
 		console.log(`[GitStack] Repository "${repository.name}" (id=${id}) deletion affects ${stacks.length} stacks: ${stacks.map(s => s.stackName).join(', ')}`);
-		const hasCentralized = stacks.some((s) => s.gitModel === 'centralized');
+		const hasCentralized = stacks.some((s) => s.engine === 'centralized');
 		for (const stack of stacks) {
 			// Stack-model stacks also drop their per-stack git_stack_sync schedule.
-			if (stack.gitModel === 'stack') {
+			if (stack.engine === 'stack') {
 				unregisterSchedule(stack.id, 'git_stack_sync');
 			}
 			await deleteGitStackFiles(stack.id, stack.stackName, stack.environmentId);

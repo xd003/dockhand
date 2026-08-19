@@ -61,6 +61,47 @@ export interface GitWebhookHandlerOptions<TEntity extends GitWebhookEntity> {
 }
 
 /**
+ * Post-trigger audit + response, shared by GET and POST.
+ *
+ * Synchronous triggers (stack-mode webhook) ran the deploy inline, so the body
+ * IS the result and 200 is returned even on failure/skip: a 5xx would make
+ * GitHub/GitLab treat the delivery as failed and redeliver — a deploy that
+ * merely skipped (image upgrade, no config change) would redeliver in a loop.
+ * The audit keeps the old skipped/deployed/failed distinction.
+ *
+ * Background triggers keep 5xx on failure so a genuinely failed dispatch is
+ * retried, and are audited as triggered/failed.
+ */
+async function finishWebhookTrigger<TEntity extends GitWebhookEntity>(
+	event: RequestEvent,
+	id: number,
+	entity: TEntity,
+	options: GitWebhookHandlerOptions<TEntity>,
+	result: { success: boolean; error?: string; skipped?: boolean },
+	method: 'GET' | 'POST',
+	source: string
+): Promise<Response> {
+	if (options.synchronous) {
+		await options.audit(event, id, entity, {
+			method, source, result: result.skipped ? 'skipped' : result.success ? 'deployed' : 'failed'
+		});
+		return json(result);
+	}
+
+	await options.audit(event, id, entity, {
+		method, source, result: result.success ? 'triggered' : 'failed'
+	});
+	if (!result.success) {
+		return json(result, { status: 500 });
+	}
+	return json({
+		success: true,
+		message: options.successMessage,
+		...(options.deprecated ? { deprecated: true } : {})
+	}, { status: 202 });
+}
+
+/**
  * Shared git webhook request flow for repository and stack webhook endpoints.
  *
  * POST: verifies the provider signature (X-Hub-Signature-256 or
@@ -111,26 +152,10 @@ export async function handleGitWebhookRequest<TEntity extends GitWebhookEntity>(
 			return json({ error: 'Invalid webhook secret' }, { status: 401 });
 		}
 
-		// Trigger the sync in the background and return 202 immediately.
+		// Run the trigger (synchronous deploys return their full result; background
+		// syncs are dispatched and return 202).
 		const result = await options.trigger(id);
-		await options.audit(event, id, entity, {
-			method: 'GET', source: 'get', result: result.success ? 'triggered' : 'failed'
-		});
-
-		if (!result.success) {
-			return json(result, { status: 500 });
-		}
-
-		// Synchronous mode returns the awaited trigger result (stack-mode webhook).
-		if (options.synchronous) {
-			return json(result);
-		}
-
-		return json({
-			success: true,
-			message: options.successMessage,
-			...(options.deprecated ? { deprecated: true } : {})
-		}, { status: 202 });
+		return finishWebhookTrigger(event, id, entity, options, result, 'GET', 'get');
 	}
 
 	const source = detectSource(request);
@@ -189,24 +214,8 @@ export async function handleGitWebhookRequest<TEntity extends GitWebhookEntity>(
 		return json({ error: 'Invalid webhook signature' }, { status: 401 });
 	}
 
-	// Trigger the sync in the background and return 202 immediately.
+	// Run the trigger (synchronous deploys return their full result; background
+	// syncs are dispatched and return 202).
 	const result = await options.trigger(id);
-	await options.audit(event, id, entity, {
-		method: 'POST', source, result: result.success ? 'triggered' : 'failed'
-	});
-
-	if (!result.success) {
-		return json(result, { status: 500 });
-	}
-
-	// Synchronous mode returns the awaited trigger result (stack-mode webhook).
-	if (options.synchronous) {
-		return json(result);
-	}
-
-	return json({
-		success: true,
-		message: options.successMessage,
-		...(options.deprecated ? { deprecated: true } : {})
-	}, { status: 202 });
+	return finishWebhookTrigger(event, id, entity, options, result, 'POST', source);
 }

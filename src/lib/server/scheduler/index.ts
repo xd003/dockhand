@@ -295,7 +295,7 @@ export async function refreshAllSchedules(): Promise<void> {
 
 	// Register git sync schedules — BOTH families live in mixed mode:
 	//  - git_stack_sync for stack-model stacks with autoUpdate (the helper is
-	//    filtered to git_model='stack').
+	//    filtered to engine='stack').
 	//  - git_repository_sync for repositories that have at least one
 	//    centralized-model stack AND repo autoUpdate (the helper is filtered to
 	//    repos with a centralized member).

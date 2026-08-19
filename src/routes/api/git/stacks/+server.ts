@@ -80,7 +80,7 @@ export const POST: RequestHandler = async (event) => {
 
 		// New stacks inherit the GLOBAL DEFAULT (env lock wins). Any model sent by
 		// the client is ignored — there is no per-stack chooser (createStackModel).
-		const model = createStackModel(await getDesiredGitMode(), data.gitModel);
+		const model = createStackModel(await getDesiredGitMode(), data.engine);
 
 		if (!data.stackName || typeof data.stackName !== 'string') {
 			return json({ error: 'Stack name is required' }, { status: 400 });
@@ -196,7 +196,7 @@ export const POST: RequestHandler = async (event) => {
 				noBuildCache: data.noBuildCache ?? false,
 				repullImages: data.repullImages ?? false,
 				forceRedeploy: data.forceRedeploy ?? false,
-				gitModel: model,
+				engine: model,
 				webhookEnabled: data.forceRedeploy ? (data.webhookEnabled || false) : false,
 				webhookSecret: (data.forceRedeploy && data.webhookEnabled) ? (data.webhookSecret || null) : null
 			}
@@ -213,7 +213,7 @@ export const POST: RequestHandler = async (event) => {
 				noBuildCache: data.noBuildCache ?? false,
 				repullImages: data.repullImages ?? false,
 				forceRedeploy: data.forceRedeploy ?? false,
-				gitModel: model,
+				engine: model,
 				webhookEnabled: data.webhookEnabled || false,
 				webhookSecret: data.webhookEnabled ? (data.webhookSecret || null) : null,
 				autoUpdate: data.autoUpdate || false,

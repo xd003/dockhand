@@ -35,7 +35,7 @@ import { authorize } from '$lib/server/authorize';
 import { refreshSystemJobs } from '$lib/server/scheduler';
 import { sendToEventSubprocess, sendToMetricsSubprocess } from '$lib/server/subprocess-manager';
 import { getGitMode, getDesiredGitMode, isGitModeEnvForced } from '$lib/server/git-mode';
-import { getGitModeTransition, getGitStackMigration } from '$lib/server/db';
+import { getGitMigrationState } from '$lib/server/db';
 import { audit } from '$lib/server/audit';
 import { DEFAULT_GRYPE_IMAGE, DEFAULT_TRIVY_IMAGE } from '$lib/server/scanner';
 import { DEFAULT_HELPER_IMAGE } from '$lib/server/backups/restic';
@@ -131,15 +131,7 @@ export interface GeneralSettings {
 	gitRepositoryMode: 'stack' | 'centralized';
 	gitRepositoryDesiredMode: 'stack' | 'centralized';
 	gitRepositoryModeForcedByEnv: boolean;
-	gitModeTransition: {
-		state: 'idle' | 'draining' | 'provisioning' | 'cutting_over';
-		mode: 'stack' | 'centralized';
-		jobId: string | null;
-		startedAt: string | null;
-		finishedAt: string | null;
-		error: string | null;
-	};
-	gitStackMigration: {
+	gitMigrationState: {
 		state: 'idle' | 'draining' | 'provisioning' | 'cutting_over';
 		jobId: string | null;
 		startedAt: string | null;
@@ -192,8 +184,7 @@ const DEFAULT_SETTINGS: Omit<GeneralSettings, 'scheduleRetentionDays' | 'eventRe
 	gitRepositoryMode: 'stack',
 	gitRepositoryDesiredMode: 'stack',
 	gitRepositoryModeForcedByEnv: false,
-	gitModeTransition: { state: 'idle', mode: 'stack', jobId: null, startedAt: null, finishedAt: null, error: null },
-	gitStackMigration: { state: 'idle', jobId: null, startedAt: null, finishedAt: null, error: null },
+	gitMigrationState: { state: 'idle', jobId: null, startedAt: null, finishedAt: null, error: null },
 	defaultComposeTemplate: `version: "3.8"
 
 services:
@@ -418,11 +409,10 @@ export const GET: RequestHandler = async ({ cookies }) => {
 		};
 
 		// Git repository model — fetched separately (cheap, keeps the bulk fetch untouched)
-		const [effectiveMode, desiredMode, transition, stackMigration] = await Promise.all([
+		const [effectiveMode, desiredMode, stackMigration] = await Promise.all([
 			getGitMode(),
 			getDesiredGitMode(),
-			getGitModeTransition(),
-			getGitStackMigration()
+			getGitMigrationState()
 		]);
 
 		const settings: GeneralSettings = {
@@ -430,15 +420,7 @@ export const GET: RequestHandler = async ({ cookies }) => {
 			gitRepositoryMode: effectiveMode,
 			gitRepositoryDesiredMode: desiredMode,
 			gitRepositoryModeForcedByEnv: isGitModeEnvForced(),
-			gitModeTransition: {
-				state: transition?.state ?? 'idle',
-				mode: (transition?.mode as 'stack' | 'centralized') ?? 'stack',
-				jobId: transition?.jobId ?? null,
-				startedAt: transition?.startedAt ?? null,
-				finishedAt: transition?.finishedAt ?? null,
-				error: transition?.error ?? null
-			},
-			gitStackMigration: {
+			gitMigrationState: {
 				state: stackMigration?.state ?? 'idle',
 				jobId: stackMigration?.jobId ?? null,
 				startedAt: stackMigration?.startedAt ?? null,
@@ -842,11 +824,10 @@ const { confirmDestructive, showStoppedContainers, highlightUpdates, coloredActi
 			defaultScannerDns: parseScannerDnsStorage(defaultScannerDnsRawVal)
 		};
 
-		const [effectiveModeVal, desiredModeVal, transitionVal, stackMigrationVal] = await Promise.all([
+		const [effectiveModeVal, desiredModeVal, stackMigrationVal] = await Promise.all([
 			getGitMode(),
 			getDesiredGitMode(),
-			getGitModeTransition(),
-			getGitStackMigration()
+			getGitMigrationState()
 		]);
 
 		const settings: GeneralSettings = {
@@ -854,15 +835,7 @@ const { confirmDestructive, showStoppedContainers, highlightUpdates, coloredActi
 			gitRepositoryMode: effectiveModeVal,
 			gitRepositoryDesiredMode: desiredModeVal,
 			gitRepositoryModeForcedByEnv: isGitModeEnvForced(),
-			gitModeTransition: {
-				state: transitionVal?.state ?? 'idle',
-				mode: (transitionVal?.mode as 'stack' | 'centralized') ?? 'stack',
-				jobId: transitionVal?.jobId ?? null,
-				startedAt: transitionVal?.startedAt ?? null,
-				finishedAt: transitionVal?.finishedAt ?? null,
-				error: transitionVal?.error ?? null
-			},
-			gitStackMigration: {
+			gitMigrationState: {
 				state: stackMigrationVal?.state ?? 'idle',
 				jobId: stackMigrationVal?.jobId ?? null,
 				startedAt: stackMigrationVal?.startedAt ?? null,

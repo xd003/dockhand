@@ -12,6 +12,6 @@ describe('create-stack model stamping (createStackModel)', () => {
 		assert.equal(createStackModel('stack', 'centralized'), 'stack');
 		assert.equal(createStackModel('centralized', 'stack'), 'centralized');
 		assert.equal(createStackModel('centralized', undefined), 'centralized');
-		assert.equal(createStackModel('centralized', { gitModel: 'stack' }), 'centralized');
+		assert.equal(createStackModel('centralized', { engine: 'stack' }), 'centralized');
 	});
 });

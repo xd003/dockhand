@@ -10,9 +10,9 @@ import {
 describe('mixed-mode scheduler routing', () => {
 	it('filterStackModel selects only stack-model rows', () => {
 		const stacks = [
-			{ id: 1, repositoryId: 7, gitModel: 'stack' },
-			{ id: 2, repositoryId: 7, gitModel: 'centralized' },
-			{ id: 3, repositoryId: 8, gitModel: 'stack' }
+			{ id: 1, repositoryId: 7, engine: 'stack' },
+			{ id: 2, repositoryId: 7, engine: 'centralized' },
+			{ id: 3, repositoryId: 8, engine: 'stack' }
 		];
 		const stackModel = filterStackModel(stacks);
 		assert.deepEqual(stackModel.map((s) => s.id), [1, 3]);
@@ -20,8 +20,8 @@ describe('mixed-mode scheduler routing', () => {
 
 	it('filterCentralizedStacks selects only centralized-model rows (fan-out)', () => {
 		const stacks = [
-			{ id: 1, repositoryId: 7, gitModel: 'stack' },
-			{ id: 2, repositoryId: 7, gitModel: 'centralized' }
+			{ id: 1, repositoryId: 7, engine: 'stack' },
+			{ id: 2, repositoryId: 7, engine: 'centralized' }
 		];
 		assert.deepEqual(filterCentralizedStacks(stacks).map((s) => s.id), [2]);
 	});
@@ -29,9 +29,9 @@ describe('mixed-mode scheduler routing', () => {
 	it('filterReposWithCentralizedMember excludes repos with zero centralized stacks', () => {
 		const repos = [{ id: 7 }, { id: 8 }, { id: 9 }];
 		const stacks = [
-			{ id: 1, repositoryId: 7, gitModel: 'stack' },
-			{ id: 2, repositoryId: 7, gitModel: 'centralized' },
-			{ id: 3, repositoryId: 8, gitModel: 'stack' }
+			{ id: 1, repositoryId: 7, engine: 'stack' },
+			{ id: 2, repositoryId: 7, engine: 'centralized' },
+			{ id: 3, repositoryId: 8, engine: 'stack' }
 		];
 		const eligible = filterReposWithCentralizedMember(repos, stacks);
 		assert.deepEqual(eligible.map((r) => r.id), [7]);
@@ -39,7 +39,7 @@ describe('mixed-mode scheduler routing', () => {
 
 	it('filterReposWithCentralizedMember returns nothing when every repo is stack-model only', () => {
 		const repos = [{ id: 7 }];
-		const stacks = [{ id: 1, repositoryId: 7, gitModel: 'stack' }];
+		const stacks = [{ id: 1, repositoryId: 7, engine: 'stack' }];
 		assert.deepEqual(filterReposWithCentralizedMember(repos, stacks), []);
 	});
 

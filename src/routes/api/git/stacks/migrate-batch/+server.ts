@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getGitStack, getGitStacks } from '$lib/server/db';
-import { startGitStackMigration } from '$lib/server/git-stack-migrate';
+import { startGitMigration } from '$lib/server/git-stack-migrate';
 import { ConflictError } from '$lib/server/git-mode';
 import { authorize } from '$lib/server/authorize';
 import { audit } from '$lib/server/audit';
@@ -34,7 +34,7 @@ export const POST: RequestHandler = async (event) => {
 		const allStacks = await getGitStacks();
 		const eligible = uniqueIds.filter((id) => {
 			const stack = allStacks.find((s) => s.id === id);
-			return stack && stack.gitModel === 'stack';
+			return stack && stack.engine === 'stack';
 		});
 
 		if (eligible.length === 0) {
@@ -46,7 +46,7 @@ export const POST: RequestHandler = async (event) => {
 		}
 
 		try {
-			await startGitStackMigration(eligible);
+			await startGitMigration(eligible);
 		} catch (err) {
 			if (err instanceof ConflictError) {
 				return json({ error: err.message }, { status: 409 });

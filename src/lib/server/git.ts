@@ -1054,14 +1054,14 @@ export interface GitEngine {
 	// Repository-level operations (centralized only).
 	syncRepository?(repoId: number): Promise<SyncResult>;
 	syncRepositoryExclusive?(repoId: number): Promise<SyncResult>;
-	deployFromRepositoryWithFanOut?(repositoryId: number, log?: (msg: string) => void): Promise<FanOutResult>;
+	deployFromRepositoryWithFanOut?(repositoryId: number, log?: (msg: string) => void, stackIds?: number[]): Promise<FanOutResult>;
 	checkForUpdates?(repoId: number): Promise<{ hasUpdates: boolean; currentCommit?: string; latestCommit?: string; error?: string }>;
 }
 
 /**
  * Resolve an engine instance for the given mode (default: stack). Stack-level
  * operations use getEngineForStack()/getEngineForRepository() so dispatch
- * follows each stack's git_model, captured once per top-level operation so a
+ * follows each stack's engine, captured once per top-level operation so a
  * mid-flight migrate cannot split-brain a single call (per-stack F9).
  */
 export async function getEngine(mode?: GitMode): Promise<GitEngine> {
@@ -1075,7 +1075,7 @@ export async function getEngine(mode?: GitMode): Promise<GitEngine> {
 }
 
 /**
- * Resolve the engine for a git stack from its own git_model ('centralized' or
+ * Resolve the engine for a git stack from its own engine ('centralized' or
  * 'stack'). The model is read once per top-level operation, so a concurrent
  * migrate cutting over mid-operation cannot split-brain that call (per-stack
  * F9). Rows missing a model (should not happen post-0012 backfill) fall back
@@ -1085,7 +1085,7 @@ export async function getEngineForStack(stackId: number): Promise<GitEngine> {
 	const { getGitStack } = await import('./db');
 	const stack = await getGitStack(stackId);
 	if (stack) {
-		return getEngine(stack.gitModel);
+		return getEngine(stack.engine);
 	}
 	// No stack row (mid-delete) — default to the stack engine to keep delete
 	// lifecycle code safe.
@@ -1095,14 +1095,14 @@ export async function getEngineForStack(stackId: number): Promise<GitEngine> {
 /**
  * Resolve the engine for repo-level operations from membership: the
  * centralized engine only when the repository has at least one
- * git_model='centralized' stack. Otherwise the stack engine answers, which has
+ * engine='centralized' stack. Otherwise the stack engine answers, which has
  * no repo-level methods and reproduces today's "not available in stack mode"
  * errors. Mirrors the repo-level existence check used by the scheduler.
  */
 export async function getEngineForRepository(repositoryId: number): Promise<GitEngine> {
 	const { getFullGitStacksByRepositoryId } = await import('./db');
 	const stacks = await getFullGitStacksByRepositoryId(repositoryId);
-	const hasCentralized = stacks.some((s) => s.gitModel === 'centralized');
+	const hasCentralized = stacks.some((s) => s.engine === 'centralized');
 	return hasCentralized ? getEngine('centralized') : getEngine('stack');
 }
 
@@ -1164,13 +1164,14 @@ export async function provisionSharedClone(repoId: number): Promise<SyncResult> 
 
 export async function deployFromRepositoryWithFanOut(
 	repositoryId: number,
-	log?: (msg: string) => void
+	log?: (msg: string) => void,
+	stackIds?: number[]
 ): Promise<FanOutResult> {
 	const engine = await getEngineForRepository(repositoryId);
 	if (!engine.deployFromRepositoryWithFanOut) {
 		return { success: false, error: 'Repository-level webhooks are not available in stack mode', stacks: [] };
 	}
-	return engine.deployFromRepositoryWithFanOut(repositoryId, log);
+	return engine.deployFromRepositoryWithFanOut(repositoryId, log, stackIds);
 }
 
 export async function checkForUpdates(repoId: number): Promise<{ hasUpdates: boolean; currentCommit?: string; latestCommit?: string; error?: string }> {

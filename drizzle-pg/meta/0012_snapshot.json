@@ -1235,76 +1235,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.git_mode_transition": {
-      "name": "git_mode_transition",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "serial",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "mode": {
-          "name": "mode",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "default": "'stack'"
-        },
-        "state": {
-          "name": "state",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "default": "'idle'"
-        },
-        "job_id": {
-          "name": "job_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "started_at": {
-          "name": "started_at",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "finished_at": {
-          "name": "finished_at",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "snapshot": {
-          "name": "snapshot",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "error": {
-          "name": "error",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": false,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.git_repositories": {
       "name": "git_repositories",
       "schema": "",
@@ -1457,8 +1387,8 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.git_stack_migration": {
-      "name": "git_stack_migration",
+    "public.git_migration_state": {
+      "name": "git_migration_state",
       "schema": "",
       "columns": {
         "id": {
@@ -1607,8 +1537,8 @@
           "primaryKey": false,
           "notNull": false
         },
-        "git_model": {
-          "name": "git_model",
+        "engine": {
+          "name": "engine",
           "type": "text",
           "primaryKey": false,
           "notNull": true,

@@ -75,7 +75,7 @@ describe('migration 0012 (apply_commit_changes)', () => {
 		}
 	});
 
-	it('adds git_model as NOT NULL default stack — existing rows backfill to the default', () => {
+	it('adds engine as NOT NULL default stack — existing rows backfill to the default', () => {
 		const db = new Database(':memory:');
 		db.exec(COLUMNS_REQUIRED_BY_MIGRATION);
 		db.exec("INSERT INTO git_stacks (stack_name, repository_id) VALUES ('legacy', 1)");
@@ -85,12 +85,12 @@ describe('migration 0012 (apply_commit_changes)', () => {
 		}
 		const columns = (db.prepare("PRAGMA table_info('git_stacks')").all() as Array<{ name: string }>)
 			.map((c) => c.name);
-		assert.ok(columns.includes('git_model'), 'expected git_stacks to gain git_model');
-		const row = db.prepare('SELECT git_model FROM git_stacks WHERE stack_name = ?').get('legacy') as { git_model: string };
-		assert.equal(row.git_model, 'stack', 'existing rows must backfill to the column default');
+		assert.ok(columns.includes('engine'), 'expected git_stacks to gain engine');
+		const row = db.prepare('SELECT engine FROM git_stacks WHERE stack_name = ?').get('legacy') as { engine: string };
+		assert.equal(row.engine, 'stack', 'existing rows must backfill to the column default');
 	});
 
-	it('creates the git_stack_migration job table with state default idle', () => {
+	it('creates the git_migration_state job table with state default idle', () => {
 		const db = new Database(':memory:');
 		db.exec(COLUMNS_REQUIRED_BY_MIGRATION);
 		const sql = readFileSync(SQLITE_MIGRATION, 'utf8');
@@ -99,8 +99,8 @@ describe('migration 0012 (apply_commit_changes)', () => {
 		}
 		const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>)
 			.map((t) => t.name);
-		assert.ok(tables.includes('git_stack_migration'), 'expected git_stack_migration table to be created');
-		const ddl = (db.prepare("SELECT sql FROM sqlite_master WHERE name='git_stack_migration'").get() as { sql: string }).sql;
+		assert.ok(tables.includes('git_migration_state'), 'expected git_migration_state table to be created');
+		const ddl = (db.prepare("SELECT sql FROM sqlite_master WHERE name='git_migration_state'").get() as { sql: string }).sql;
 		assert.match(ddl, /`?state`?\s+TEXT\s+DEFAULT\s+'idle'\s+NOT\s+NULL/i, 'state must default to idle so the narrow lock never wedges');
 	});
 });
@@ -133,14 +133,14 @@ describe('migration 0012 file guards', () => {
 			);
 		});
 
-		it(`(${name}) does not backfill git_model in SQL — that is a runtime step`, () => {
+		it(`(${name}) does not backfill engine in SQL — that is a runtime step`, () => {
 			// setSetting() stores JSON-stringified values ("centralized" with quotes),
 			// so a SQL UPDATE from settings.value would write invalid model strings.
 			// The backfill lives in drizzle.ts (backfillGitStackModel) via getSetting().
 			const sql = readFileSync(path, 'utf8');
 			assert.ok(
 				!/UPDATE\s+["`]?git_stacks/.test(sql),
-				'0012 must not mutate git_stacks.git_model in SQL (backfill is runtime)'
+				'0012 must not mutate git_stacks.engine in SQL (backfill is runtime)'
 			);
 			assert.ok(
 				!/SELECT.*settings/.test(sql),

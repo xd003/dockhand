@@ -10,7 +10,7 @@
 export type GitModel = 'stack' | 'centralized';
 
 export interface GitModelStackLike {
-	gitModel?: string | null;
+	engine?: string | null;
 }
 
 export interface GitModelRepoLike {
@@ -22,14 +22,14 @@ export interface GitModelStackWithRepo extends GitModelStackLike {
 	repositoryId: number;
 }
 
-/** Stacks that run on the per-stack engine (git_model = 'stack'). */
+/** Stacks that run on the per-stack engine (engine = 'stack'). */
 export function filterStackModel<T extends GitModelStackLike>(stacks: T[]): T[] {
-	return stacks.filter((s) => s.gitModel === 'stack');
+	return stacks.filter((s) => s.engine === 'stack');
 }
 
-/** Stacks that run on the centralized engine (git_model = 'centralized'). */
+/** Stacks that run on the centralized engine (engine = 'centralized'). */
 export function filterCentralizedStacks<T extends GitModelStackLike>(stacks: T[]): T[] {
-	return stacks.filter((s) => s.gitModel === 'centralized');
+	return stacks.filter((s) => s.engine === 'centralized');
 }
 
 /**

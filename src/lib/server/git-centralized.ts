@@ -18,24 +18,20 @@ import {
 	updateGitRepository,
 	getGitStack,
 	updateGitStack,
-	upsertStackSource,
 	getFullGitStacksByRepositoryId,
 	type GitCredential
 } from './db';
-import { deployStack, getStackDir } from './stacks';
 import { assertSafeGitRef, repoFilePath } from './git-url-safety';
 import { isPathUnderRoot } from './path-utils';
-import { parseComposePathsColumn } from './compose-files';
 import { filterCentralizedStacks } from '../utils/git-model-routing';
 import { collectProcess } from './process-utils';
 import { redactEnvVarsForLog } from './log-utils';
 import {
 	mergeDeployGitStackOpts,
-	shouldDeployGitStack,
 	fanOutDeployStacks,
+	mergeFanOutStackIds,
 	type DeployGitStackOpts
 } from '../utils/git-deploy-gating';
-import { buildSyncChangeSummary, formatChangeTable, skipReasonMessage, type SyncManifest } from './git-deletions';
 import { runCoalesced, type CoalesceSlot } from './coalesce';
 import { Semaphore } from './semaphore';
 import {
@@ -45,7 +41,6 @@ import {
 	execGit,
 	getChangedFilesInDir,
 	computeSyncDeletionPlan,
-	finalizeDeletionSync,
 	notifyGitSync,
 	getRepoPath,
 	getGitReposDir,
@@ -58,6 +53,7 @@ import {
 	type GitEngine,
 	type GitMode
 } from './git';
+import { deployStackFromSync } from './git-deploy-shared';
 import { getGitMode } from './git-mode';
 
 // Generous per-clone bound: a frozen network/SSH connection must not wedge the
@@ -316,18 +312,32 @@ export async function syncRepositoryExclusive(repoId: number): Promise<SyncResul
 
 type FanOutOpts = {
 	log?: (msg: string) => void;
+	/** When set, only these stack IDs are fanned out (env-scoped manual deploys). */
+	stackIds?: number[];
 };
 
 /** Per-stack deploy coalesce slots (repo webhook fan-out ↔ stack webhook). */
 const stackDeploySlots = new Map<number, CoalesceSlot<DeployGitStackOpts, DeployGitStackResult>>();
 
-/** Per-repository fan-out coalesce slots (duplicate repo webhooks). */
-const repoFanOutSlots = new Map<number, CoalesceSlot<FanOutOpts, FanOutResult>>();
+/**
+ * Per-repository fan-out coalesce slots. Keyed by repo + authorization scope
+ * (fanOutScopeKey), NOT repo alone: concurrent callers with different
+ * env-scoped stack sets must never merge into one run — the union would deploy
+ * stacks a caller was not authorized for (cross-boundary). Same-scope requests
+ * (repeated repo webhooks, repeat manual deploys by one user) still coalesce.
+ */
+const repoFanOutSlots = new Map<string, CoalesceSlot<FanOutOpts, FanOutResult>>();
+
+/** Coalesce key for a repo fan-out: repository + normalized authorized stack set. */
+function fanOutScopeKey(repositoryId: number, stackIds: number[] | undefined): string {
+	const scope = stackIds ? [...stackIds].sort((a, b) => a - b).join(',') : 'all';
+	return `${repositoryId}:${scope}`;
+}
 
 /**
  * Number of coalesced git operations currently in flight (stack deploys +
  * repo fan-outs). Slots are removed from the maps on completion, so `.size`
- * is the live in-flight count. Used by the mode-transition drain (git-transition.ts).
+ * is the live in-flight count. Used by the per-stack migration drain (git-stack-migrate.ts).
  */
 export function getActiveGitCoalesceCount(): number {
 	return stackDeploySlots.size + repoFanOutSlots.size;
@@ -342,13 +352,15 @@ export function getActiveGitCoalesceCount(): number {
 export function getActiveGitCoalesceIds(): { stacks: number[]; repos: number[] } {
 	return {
 		stacks: [...stackDeploySlots.keys()],
-		repos: [...repoFanOutSlots.keys()]
+		repos: [...repoFanOutSlots.keys()].map((k) => Number(k.split(':')[0]))
 	};
 }
 
 function mergeFanOutOpts(a: FanOutOpts, b: FanOutOpts): FanOutOpts {
-	// Prefer the newer caller's logger so its schedule-execution log is populated
-	return { log: b.log ?? a.log };
+	// Prefer the newer caller's logger so its schedule-execution log is populated.
+	// Same-scope callers coalesce (identical stackIds), so the union below is
+	// identity in practice — different scopes never share a slot (fanOutScopeKey).
+	return { log: b.log ?? a.log, stackIds: mergeFanOutStackIds(a.stackIds, b.stackIds) };
 }
 
 /**
@@ -372,22 +384,26 @@ async function waitForStackDeployIdle(stackId: number): Promise<void> {
 
 export async function deployFromRepositoryWithFanOut(
 	repositoryId: number,
-	log?: (msg: string) => void
+	log?: (msg: string) => void,
+	stackIds?: number[]
 ): Promise<FanOutResult> {
 	// Coalesce concurrent repo webhooks / manual triggers for the same repository
-	// into a single in-flight fan-out (+ at most one trailing re-run).
+	// AND authorization scope into a single in-flight fan-out (+ at most one
+	// trailing re-run). Different env-scoped callers get separate runs — the
+	// union of their stack IDs would cross authorization boundaries.
 	return runCoalesced(
 		repoFanOutSlots,
-		repositoryId,
-		{ log },
+		fanOutScopeKey(repositoryId, stackIds),
+		{ log, stackIds },
 		mergeFanOutOpts,
-		(opts) => deployFromRepositoryWithFanOutImpl(repositoryId, opts.log)
+		(opts) => deployFromRepositoryWithFanOutImpl(repositoryId, opts.log, opts.stackIds)
 	);
 }
 
 async function deployFromRepositoryWithFanOutImpl(
 	repositoryId: number,
-	log?: (msg: string) => void
+	log?: (msg: string) => void,
+	stackIds?: number[]
 ): Promise<FanOutResult> {
 	const _log = log || console.log;
 
@@ -401,7 +417,12 @@ async function deployFromRepositoryWithFanOutImpl(
 	// Get all stacks tied to this repository that run in centralized mode.
 	// Stack-model siblings keep their own per-stack clone + webhook contract and
 	// must NOT be deployed from the shared clone's fan-out (mixed repos).
-	const stacks = filterCentralizedStacks(await getFullGitStacksByRepositoryId(repositoryId));
+	let stacks = filterCentralizedStacks(await getFullGitStacksByRepositoryId(repositoryId));
+	if (stackIds) {
+		const allowed = new Set(stackIds);
+		stacks = stacks.filter((s) => allowed.has(s.id));
+		_log(`[Git] Fan-out filtered to ${stacks.length} stack(s) authorized for this caller.`);
+	}
 	if (stacks.length === 0) {
 		_log(`[Git] No centralized stacks linked to repository "${repo.name}".`);
 		return { success: true, stacks: [] };
@@ -706,152 +727,8 @@ async function deployGitStackCore(
 			console.log(`${logPrefix} Env file vars (masked):`, JSON.stringify(redactEnvVarsForLog(syncResult.envFileVars), null, 2));
 		}
 
-		// Check if there are changes - skip redeploy if no changes and not forced
-		// Note: For new stacks (first deploy), syncResult.updated will be true
-		// forceRedeploy setting overrides the skip logic for webhooks/scheduled syncs
-		const shouldDeploy = shouldDeployGitStack({
-			force,
-			ignoreForceRedeploy,
-			forceRedeploy: gitStack.forceRedeploy,
-			updated: syncResult.updated
-		});
-		if (!shouldDeploy) {
-			console.log(`${logPrefix} No changes detected and force=false, forceRedeploy=false, skipping redeploy`);
-			const skippedResult = {
-				success: true,
-				output: 'No changes detected, skipping redeploy',
-				skipped: true
-			};
-			await notifyGitSync(gitStack.stackName, gitStack.environmentId, skippedResult);
-			return skippedResult;
-		}
-
-		const forceRecreate = syncResult.updated;
-		console.log(`${logPrefix} Will force recreate:`, forceRecreate, `(updated=${syncResult.updated})`);
-		console.log(`${logPrefix} Build on deploy:`, gitStack.buildOnDeploy);
-		console.log(`${logPrefix} Re-pull images:`, gitStack.repullImages);
-		console.log(`${logPrefix} Force redeploy setting:`, gitStack.forceRedeploy);
-
-		// Show the git file changes BEFORE the deploy starts, so the user sees
-		// what changed while the deploy runs and the deploy start/result lines
-		// stay together (#1260). Removals reflect the deletion plan here;
-		// apply-stage divergences (rare) are reported after the deploy.
-		if (onProgress && syncResult.previousManifest && syncResult.newFiles && syncResult.deletionPlan) {
-			const changeTable = formatChangeTable(
-				buildSyncChangeSummary(
-					syncResult.previousManifest.files,
-					syncResult.newFiles,
-					{ deleted: syncResult.deletionPlan.toDelete.map((f) => f.path), skipped: [] },
-					syncResult.deletionPlan.skipped
-				)
-			);
-			onProgress({ status: 'deploying', message: `File changes: ${changeTable[0]}`, step: 5, totalSteps: 5 });
-			for (const line of changeTable.slice(1)) {
-				onProgress({ status: 'deploying', message: line, step: 5, totalSteps: 5 });
-			}
-			onProgress({ status: 'deploying', message: `Deploying ${gitStack.stackName}...`, step: 5, totalSteps: 5 });
-			if (syncResult.deletionPlan.toDelete.length > 0) {
-				onProgress({
-					status: 'deploying',
-					message: `Removing ${syncResult.deletionPlan.toDelete.length} file(s) deleted from the repository...`,
-					step: 5,
-					totalSteps: 5
-				});
-			}
-		}
-
-		// Deploy using unified function - handles both new and existing stacks
-		// Uses `docker compose up -d --remove-orphans` which only recreates changed services
-		// Force recreate whenever git detected changes to ensure containers pick up
-		// new env var values even if compose file itself didn't change
-		console.log(`${logPrefix} Calling deployStack...`);
-		console.log(`${logPrefix} Source directory (composeDir):`, syncResult.composeDir);
-		console.log(`${logPrefix} Compose filename:`, syncResult.composeFileName);
-		console.log(`${logPrefix} Env filename:`, syncResult.envFileName ?? '(none)');
-
-		const result = await deployStack({
-			name: gitStack.stackName,
-			compose: syncResult.composeContent!,
-			envId: gitStack.environmentId,
-			sourceDir: syncResult.composeDir, // Copy entire directory from git repo
-			composeFileName: syncResult.composeFileName, // Use original compose filename from repo
-			envFileName: syncResult.envFileName, // Env file relative to compose dir (for --env-file flag, optional)
-			composePaths: gitStack.composePaths ? parseComposePathsColumn(gitStack.composePaths) : undefined,
-			forceRecreate,
-			build: gitStack.buildOnDeploy,
-			noBuildCache: gitStack.noBuildCache,
-			pullPolicy: gitStack.repullImages ? 'always' : undefined,
-			filesToDelete: syncResult.deletionPlan?.toDelete,
-			isGitDeploy: true // suppress stack_* notification; we emit git_sync_* below
-		});
-
-		console.log(`${logPrefix} ----------------------------------------`);
-		console.log(`${logPrefix} DEPLOY GIT STACK RESULT`);
-		console.log(`${logPrefix} ----------------------------------------`);
-		console.log(`${logPrefix} Success:`, result.success);
-		if (result.output) console.log(`${logPrefix} Output:`, result.output);
-		if (result.error) console.log(`${logPrefix} Error:`, result.error);
-
-		if (result.success) {
-			// Deletion sync: persist manifest + log per-file change summary
-			if (syncResult.previousManifest && syncResult.newFiles && syncResult.newCommitFull && syncResult.deletionPlan) {
-				await finalizeDeletionSync({
-					stackId,
-					logPrefix,
-					previousManifest: syncResult.previousManifest,
-					newCommitFull: syncResult.newCommitFull,
-					newFiles: syncResult.newFiles,
-					plan: syncResult.deletionPlan,
-					applyResult: result.deletion
-				});
-			}
-
-			// Record the stack source with resolved compose path for consistency
-			const stackDir = await getStackDir(gitStack.stackName, gitStack.environmentId);
-			const resolvedComposePath = syncResult.composeFileName
-				? join(stackDir, syncResult.composeFileName)
-				: undefined;
-
-			console.log(`${logPrefix} Resolved compose path for stack_sources:`, resolvedComposePath);
-
-			await upsertStackSource({
-				stackName: gitStack.stackName,
-				environmentId: gitStack.environmentId,
-				sourceType: 'git',
-				gitRepositoryId: gitStack.repositoryId,
-				gitStackId: stackId,
-				composePath: resolvedComposePath,
-				composePaths: gitStack.composePaths ? parseComposePathsColumn(gitStack.composePaths) : null
-			});
-
-			if (onProgress) {
-				const applySkips = (result.deletion?.skipped ?? []).filter((s) => s.reason !== 'already-absent');
-				for (const skip of applySkips) {
-					onProgress({
-						status: 'deploying',
-						message: `Kept "${skip.path}" — ${skipReasonMessage(skip.reason)}`,
-						step: 5,
-						totalSteps: 5
-					});
-				}
-				onProgress({ status: 'complete', message: `Successfully deployed ${gitStack.stackName}` });
-			}
-		} else {
-			if (syncResult.updated && syncResult.commit) {
-				// Sync advanced lastCommit before deploy. Roll it back on deploy failure so
-				// the next scheduled/webhook sync still sees the commit as pending and retries.
-				console.log(`${logPrefix} Deploy failed after sync — rolling back lastCommit to enable retry`);
-				await updateGitStack(stackId, {
-					lastCommit: gitStack.lastCommit ?? null,
-					syncStatus: 'error',
-					syncError: result.error || 'Deploy failed'
-				});
-			}
-			onProgress?.({ status: 'error', error: result.error || 'Failed to deploy stack' });
-		}
-
-		await notifyGitSync(gitStack.stackName, gitStack.environmentId, result);
-		return result;
+		// Deploy using the shared post-sync body (git-deploy-shared.ts).
+		return deployStackFromSync({ stackId, gitStack, opts: { force, ignoreForceRedeploy }, syncResult, onProgress, logPrefix });
 	} finally {
 		stackDeployReentrancy.delete(stackId);
 	}

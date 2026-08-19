@@ -1286,82 +1286,6 @@
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
-    "git_mode_transition": {
-      "name": "git_mode_transition",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "integer",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": true
-        },
-        "mode": {
-          "name": "mode",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false,
-          "default": "'stack'"
-        },
-        "state": {
-          "name": "state",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false,
-          "default": "'idle'"
-        },
-        "job_id": {
-          "name": "job_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "started_at": {
-          "name": "started_at",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "finished_at": {
-          "name": "finished_at",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "snapshot": {
-          "name": "snapshot",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "error": {
-          "name": "error",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false,
-          "default": "CURRENT_TIMESTAMP"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
     "git_repositories": {
       "name": "git_repositories",
       "columns": {
@@ -1529,8 +1453,8 @@
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
-    "git_stack_migration": {
-      "name": "git_stack_migration",
+    "git_migration_state": {
+      "name": "git_migration_state",
       "columns": {
         "id": {
           "name": "id",
@@ -1696,8 +1620,8 @@
           "notNull": false,
           "autoincrement": false
         },
-        "git_model": {
-          "name": "git_model",
+        "engine": {
+          "name": "engine",
           "type": "text",
           "primaryKey": false,
           "notNull": true,

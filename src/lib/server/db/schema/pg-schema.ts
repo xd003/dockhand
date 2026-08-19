@@ -82,29 +82,13 @@ export const settings = pgTable('settings', {
 });
 
 // =============================================================================
-// GIT MODE TRANSITION TABLE (single-row state machine)
-// =============================================================================
-// Persists the git-repository mode transition job (see git-transition.ts).
-// Only one row is ever written; state drives a 409 lock-out of git mutations.
-export const gitModeTransition = pgTable('git_mode_transition', {
-	id: serial('id').primaryKey(),
-	mode: text('mode').default('stack'), // effective mode written at cutover
-	state: text('state').default('idle'), // idle | draining | provisioning | cutting_over
-	jobId: text('job_id'),
-	startedAt: timestamp('started_at', { mode: 'string' }),
-	finishedAt: timestamp('finished_at', { mode: 'string' }),
-	snapshot: text('snapshot'), // JSON: original force_redeploy per stack + original repo-level fields
-	error: text('error'),
-	updatedAt: timestamp('updated_at', { mode: 'string' }).defaultNow()
-});
-
 // =============================================================================
 // GIT STACK MIGRATION TABLE (per-stack, single-row state machine)
 // =============================================================================
 // Persists the per-stack migrate-to-centralized job (git-stack-migrate.ts).
 // Only one row is ever written; state drives a narrow 409 lock-out scoped to
 // the migrating stack ids / repos being provisioned (not the whole Git API).
-export const gitStackMigration = pgTable('git_stack_migration', {
+export const gitMigrationState = pgTable('git_migration_state', {
 	id: serial('id').primaryKey(),
 	state: text('state').notNull().default('idle'), // idle | draining | provisioning | cutting_over
 	jobId: text('job_id'),
@@ -368,7 +352,7 @@ export const gitStacks = pgTable('git_stacks', {
 	autoUpdateCron: text('auto_update_cron').default('0 3 * * *'),
 	webhookEnabled: boolean('webhook_enabled').default(false),
 	webhookSecret: text('webhook_secret'),
-	gitModel: text('git_model').notNull().default('stack'), // 'stack' | 'centralized' — per-stack engine selection
+	engine: text('engine').notNull().default('stack'), // 'stack' | 'centralized' — per-stack engine selection
 	contextDir: text('context_dir'), // Working directory relative to repo root (null = compose file's directory)
 	buildOnDeploy: boolean('build_on_deploy').default(false),
 	noBuildCache: boolean('no_build_cache').default(false),

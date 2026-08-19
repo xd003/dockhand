@@ -43,8 +43,7 @@ import {
 	gitStacks,
 	secretProviders,
 	stackSources,
-	gitModeTransition,
-	gitStackMigration,
+	gitMigrationState,
 	vulnerabilityScans,
 	auditLogs,
 	containerEvents,
@@ -76,7 +75,6 @@ import {
 	type GitStack,
 	type SecretProviderRow,
 	type StackSource,
-	type GitModeTransition,
 	type VulnerabilityScan,
 	type AuditLog,
 	type ContainerEvent,
@@ -113,7 +111,6 @@ export type {
 	GitStack,
 	SecretProviderRow,
 	StackSource,
-	GitModeTransition,
 	VulnerabilityScan,
 	AuditLog,
 	ContainerEvent
@@ -497,76 +494,15 @@ export async function listSettingsByPrefix(prefix: string): Promise<Array<{ key:
 }
 
 // =============================================================================
-// GIT MODE TRANSITION STATE (single-row table)
+// GIT STACK MIGRATION STATE (per-stack, single-row table)
 // =============================================================================
 
-// Terminal outcome is `idle` (with `error` set on failure) — the transition job
+// Terminal outcome is `idle` (with `error` set on failure) — the migrate job
 // never emits `failed`, so the 409 lock can never wedge on a stale state.
-export type GitModeTransitionState = 'idle' | 'draining' | 'provisioning' | 'cutting_over';
+export type GitMigrationPhase = 'idle' | 'draining' | 'provisioning' | 'cutting_over';
 
-export interface GitModeTransitionRow {
-	mode: string;
-	state: GitModeTransitionState;
-	jobId: string | null;
-	startedAt: string | null;
-	finishedAt: string | null;
-	snapshot: string | null;
-	error: string | null;
-}
-
-/**
- * Read the single-row git mode transition state. Returns null when the table is
- * empty (equivalent to an idle transition).
- */
-export async function getGitModeTransition(): Promise<GitModeTransitionRow | null> {
-	const rows = await db.select().from(gitModeTransition).limit(1);
-	if (!rows[0]) return null;
-	const row = rows[0];
-	return {
-		mode: row.mode ?? 'stack',
-		state: (row.state as GitModeTransitionState) ?? 'idle',
-		jobId: row.jobId,
-		startedAt: row.startedAt,
-		finishedAt: row.finishedAt,
-		snapshot: row.snapshot,
-		error: row.error
-	};
-}
-
-/**
- * Insert-or-update the single-row git mode transition state. Only non-undefined
- * fields are written, so callers can update a subset.
- */
-export async function updateGitModeTransition(data: {
-	mode?: string;
-	state?: GitModeTransitionState;
-	jobId?: string | null;
-	startedAt?: string | null;
-	finishedAt?: string | null;
-	snapshot?: string | null;
-	error?: string | null;
-}): Promise<void> {
-	const existing = await db.select().from(gitModeTransition).limit(1);
-	const updates: Record<string, any> = { updatedAt: new Date().toISOString() };
-	if (data.mode !== undefined) updates.mode = data.mode;
-	if (data.state !== undefined) updates.state = data.state;
-	if (data.jobId !== undefined) updates.jobId = data.jobId;
-	if (data.startedAt !== undefined) updates.startedAt = data.startedAt;
-	if (data.finishedAt !== undefined) updates.finishedAt = data.finishedAt;
-	if (data.snapshot !== undefined) updates.snapshot = data.snapshot;
-	if (data.error !== undefined) updates.error = data.error;
-
-	if (existing[0]) {
-		await db.update(gitModeTransition).set(updates).where(eq(gitModeTransition.id, existing[0].id));
-	} else {
-		await db.insert(gitModeTransition).values(updates);
-	}
-}
-
-export type GitStackMigrationState = 'idle' | 'draining' | 'provisioning' | 'cutting_over';
-
-export interface GitStackMigrationRow {
-	state: GitStackMigrationState;
+export interface GitMigrationStateRow {
+	state: GitMigrationPhase;
 	jobId: string | null;
 	stackIds: string | null; // JSON array of migrating stack ids
 	snapshot: string | null;
@@ -579,12 +515,12 @@ export interface GitStackMigrationRow {
  * Read the single-row per-stack migration job state. Returns null when the
  * table is empty (equivalent to an idle job).
  */
-export async function getGitStackMigration(): Promise<GitStackMigrationRow | null> {
-	const rows = await db.select().from(gitStackMigration).limit(1);
+export async function getGitMigrationState(): Promise<GitMigrationStateRow | null> {
+	const rows = await db.select().from(gitMigrationState).limit(1);
 	if (!rows[0]) return null;
 	const row = rows[0];
 	return {
-		state: (row.state as GitStackMigrationState) ?? 'idle',
+		state: (row.state as GitMigrationPhase) ?? 'idle',
 		jobId: row.jobId,
 		stackIds: row.stackIds,
 		snapshot: row.snapshot,
@@ -598,8 +534,8 @@ export async function getGitStackMigration(): Promise<GitStackMigrationRow | nul
  * Insert-or-update the single-row per-stack migration job. Only non-undefined
  * fields are written, so callers can update a subset.
  */
-export async function updateGitStackMigration(data: {
-	state?: GitStackMigrationState;
+export async function updateGitMigrationState(data: {
+	state?: GitMigrationPhase;
 	jobId?: string | null;
 	stackIds?: string | null;
 	snapshot?: string | null;
@@ -607,7 +543,7 @@ export async function updateGitStackMigration(data: {
 	startedAt?: string | null;
 	finishedAt?: string | null;
 }): Promise<void> {
-	const existing = await db.select().from(gitStackMigration).limit(1);
+	const existing = await db.select().from(gitMigrationState).limit(1);
 	const updates: Record<string, any> = { updatedAt: new Date().toISOString() };
 	if (data.state !== undefined) updates.state = data.state;
 	if (data.jobId !== undefined) updates.jobId = data.jobId;
@@ -618,9 +554,9 @@ export async function updateGitStackMigration(data: {
 	if (data.finishedAt !== undefined) updates.finishedAt = data.finishedAt;
 
 	if (existing[0]) {
-		await db.update(gitStackMigration).set(updates).where(eq(gitStackMigration.id, existing[0].id));
+		await db.update(gitMigrationState).set(updates).where(eq(gitMigrationState.id, existing[0].id));
 	} else {
-		await db.insert(gitStackMigration).values(updates);
+		await db.insert(gitMigrationState).values(updates);
 	}
 }
 
@@ -2411,12 +2347,12 @@ export async function updateGitRepository(id: number, data: Partial<GitRepositor
 	return getGitRepository(id);
 }
 
-export async function getGitStacksByRepositoryId(repositoryId: number): Promise<Array<{ id: number; stackName: string; environmentId: number | null; gitModel: 'stack' | 'centralized' }>> {
+export async function getGitStacksByRepositoryId(repositoryId: number): Promise<Array<{ id: number; stackName: string; environmentId: number | null; engine: 'stack' | 'centralized' }>> {
 	return db.select({
 		id: gitStacks.id,
 		stackName: gitStacks.stackName,
 		environmentId: gitStacks.environmentId,
-		gitModel: gitStacks.gitModel
+		engine: gitStacks.engine
 	}).from(gitStacks).where(eq(gitStacks.repositoryId, repositoryId));
 }
 
@@ -2445,7 +2381,7 @@ export interface GitStackData {
 	forceRedeploy: boolean;
 	webhookEnabled: boolean;
 	webhookSecret: string | null;
-	gitModel: 'stack' | 'centralized';
+	engine: 'stack' | 'centralized';
 	// Stack-level scheduled sync — deprecated (repo-level in centralized mode)
 	// but the columns are preserved for downgrade compatibility and used by the
 	// stack git engine.
@@ -2473,14 +2409,14 @@ export interface GitStackWithRepo extends GitStackData {
 
 /** Returns all git stacks using the given model ('stack' | 'centralized'). */
 export async function getGitStacksByModel(model: 'stack' | 'centralized'): Promise<GitStackWithRepo[]> {
-	return (await getGitStacks()).filter((s) => s.gitModel === model);
+	return (await getGitStacks()).filter((s) => s.engine === model);
 }
 
 /** True when the repository has at least one centralized-model git stack. */
 export async function repositoryHasCentralizedStack(repositoryId: number): Promise<boolean> {
 	const rows = await db.select({ id: gitStacks.id })
 		.from(gitStacks)
-		.where(and(eq(gitStacks.repositoryId, repositoryId), eq(gitStacks.gitModel, 'centralized')))
+		.where(and(eq(gitStacks.repositoryId, repositoryId), eq(gitStacks.engine, 'centralized')))
 		.limit(1);
 	return rows.length > 0;
 }
@@ -2503,7 +2439,7 @@ export async function getGitStacks(environmentId?: number): Promise<GitStackWith
 			forceRedeploy: gitStacks.forceRedeploy,
 			webhookEnabled: gitStacks.webhookEnabled,
 			webhookSecret: gitStacks.webhookSecret,
-			gitModel: gitStacks.gitModel,
+			engine: gitStacks.engine,
 			autoUpdate: gitStacks.autoUpdate,
 			autoUpdateSchedule: gitStacks.autoUpdateSchedule,
 			autoUpdateCron: gitStacks.autoUpdateCron,
@@ -2538,7 +2474,7 @@ export async function getGitStacks(environmentId?: number): Promise<GitStackWith
 			forceRedeploy: gitStacks.forceRedeploy,
 			webhookEnabled: gitStacks.webhookEnabled,
 			webhookSecret: gitStacks.webhookSecret,
-			gitModel: gitStacks.gitModel,
+			engine: gitStacks.engine,
 			autoUpdate: gitStacks.autoUpdate,
 			autoUpdateSchedule: gitStacks.autoUpdateSchedule,
 			autoUpdateCron: gitStacks.autoUpdateCron,
@@ -2573,7 +2509,7 @@ export async function getGitStacks(environmentId?: number): Promise<GitStackWith
 		forceRedeploy: row.forceRedeploy ?? false,
 		webhookEnabled: row.webhookEnabled ?? false,
 		webhookSecret: row.webhookSecret ?? null,
-		gitModel: row.gitModel ?? 'stack',
+		engine: row.engine ?? 'stack',
 		autoUpdate: row.autoUpdate ?? false,
 		autoUpdateSchedule: row.autoUpdateSchedule ?? null,
 		autoUpdateCron: row.autoUpdateCron ?? null,
@@ -2598,7 +2534,7 @@ export async function getGitStacks(environmentId?: number): Promise<GitStackWith
 // =============================================================================
 
 /**
- * Returns all git stacks with stack-level autoUpdate=true AND git_model='stack'.
+ * Returns all git stacks with stack-level autoUpdate=true AND engine='stack'.
  * Centralized-model stacks sync at the repository level (git_repository_sync),
  * so they must never re-register git_stack_sync (fleet backfill does not clear
  * the stack-level column). The model filter is the pure filterStackModel.
@@ -2619,7 +2555,7 @@ export async function getEnabledAutoUpdateGitStacks(): Promise<GitStackWithRepo[
 		forceRedeploy: gitStacks.forceRedeploy,
 		webhookEnabled: gitStacks.webhookEnabled,
 		webhookSecret: gitStacks.webhookSecret,
-		gitModel: gitStacks.gitModel,
+		engine: gitStacks.engine,
 		lastSync: gitStacks.lastSync,
 		lastCommit: gitStacks.lastCommit,
 		syncStatus: gitStacks.syncStatus,
@@ -2650,7 +2586,7 @@ export async function getEnabledAutoUpdateGitStacks(): Promise<GitStackWithRepo[
 		forceRedeploy: row.forceRedeploy ?? false,
 		webhookEnabled: row.webhookEnabled ?? false,
 		webhookSecret: row.webhookSecret ?? null,
-		gitModel: row.gitModel ?? 'stack',
+		engine: row.engine ?? 'stack',
 		lastSync: row.lastSync,
 		lastCommit: row.lastCommit,
 		syncStatus: row.syncStatus,
@@ -2668,7 +2604,7 @@ export async function getEnabledAutoUpdateGitStacks(): Promise<GitStackWithRepo[
 }
 
 /**
- * Returns all git stacks with stack-level autoUpdate=true AND git_model='stack'
+ * Returns all git stacks with stack-level autoUpdate=true AND engine='stack'
  * (no filters beyond the model — an alias of getEnabledAutoUpdateGitStacks).
  */
 export async function getAllAutoUpdateGitStacks(): Promise<GitStackWithRepo[]> {
@@ -2692,7 +2628,7 @@ export async function getGitStacksForEnvironmentOnly(environmentId: number): Pro
 		forceRedeploy: gitStacks.forceRedeploy,
 		webhookEnabled: gitStacks.webhookEnabled,
 		webhookSecret: gitStacks.webhookSecret,
-		gitModel: gitStacks.gitModel,
+		engine: gitStacks.engine,
 		autoUpdate: gitStacks.autoUpdate,
 		autoUpdateSchedule: gitStacks.autoUpdateSchedule,
 		autoUpdateCron: gitStacks.autoUpdateCron,
@@ -2727,7 +2663,7 @@ export async function getGitStacksForEnvironmentOnly(environmentId: number): Pro
 		forceRedeploy: row.forceRedeploy ?? false,
 		webhookEnabled: row.webhookEnabled ?? false,
 		webhookSecret: row.webhookSecret ?? null,
-		gitModel: row.gitModel ?? 'stack',
+		engine: row.engine ?? 'stack',
 		autoUpdate: row.autoUpdate ?? false,
 		autoUpdateSchedule: row.autoUpdateSchedule ?? null,
 		autoUpdateCron: row.autoUpdateCron ?? null,
@@ -2763,7 +2699,7 @@ export async function getGitStack(id: number): Promise<GitStackWithRepo | null> 
 		forceRedeploy: gitStacks.forceRedeploy,
 		webhookEnabled: gitStacks.webhookEnabled,
 		webhookSecret: gitStacks.webhookSecret,
-		gitModel: gitStacks.gitModel,
+		engine: gitStacks.engine,
 		autoUpdate: gitStacks.autoUpdate,
 		autoUpdateSchedule: gitStacks.autoUpdateSchedule,
 		autoUpdateCron: gitStacks.autoUpdateCron,
@@ -2800,7 +2736,7 @@ export async function getGitStack(id: number): Promise<GitStackWithRepo | null> 
 		forceRedeploy: row.forceRedeploy ?? false,
 		webhookEnabled: row.webhookEnabled ?? false,
 		webhookSecret: row.webhookSecret ?? null,
-		gitModel: row.gitModel ?? 'stack',
+		engine: row.engine ?? 'stack',
 		autoUpdate: row.autoUpdate ?? false,
 		autoUpdateSchedule: row.autoUpdateSchedule ?? null,
 		autoUpdateCron: row.autoUpdateCron ?? null,
@@ -2837,7 +2773,7 @@ export async function getGitStackByName(stackName: string, environmentId?: numbe
 		forceRedeploy: gitStacks.forceRedeploy,
 		webhookEnabled: gitStacks.webhookEnabled,
 		webhookSecret: gitStacks.webhookSecret,
-		gitModel: gitStacks.gitModel,
+		engine: gitStacks.engine,
 		lastSync: gitStacks.lastSync,
 		lastCommit: gitStacks.lastCommit,
 		syncStatus: gitStacks.syncStatus,
@@ -2875,7 +2811,7 @@ export async function getGitStackByName(stackName: string, environmentId?: numbe
 		forceRedeploy: row.forceRedeploy ?? false,
 		webhookEnabled: row.webhookEnabled ?? false,
 		webhookSecret: row.webhookSecret ?? null,
-		gitModel: row.gitModel ?? 'stack',
+		engine: row.engine ?? 'stack',
 		lastSync: row.lastSync,
 		lastCommit: row.lastCommit,
 		syncStatus: row.syncStatus,
@@ -2907,7 +2843,7 @@ export async function createGitStack(data: {
 	forceRedeploy?: boolean;
 	webhookEnabled?: boolean;
 	webhookSecret?: string | null;
-	gitModel?: 'stack' | 'centralized';
+	engine?: 'stack' | 'centralized';
 	autoUpdate?: boolean;
 	autoUpdateSchedule?: string;
 	autoUpdateCron?: string;
@@ -2929,7 +2865,7 @@ export async function createGitStack(data: {
 		forceRedeploy: data.forceRedeploy ?? false,
 		webhookEnabled: data.webhookEnabled ?? false,
 		webhookSecret: data.webhookEnabled ? (data.webhookSecret ?? null) : null,
-		gitModel: data.gitModel ?? 'stack',
+		engine: data.engine ?? 'stack',
 		autoUpdate: data.autoUpdate ?? false,
 		autoUpdateSchedule: data.autoUpdate ? (data.autoUpdateSchedule ?? 'daily') : undefined,
 		autoUpdateCron: data.autoUpdate ? (data.autoUpdateCron ?? '0 3 * * *') : undefined
@@ -2960,7 +2896,7 @@ export async function updateGitStack(id: number, data: Partial<GitStackData> & {
 	if (data.forceRedeploy !== undefined) updateData.forceRedeploy = data.forceRedeploy;
 	if (data.webhookEnabled !== undefined) updateData.webhookEnabled = data.webhookEnabled;
 	if (data.webhookSecret !== undefined) updateData.webhookSecret = data.webhookEnabled ? data.webhookSecret : null;
-	if (data.gitModel !== undefined) updateData.gitModel = data.gitModel;
+	if (data.engine !== undefined) updateData.engine = data.engine;
 	if (data.autoUpdate !== undefined) updateData.autoUpdate = data.autoUpdate;
 	if (data.autoUpdateSchedule !== undefined) updateData.autoUpdateSchedule = data.autoUpdateSchedule;
 	if (data.autoUpdateCron !== undefined) updateData.autoUpdateCron = data.autoUpdateCron;
@@ -3044,7 +2980,7 @@ export async function getFullGitStacksByRepositoryId(repositoryId: number): Prom
 		forceRedeploy: gitStacks.forceRedeploy,
 		webhookEnabled: gitStacks.webhookEnabled,
 		webhookSecret: gitStacks.webhookSecret,
-		gitModel: gitStacks.gitModel,
+		engine: gitStacks.engine,
 		lastSync: gitStacks.lastSync,
 		lastCommit: gitStacks.lastCommit,
 		syncStatus: gitStacks.syncStatus,
@@ -3077,7 +3013,7 @@ export async function getFullGitStacksByRepositoryId(repositoryId: number): Prom
 		forceRedeploy: row.forceRedeploy ?? false,
 		webhookEnabled: row.webhookEnabled ?? false,
 		webhookSecret: row.webhookSecret ?? null,
-		gitModel: row.gitModel ?? 'stack',
+		engine: row.engine ?? 'stack',
 		lastSync: row.lastSync,
 		lastCommit: row.lastCommit,
 		syncStatus: row.syncStatus,

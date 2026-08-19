@@ -11,10 +11,15 @@ export class Semaphore {
 	}
 
 	async run<T>(fn: () => Promise<T>): Promise<T> {
-		if (this.count <= 0) {
+		if (this.count > 0) {
+			this.count--;
+		} else {
+			// Queue. release() hands us a slot directly (shift, no count++), so
+			// we must NOT decrement on wake — otherwise a new run() landing
+			// between the wake and this continuation would see the same freed
+			// slot and over-admit past the limit.
 			await new Promise<void>((resolve) => this.waiters.push(resolve));
 		}
-		this.count--;
 		try {
 			return await fn();
 		} finally {
@@ -40,8 +45,14 @@ export class Semaphore {
 	}
 
 	private release(): void {
-		this.count++;
 		const next = this.waiters.shift();
-		if (next) next();
+		if (next) {
+			// Hand the slot directly to the next waiter WITHOUT counting up, so a
+			// concurrent run() cannot observe a phantom free slot and exceed the
+			// limit. The slot is transferred by the shift.
+			next();
+		} else {
+			this.count++;
+		}
 	}
 }

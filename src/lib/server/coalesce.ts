@@ -8,6 +8,8 @@ export type CoalesceWaiter<TResult> = {
 	reject: (reason?: unknown) => void;
 };
 
+export type CoalesceSlotKey = number | string;
+
 export type CoalesceSlot<TOpts, TResult> = {
 	done: boolean;
 	trailing: { opts: TOpts; waiters: CoalesceWaiter<TResult>[] } | null;
@@ -24,8 +26,8 @@ export function createCoalesceSlot<TOpts, TResult>(): CoalesceSlot<TOpts, TResul
 }
 
 export async function runCoalesced<TOpts, TResult>(
-	slots: Map<number, CoalesceSlot<TOpts, TResult>>,
-	key: number,
+	slots: Map<CoalesceSlotKey, CoalesceSlot<TOpts, TResult>>,
+	key: CoalesceSlotKey,
 	opts: TOpts,
 	merge: (a: TOpts, b: TOpts) => TOpts,
 	fn: (opts: TOpts) => Promise<TResult>

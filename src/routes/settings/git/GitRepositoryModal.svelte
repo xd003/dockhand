@@ -66,7 +66,7 @@
 	//    prepared under a centralized default (fresh repo for a new centralized
 	//    stack).
 	//  - Creating a new repo: the global DEFAULT governs.
-	let repoStacks = $state<{ repositoryId: number; gitModel: string }[]>([]);
+	let repoStacks = $state<{ repositoryId: number; engine: string }[]>([]);
 
 	async function loadRepoStacks() {
 		try {
@@ -75,7 +75,7 @@
 				const stacks = await res.json();
 				repoStacks = (Array.isArray(stacks) ? stacks : []).map((s: any) => ({
 					repositoryId: s.repositoryId,
-					gitModel: s.gitModel === 'centralized' ? 'centralized' : 'stack'
+					engine: s.engine === 'centralized' ? 'centralized' : 'stack'
 				}));
 			}
 		} catch {
@@ -85,7 +85,7 @@
 
 	const isCentralizedMode = $derived(
 		repository
-			? (repoStacks.some((s) => s.repositoryId === repository.id && s.gitModel === 'centralized')
+			? (repoStacks.some((s) => s.repositoryId === repository.id && s.engine === 'centralized')
 				|| (repoStacks.filter((s) => s.repositoryId === repository.id).length === 0 && $appSettings.gitRepositoryDesiredMode === 'centralized'))
 			: $appSettings.gitRepositoryDesiredMode === 'centralized'
 	);

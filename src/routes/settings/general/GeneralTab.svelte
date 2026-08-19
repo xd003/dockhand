@@ -19,6 +19,7 @@
 	import IndentGuidesToggle from '$lib/components/IndentGuidesToggle.svelte';
 	import ColoredActionsToggle from '$lib/components/ColoredActionsToggle.svelte';
 	import * as Tooltip from '$lib/components/ui/tooltip';
+	import GitMigrationCard from './GitMigrationCard.svelte';
 
 	// General settings state - these derive from the store
 	let confirmDestructive = $derived($appSettings.confirmDestructive);
@@ -754,12 +755,14 @@ services:
 						</p>
 						{#if gitModeForcedByEnv}
 							<p class="text-xs text-amber-600">
-								This option is locked because the <code class="bg-muted px-1 rounded">DOCKHAND_GIT_CENTRALIZED_MODE</code> environment variable is set. It only sets the DEFAULT for new Git stacks — it does not migrate existing stacks (migrate them individually). To control the default from the UI, remove the <code class="bg-muted px-1 rounded">DOCKHAND_GIT_CENTRALIZED_MODE</code> variable and restart.
+								This option is locked because the <code class="bg-muted px-1 rounded">DOCKHAND_GIT_CENTRALIZED_MODE</code> environment variable is set. It only sets the DEFAULT for new Git stacks, it does not migrate existing stacks (migrate them individually). To control the default from the UI, remove the <code class="bg-muted px-1 rounded">DOCKHAND_GIT_CENTRALIZED_MODE</code> variable and restart.
 							</p>
 						{/if}
 					</div>
 				</Card.Content>
 			</Card.Root>
+
+			<GitMigrationCard />
 
 		</div>
 

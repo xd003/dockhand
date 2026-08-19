@@ -715,7 +715,7 @@ async function initializeDatabase() {
 }
 
 /**
- * One-time backfill of git_stacks.git_model from the effective
+ * One-time backfill of git_stacks.engine from the effective
  * git_repository_mode setting.
  *
  * Runs exactly-once per successful backfill: the git_stack_model_backfilled
@@ -751,12 +751,12 @@ async function backfillGitStackModel(): Promise<void> {
 		}
 		const result = await db
 			.update(schema.gitStacks)
-			.set({ gitModel: mode })
+			.set({ engine: mode })
 			.where(sql`1 = 1`);
 		await db.insert(schema.settings).values({ key: 'git_stack_model_backfilled', value: JSON.stringify('done') });
-		logStep(`Backfilled git_stacks.git_model to "${mode}" (${result.changes ?? result.rowCount ?? 0} row(s))`);
+		logStep(`Backfilled git_stacks.engine to "${mode}" (${result.changes ?? result.rowCount ?? 0} row(s))`);
 	} catch (error) {
-		logWarning(`git_stacks.git_model backfill failed (will retry next boot): ${error instanceof Error ? error.message : String(error)}`);
+		logWarning(`git_stacks.engine backfill failed (will retry next boot): ${error instanceof Error ? error.message : String(error)}`);
 	}
 }
 
@@ -992,8 +992,7 @@ export const environments = schemaProxy.environments;
 export const hawserTokens = schemaProxy.hawserTokens;
 export const registries = schemaProxy.registries;
 export const settings = schemaProxy.settings;
-export const gitModeTransition = schemaProxy.gitModeTransition;
-export const gitStackMigration = schemaProxy.gitStackMigration;
+export const gitMigrationState = schemaProxy.gitMigrationState;
 export const stackEvents = schemaProxy.stackEvents;
 export const hostMetrics = schemaProxy.hostMetrics;
 export const configSets = schemaProxy.configSets;
@@ -1033,10 +1032,8 @@ export type {
 	NewHawserToken,
 	Setting,
 	NewSetting,
-	GitModeTransition,
-	NewGitModeTransition,
-	GitStackMigration,
-	NewGitStackMigration,
+	GitMigrationState,
+	NewGitMigrationState,
 	User,
 	NewUser,
 	Session,

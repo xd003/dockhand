@@ -13,8 +13,7 @@ import { detectHostDataDir } from '$lib/server/host-path';
 import { listContainers, removeContainer } from '$lib/server/docker';
 import { migrateCredentials } from '$lib/server/encryption';
 import { validateStacksDirAtStartup, migrateLocalStacksToStacksDir } from '$lib/server/stacks';
-import { settleLegacyGitModeTransition } from '$lib/server/git-transition';
-import { ensureGitStackMigrationsResolved } from '$lib/server/git-stack-migrate';
+import { ensureGitMigrationsResolved } from '$lib/server/git-stack-migrate';
 import { gzipSync } from 'node:zlib';
 import { rmSync, readdirSync, existsSync } from 'fs';
 import { join } from 'path';
@@ -166,19 +165,9 @@ if (!initialized) {
 			process.exit(1);
 		});
 
-		// Settle any stale legacy fleet-transition row BEFORE the scheduler starts.
-		// The fleet machine is retired (per-stack migration replaces it): boot no
-		// longer resumes or starts it, and the settle marks an interrupted
-		// pre-upgrade row idle so it can never block live git or show a phantom
-		// "transitioning" state. Env default mismatches never cut the fleet over —
-		// the global setting only governs NEW stacks.
-		const fleetSettleReady = settleLegacyGitModeTransition().catch((err) => {
-			console.error('[GitTransition] Boot fleet settle failed:', err);
-		});
-
 		// Resume an interrupted PER-STACK migration job only (never migrates
 		// stacks that were not selected).
-		const migrationReady = fleetSettleReady.then(() => ensureGitStackMigrationsResolved()).catch((err) => {
+		const migrationReady = ensureGitMigrationsResolved().catch((err) => {
 			console.error('[GitStackMigrate] Boot migration resume failed:', err);
 		});
 

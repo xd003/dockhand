@@ -934,7 +934,7 @@
 	let gitMigratingStackId = $state<number | null>(null);
 
 	async function migrateGitStackFromList(gitStack: any) {
-		if (!gitStack || gitStack.gitModel === 'centralized') return;
+		if (!gitStack || gitStack.engine === 'centralized') return;
 		if (!window.confirm(
 			`Migrate "${gitStack.stackName}" to centralized Git mode?\n\nThis stack moves onto the shared repository clone; its per-stack sync schedule and webhook URL may change, and its per-stack clone is removed after the shared clone is ready. Unselected stacks are unaffected.`
 		)) return;
@@ -2060,7 +2060,7 @@
 							{/if}
 							{#if $canAccess('stacks', 'edit')}
 								{#if source.sourceType === 'git' && source.gitStack}
-									{#if source.gitStack.gitModel === 'stack'}
+									{#if source.gitStack.engine === 'stack'}
 										<button
 											type="button"
 											onclick={(e) => { e.stopPropagation(); migrateGitStackFromList(source.gitStack); }}

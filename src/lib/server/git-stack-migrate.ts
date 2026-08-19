@@ -1,13 +1,13 @@
 /**
  * Per-stack migrate-to-centralized job.
  *
- * Replaces the old whole-fleet mode transition (git-transition.ts) with a job
+ * Replaces the old whole-fleet mode transition with a job
  * that migrates an EXPLICIT set of stack ids. A persisted single-row state
- * machine (git_stack_migration) tracks: idle → draining → provisioning →
+ * machine (git_migration_state) tracks: idle → draining → provisioning →
  * cutting_over → idle. The terminal success state is `idle`, so the 409 lock
  * can never wedge. On failure the job rolls back the fields IT changed
  * (forceRedeploy + any promoted repo settings) and returns to `idle` with the
- * error — git_model stays `stack`, so nothing was cut over.
+ * error — engine stays `stack`, so nothing was cut over.
  *
  * The lock is NARROW: git APIs only 409 when they touch a stack in this job's
  * stackIds or a repository it is provisioning — unrelated stacks keep working.
@@ -17,14 +17,14 @@ import { join } from 'node:path';
 import { rm } from 'node:fs/promises';
 import { db, gitStacks, gitRepositories, eq, inArray, and } from './db/drizzle.js';
 import {
-	getGitStackMigration,
-	updateGitStackMigration,
+	getGitMigrationState,
+	updateGitMigrationState,
 	getGitStack,
 	getGitRepository,
 	getGitRepositories,
 	updateGitStack,
 	updateGitRepository,
-	type GitStackMigrationState,
+	type GitMigrationPhase,
 	type GitStackWithRepo,
 	type GitRepositoryData
 } from './db';
@@ -44,21 +44,21 @@ const DRAIN_POLL_MS = 500;
 let migrateRunning = false;
 let migrateStarting = false;
 
-async function setState(state: GitStackMigrationState): Promise<void> {
-	await updateGitStackMigration({ state });
+async function setState(state: GitMigrationPhase): Promise<void> {
+	await updateGitMigrationState({ state });
 }
 
 /**
  * Start a per-stack migration in the background. Throws ConflictError when a
  * job is already active or none of the requested ids is a stack-model stack.
  */
-export async function startGitStackMigration(stackIds: number[]): Promise<void> {
+export async function startGitMigration(stackIds: number[]): Promise<void> {
 	if (migrateStarting || migrateRunning) {
 		throw new ConflictError('A git stack migration is already in progress');
 	}
 	migrateStarting = true;
 	try {
-		const active = await getGitStackMigration();
+		const active = await getGitMigrationState();
 		if (active && active.state !== 'idle') {
 			throw new ConflictError('A git stack migration is already in progress');
 		}
@@ -67,7 +67,7 @@ export async function startGitStackMigration(stackIds: number[]): Promise<void> 
 			throw new ConflictError('No stack-model git stacks match the requested ids');
 		}
 
-		await updateGitStackMigration({
+		await updateGitMigrationState({
 			state: 'draining',
 			jobId: `git-stack-migrate-${Date.now()}`,
 			stackIds: JSON.stringify(stacks.map((s) => s.id)),
@@ -88,7 +88,7 @@ export async function startGitStackMigration(stackIds: number[]): Promise<void> 
 /** Load the stack-model rows for the requested ids (missing/centralized ignored). */
 async function loadStackModelRows(stackIds: number[]): Promise<GitStackWithRepo[]> {
 	const stacks = await getGitStacksByIds(stackIds);
-	return stacks.filter((s) => s.gitModel === 'stack');
+	return stacks.filter((s) => s.engine === 'stack');
 }
 
 async function getGitStacksByIds(stackIds: number[]): Promise<GitStackWithRepo[]> {
@@ -101,20 +101,20 @@ async function getGitStacksByIds(stackIds: number[]): Promise<GitStackWithRepo[]
  * Resume an interrupted migration job at boot. Only resumes the per-stack job;
  * nothing here migrates stacks that were never selected.
  */
-export async function ensureGitStackMigrationsResolved(): Promise<void> {
-	const job = await getGitStackMigration();
+export async function ensureGitMigrationsResolved(): Promise<void> {
+	const job = await getGitMigrationState();
 	if (!job || job.state === 'idle') return;
 	let stackIds: number[];
 	try {
 		stackIds = JSON.parse(job.stackIds ?? '[]');
 	} catch {
 		console.error('[GitStackMigrate] Unreadable stack_ids on interrupted job — marking idle');
-		await updateGitStackMigration({ state: 'idle', error: 'Unreadable stack_ids on interrupted job', finishedAt: new Date().toISOString() });
+		await updateGitMigrationState({ state: 'idle', error: 'Unreadable stack_ids on interrupted job', finishedAt: new Date().toISOString() });
 		return;
 	}
 	const stacks = await getGitStacksByIds(stackIds);
 	if (stacks.length === 0) {
-		await updateGitStackMigration({ state: 'idle', finishedAt: new Date().toISOString(), error: 'Interrupted job had no matching stacks' });
+		await updateGitMigrationState({ state: 'idle', finishedAt: new Date().toISOString(), error: 'Interrupted job had no matching stacks' });
 		return;
 	}
 	console.log('[GitStackMigrate] Resuming interrupted migration job...');
@@ -152,8 +152,8 @@ async function runMigrationCore(stacks: GitStackWithRepo[]): Promise<void> {
 		// Snapshot (persisted BEFORE apply so a crash mid-apply resumes from it).
 		// On RESUME reuse the persisted snapshot — recomputing one from already
 		// backfilled rows would capture post-apply values and break rollback (the
-		// same F13/N4 bug class git-transition.ts guards against).
-		const currentJob = await getGitStackMigration();
+		// same F13/N4 bug class the retired fleet transition guarded against).
+		const currentJob = await getGitMigrationState();
 		if (currentJob?.snapshot) {
 			try {
 				snapshot = JSON.parse(currentJob.snapshot);
@@ -163,14 +163,14 @@ async function runMigrationCore(stacks: GitStackWithRepo[]): Promise<void> {
 		}
 		if (!snapshot) {
 			snapshot = await computeScopedBackfillSnapshot(stacks);
-			await updateGitStackMigration({ snapshot: JSON.stringify(snapshot) });
+			await updateGitMigrationState({ snapshot: JSON.stringify(snapshot) });
 		}
 		await applyScopedBackfill(snapshot);
 
 		// ---- CUTTING OVER ----
 		await setState('cutting_over');
 		await db.update(gitStacks)
-			.set({ gitModel: 'centralized', updatedAt: new Date().toISOString() })
+			.set({ engine: 'centralized', updatedAt: new Date().toISOString() })
 			.where(inArray(gitStacks.id, stackIds));
 		cutoverCommitted = true;
 		for (const id of stackIds) {
@@ -194,14 +194,14 @@ async function runMigrationCore(stacks: GitStackWithRepo[]): Promise<void> {
 			console.warn(`[GitStackMigrate] Per-stack clone cleanup failed after cutover (best-effort): ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`);
 		}
 
-		await updateGitStackMigration({ state: 'idle', finishedAt: new Date().toISOString(), error: null, snapshot: null });
+		await updateGitMigrationState({ state: 'idle', finishedAt: new Date().toISOString(), error: null, snapshot: null });
 		console.log(`[GitStackMigrate] Migrated ${stackIds.length} stack(s) to centralized mode`);
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		console.error(`[GitStackMigrate] Migration failed: ${message}`);
 		if (!cutoverCommitted) {
 			try {
-				const row = await getGitStackMigration();
+				const row = await getGitMigrationState();
 				if (row?.snapshot) {
 					await restoreScopedBackfill(JSON.parse(row.snapshot));
 				}
@@ -211,7 +211,7 @@ async function runMigrationCore(stacks: GitStackWithRepo[]): Promise<void> {
 		} else {
 			console.warn('[GitStackMigrate] Cutover already committed — recording error without rollback');
 		}
-		await updateGitStackMigration({ state: 'idle', finishedAt: new Date().toISOString(), error: message, snapshot: null });
+		await updateGitMigrationState({ state: 'idle', finishedAt: new Date().toISOString(), error: message, snapshot: null });
 		throw err;
 	} finally {
 		migrateRunning = false;

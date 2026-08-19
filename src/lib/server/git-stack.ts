@@ -20,15 +20,11 @@ import {
 	getGitRepository,
 	getGitCredential,
 	updateGitStack,
-	upsertStackSource,
 	getEnvironment
 } from './db';
-import { deployStack, getStackDir } from './stacks';
 import { assertSafeGitRef, repoFilePath } from './git-url-safety';
 import { isPathUnderRoot } from './path-utils';
-import { parseComposePathsColumn } from './compose-files';
 import { collectProcess } from './process-utils';
-import { buildSyncChangeSummary, formatChangeTable, skipReasonMessage } from './git-deletions';
 import {
 	buildGitEnv,
 	cleanupSshKey,
@@ -36,7 +32,6 @@ import {
 	execGit,
 	getChangedFilesInDir,
 	computeSyncDeletionPlan,
-	finalizeDeletionSync,
 	notifyGitSync,
 	getGitReposDir,
 	stackRepoPath,
@@ -46,7 +41,7 @@ import {
 	type DeployGitStackResult,
 	type GitEngine
 } from './git';
-import { shouldDeployGitStack } from '../utils/git-deploy-gating';
+import { deployStackFromSync } from './git-deploy-shared';
 
 // Generous per-clone bound: a frozen network/SSH connection must not hold a
 // webhook/worker slot forever (the subprocess is SIGKILLed on timeout).
@@ -403,114 +398,8 @@ async function deployGitStackCore(
 		console.log(`${logPrefix} Env file var keys:`, Object.keys(syncResult.envFileVars).join(', '));
 	}
 
-	// Check if there are changes - skip redeploy if no changes and not forced
-	// Note: For new stacks (first deploy), syncResult.updated will be true
-	// forceRedeploy setting overrides the skip logic for webhooks/scheduled syncs
-	// (identical to shouldDeployGitStack with ignoreForceRedeploy=false).
-	const shouldDeploy = shouldDeployGitStack({
-		force,
-		ignoreForceRedeploy: false,
-		forceRedeploy: gitStack.forceRedeploy,
-		updated: syncResult.updated
-	});
-	if (!shouldDeploy) {
-		console.log(`${logPrefix} No changes detected and force=false, forceRedeploy=false, skipping redeploy`);
-		const skippedResult = {
-			success: true,
-			output: 'No changes detected, skipping redeploy',
-			skipped: true
-		};
-		await notifyGitSync(gitStack.stackName, gitStack.environmentId, skippedResult);
-		return skippedResult;
-	}
-
-	const forceRecreate = syncResult.updated;
-	console.log(`${logPrefix} Will force recreate:`, forceRecreate, `(updated=${syncResult.updated})`);
-	console.log(`${logPrefix} Build on deploy:`, gitStack.buildOnDeploy);
-	console.log(`${logPrefix} Re-pull images:`, gitStack.repullImages);
-	console.log(`${logPrefix} Force redeploy setting:`, gitStack.forceRedeploy);
-
-	// Deploy using unified function - handles both new and existing stacks
-	// Uses `docker compose up -d --remove-orphans` which only recreates changed services
-	// Force recreate whenever git detected changes to ensure containers pick up
-	// new env var values even if compose file itself didn't change
-	console.log(`${logPrefix} Calling deployStack...`);
-	console.log(`${logPrefix} Source directory (composeDir):`, syncResult.composeDir);
-	console.log(`${logPrefix} Compose filename:`, syncResult.composeFileName);
-	console.log(`${logPrefix} Env filename:`, syncResult.envFileName ?? '(none)');
-
-	const result = await deployStack({
-		name: gitStack.stackName,
-		compose: syncResult.composeContent!,
-		envId: gitStack.environmentId,
-		sourceDir: syncResult.composeDir, // Copy entire directory from git repo
-		composeFileName: syncResult.composeFileName, // Use original compose filename from repo
-		envFileName: syncResult.envFileName, // Env file relative to compose dir (for --env-file flag, optional)
-		composePaths: gitStack.composePaths ? parseComposePathsColumn(gitStack.composePaths) : undefined,
-		forceRecreate,
-		build: gitStack.buildOnDeploy,
-		noBuildCache: gitStack.noBuildCache,
-		pullPolicy: gitStack.repullImages ? 'always' : undefined,
-		filesToDelete: syncResult.deletionPlan?.toDelete,
-		isGitDeploy: true // suppress stack_* notification; we emit git_sync_* below
-	});
-
-	console.log(`${logPrefix} ----------------------------------------`);
-	console.log(`${logPrefix} DEPLOY GIT STACK RESULT`);
-	console.log(`${logPrefix} ----------------------------------------`);
-	console.log(`${logPrefix} Success:`, result.success);
-	if (result.output) console.log(`${logPrefix} Output:`, result.output);
-	if (result.error) console.log(`${logPrefix} Error:`, result.error);
-
-	if (result.success) {
-		// Deletion sync: persist manifest + log per-file change summary
-		if (syncResult.previousManifest && syncResult.newFiles && syncResult.newCommitFull && syncResult.deletionPlan) {
-			await finalizeDeletionSync({
-				stackId,
-				logPrefix,
-				previousManifest: syncResult.previousManifest,
-				newCommitFull: syncResult.newCommitFull,
-				newFiles: syncResult.newFiles,
-				plan: syncResult.deletionPlan,
-				applyResult: result.deletion
-			});
-		}
-
-		// Record the stack source with resolved compose path for consistency
-		const stackDir = await getStackDir(gitStack.stackName, gitStack.environmentId);
-		const resolvedComposePath = syncResult.composeFileName
-			? join(stackDir, syncResult.composeFileName)
-			: undefined;
-
-		console.log(`${logPrefix} Resolved compose path for stack_sources:`, resolvedComposePath);
-
-		await upsertStackSource({
-			stackName: gitStack.stackName,
-			environmentId: gitStack.environmentId,
-			sourceType: 'git',
-			gitRepositoryId: gitStack.repositoryId,
-			gitStackId: stackId,
-			composePath: resolvedComposePath,
-			composePaths: gitStack.composePaths ? parseComposePathsColumn(gitStack.composePaths) : null
-		});
-	} else {
-		// Sync advanced lastCommit before deploy. Roll it back on deploy failure so
-		// the next scheduled/webhook sync still sees the commit as pending and retries
-		// (matches the centralized engine's 884-891 behavior).
-		if (syncResult.updated && syncResult.commit) {
-			console.log(`${logPrefix} Deploy failed after sync — rolling back lastCommit to enable retry`);
-			await updateGitStack(stackId, {
-				lastCommit: gitStack.lastCommit ?? null,
-				syncStatus: 'error',
-				syncError: result.error || 'Deploy failed'
-			});
-		}
-	}
-
-	// git_sync_success / git_sync_failed for the actual deploy result. deployStack
-	// suppressed its stack_* notification (isGitDeploy), so this is the single one.
-	await notifyGitSync(gitStack.stackName, gitStack.environmentId, result);
-	return result;
+	// Deploy using the shared post-sync body (git-deploy-shared.ts).
+	return deployStackFromSync({ stackId, gitStack, opts: { force, ignoreForceRedeploy: false }, syncResult, logPrefix });
 }
 
 export async function deleteGitStackFiles(stackId: number, stackName?: string, environmentId?: number | null): Promise<void> {
@@ -697,35 +586,6 @@ async function deployGitStackWithProgressCore(
 
 		cleanupSshKey(credential, env);
 
-		// Show the git file changes BEFORE the deploy starts, so the user sees
-		// what changed while the deploy runs and the deploy start/result lines
-		// stay together (#1260). Removals reflect the deletion plan here;
-		// apply-stage divergences (rare) are reported after the deploy.
-		const changeTable = formatChangeTable(
-			buildSyncChangeSummary(
-				deletionData.previousManifest.files,
-				deletionData.newFiles,
-				{ deleted: deletionData.plan.toDelete.map((f) => f.path), skipped: [] },
-				deletionData.plan.skipped
-			)
-		);
-		onProgress({ status: 'deploying', message: `File changes: ${changeTable[0]}`, step: 5, totalSteps });
-		for (const line of changeTable.slice(1)) {
-			onProgress({ status: 'deploying', message: line, step: 5, totalSteps });
-		}
-
-		// Step 5: Deploying stack
-		// Uses `docker compose up -d --remove-orphans` which only recreates changed services
-		onProgress({ status: 'deploying', message: `Deploying ${gitStack.stackName}...`, step: 5, totalSteps });
-		if (deletionData.plan.toDelete.length > 0) {
-			onProgress({
-				status: 'deploying',
-				message: `Removing ${deletionData.plan.toDelete.length} file(s) deleted from the repository...`,
-				step: 5,
-				totalSteps
-			});
-		}
-
 		// Determine env filename relative to compose dir (same logic as syncGitStack)
 		let envFileName: string | undefined;
 		if (gitStack.envFilePath) {
@@ -735,69 +595,25 @@ async function deployGitStackWithProgressCore(
 			}
 		}
 
-		const result = await deployStack({
-			name: gitStack.stackName,
-			compose: composeContent,
-			envId: gitStack.environmentId,
-			sourceDir: composeDir, // Copy entire directory from git repo
-			composeFileName: progressComposeFileName, // Compose filename relative to source dir
-			envFileName, // Env file relative to compose dir (for --env-file flag, optional)
-			composePaths: gitStack.composePaths ? parseComposePathsColumn(gitStack.composePaths) : undefined,
-			build: gitStack.buildOnDeploy,
-			noBuildCache: gitStack.noBuildCache,
-			pullPolicy: gitStack.repullImages ? 'always' : undefined,
-			filesToDelete: deletionData.plan.toDelete,
-			isGitDeploy: true // suppress stack_* notification; we emit git_sync_* below
-		});
-
-		if (result.success) {
-			// Deletion sync: persist manifest + log per-file change summary.
-			// The change table was already shown before the deploy (#1260);
-			// report only apply-stage divergences from the plan here.
-			await finalizeDeletionSync({
-				stackId,
-				logPrefix,
-				previousManifest: deletionData.previousManifest,
-				newCommitFull: newCommit,
-				newFiles: deletionData.newFiles,
-				plan: deletionData.plan,
-				applyResult: result.deletion
-			});
-
-			const applySkips = (result.deletion?.skipped ?? []).filter((s) => s.reason !== 'already-absent');
-			for (const skip of applySkips) {
-				onProgress({
-					status: 'deploying',
-					message: `Kept "${skip.path}" — ${skipReasonMessage(skip.reason)}`,
-					step: 5,
-					totalSteps
-				});
-			}
-
-			// Record the stack source with resolved compose path for consistency
-			const stackDir = await getStackDir(gitStack.stackName, gitStack.environmentId);
-			const resolvedComposePath = join(stackDir, progressComposeFileName);
-
-			await upsertStackSource({
-				stackName: gitStack.stackName,
-				environmentId: gitStack.environmentId,
-				sourceType: 'git',
-				gitRepositoryId: gitStack.repositoryId,
-				gitStackId: stackId,
-				composePath: resolvedComposePath,
-				composePaths: gitStack.composePaths ? parseComposePathsColumn(gitStack.composePaths) : null
-			});
-
-			onProgress({ status: 'complete', message: `Successfully deployed ${gitStack.stackName}` });
-		} else {
-			throw new Error(result.error || 'Failed to deploy stack');
-		}
-
-		// git_sync_success for the actual deploy result. deployStack suppressed its
-		// stack_* notification (isGitDeploy), so this is the single one (matches
-		// deployGitStackCore). Failure notifies from the catch below.
-		await notifyGitSync(gitStack.stackName, gitStack.environmentId, result);
-		return result;
+		// Deploy using the shared post-sync body (git-deploy-shared.ts): it emits
+		// the change-table + deploy progress, runs docker compose, finalizes the
+		// deletion sync, records the stack source, rolls back lastCommit on
+		// failure, and emits the single git_sync_* notification.
+		const syncResult: SyncResult = {
+			success: true,
+			commit: currentCommit,
+			composeContent,
+			composeDir,
+			composeFileName: progressComposeFileName,
+			envFileVars,
+			envFileName,
+			updated,
+			deletionPlan: deletionData.plan,
+			newFiles: deletionData.newFiles,
+			newCommitFull: newCommit,
+			previousManifest: deletionData.previousManifest
+		};
+		return deployStackFromSync({ stackId, gitStack, opts: { force: true, ignoreForceRedeploy: false }, syncResult, onProgress, logPrefix });
 	} catch (error: any) {
 		cleanupSshKey(credential, env);
 		await updateGitStack(stackId, {

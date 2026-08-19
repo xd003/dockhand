@@ -117,7 +117,7 @@ export const PUT: RequestHandler = async (event) => {
 		const oldStackName = existing.stackName;
 		// Schedule/webhook field semantics follow THAT stack's model, not the
 		// global default (mixed installs edit stacks of both models).
-		const stackCentralized = existing.gitModel === 'centralized';
+		const stackCentralized = existing.engine === 'centralized';
 		const updated = await updateGitStack(id, stackCentralized
 			? {
 				stackName: data.stackName,

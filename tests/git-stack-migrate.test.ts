@@ -1,6 +1,21 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { computeMigrationPlan } from '../src/lib/utils/git-migration-plan';
+import { isStackInMigrationScope } from '../src/lib/utils/git-migration-scope';
+
+describe('isStackInMigrationScope — scheduler tick suppression during a per-stack migration', () => {
+	const scope = { stackIds: [2, 3], repoIds: [7] };
+
+	it('suppresses a tick for a stack inside the migration scope', () => {
+		assert.equal(isStackInMigrationScope(scope, 2), true);
+		assert.equal(isStackInMigrationScope(scope, 3), true);
+	});
+
+	it('lets unrelated stacks tick normally', () => {
+		assert.equal(isStackInMigrationScope(scope, 1), false);
+		assert.equal(isStackInMigrationScope({ stackIds: [], repoIds: [] }, 2), false);
+	});
+});
 
 describe('computeMigrationPlan — "migrate {2} leaves stack 1 untouched" (decision level)', () => {
 	const stack = (id: number, repoId: number, extra: Partial<{ autoUpdate: boolean; autoUpdateSchedule: string | null; autoUpdateCron: string | null; webhookEnabled: boolean; webhookSecret: string | null; forceRedeploy: boolean }> = {}) => ({

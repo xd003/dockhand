@@ -59,15 +59,7 @@ export interface AppSettings {
 	gitRepositoryMode: 'stack' | 'centralized';
 	gitRepositoryDesiredMode: 'stack' | 'centralized';
 	gitRepositoryModeForcedByEnv: boolean;
-	gitModeTransition: {
-		state: 'idle' | 'draining' | 'provisioning' | 'cutting_over';
-		mode: 'stack' | 'centralized';
-		jobId: string | null;
-		startedAt: string | null;
-		finishedAt: string | null;
-		error: string | null;
-	};
-	gitStackMigration: {
+	gitMigrationState: {
 		state: 'idle' | 'draining' | 'provisioning' | 'cutting_over';
 		jobId: string | null;
 		startedAt: string | null;
@@ -117,8 +109,7 @@ const DEFAULT_SETTINGS: AppSettings = {
 	gitRepositoryMode: 'stack',
 	gitRepositoryDesiredMode: 'stack',
 	gitRepositoryModeForcedByEnv: false,
-	gitModeTransition: { state: 'idle', mode: 'stack', jobId: null, startedAt: null, finishedAt: null, error: null },
-	gitStackMigration: { state: 'idle', jobId: null, startedAt: null, finishedAt: null, error: null },
+	gitMigrationState: { state: 'idle', jobId: null, startedAt: null, finishedAt: null, error: null },
 	defaultComposeTemplate: `version: "3.8"
 
 services:
@@ -213,8 +204,7 @@ function createSettingsStore() {
 					gitRepositoryMode: settings.gitRepositoryMode ?? DEFAULT_SETTINGS.gitRepositoryMode,
 					gitRepositoryDesiredMode: settings.gitRepositoryDesiredMode ?? DEFAULT_SETTINGS.gitRepositoryDesiredMode,
 					gitRepositoryModeForcedByEnv: settings.gitRepositoryModeForcedByEnv ?? DEFAULT_SETTINGS.gitRepositoryModeForcedByEnv,
-					gitModeTransition: settings.gitModeTransition ?? DEFAULT_SETTINGS.gitModeTransition,
-					gitStackMigration: settings.gitStackMigration ?? DEFAULT_SETTINGS.gitStackMigration
+					gitMigrationState: settings.gitMigrationState ?? DEFAULT_SETTINGS.gitMigrationState
 				});
 			}
 		} catch {
@@ -277,8 +267,7 @@ function createSettingsStore() {
 					gitRepositoryMode: updatedSettings.gitRepositoryMode ?? DEFAULT_SETTINGS.gitRepositoryMode,
 					gitRepositoryDesiredMode: updatedSettings.gitRepositoryDesiredMode ?? DEFAULT_SETTINGS.gitRepositoryDesiredMode,
 					gitRepositoryModeForcedByEnv: updatedSettings.gitRepositoryModeForcedByEnv ?? DEFAULT_SETTINGS.gitRepositoryModeForcedByEnv,
-					gitModeTransition: updatedSettings.gitModeTransition ?? DEFAULT_SETTINGS.gitModeTransition,
-					gitStackMigration: updatedSettings.gitStackMigration ?? DEFAULT_SETTINGS.gitStackMigration
+					gitMigrationState: updatedSettings.gitMigrationState ?? DEFAULT_SETTINGS.gitMigrationState
 				});
 			}
 		} catch (error) {
@@ -341,8 +330,7 @@ function createSettingsStore() {
 						gitRepositoryDesiredMode: updated.gitRepositoryDesiredMode ?? mode,
 						gitRepositoryMode: updated.gitRepositoryMode ?? current.gitRepositoryMode,
 						gitRepositoryModeForcedByEnv: updated.gitRepositoryModeForcedByEnv ?? current.gitRepositoryModeForcedByEnv,
-						gitModeTransition: updated.gitModeTransition ?? current.gitModeTransition,
-						gitStackMigration: updated.gitStackMigration ?? current.gitStackMigration
+						gitMigrationState: updated.gitMigrationState ?? current.gitMigrationState
 					}));
 				} catch { /* ignore response parse */ }
 

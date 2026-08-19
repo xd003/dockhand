@@ -1,19 +1,20 @@
 /**
  * Narrow 409 guard for the per-stack migration job.
  *
- * While a git stack migration is running (git_stack_migration.state !==
+ * While a git stack migration is running (git_migration_state.state !==
  * 'idle'), only the entities INSIDE that job's scope are locked: the migrating
  * stack ids and the repositories they belong to. Everything else keeps working
  * (unlike the old whole-instance git-mode-transition lock).
  */
 
 import { json } from '@sveltejs/kit';
-import { getGitStackMigration, getGitStack } from './db';
+import { getGitMigrationState, getGitStack } from './db';
+import {
+	isStackInMigrationScope,
+	type GitMigrationScope
+} from '../utils/git-migration-scope';
 
-export interface GitMigrationScope {
-	stackIds: number[];
-	repoIds: number[];
-}
+export type { GitMigrationScope };
 
 /**
  * Resolve the current active migration scope (empty when no job is running).
@@ -21,7 +22,7 @@ export interface GitMigrationScope {
  * current.
  */
 export async function getActiveGitMigrationScope(): Promise<GitMigrationScope> {
-	const job = await getGitStackMigration();
+	const job = await getGitMigrationState();
 	if (!job || job.state === 'idle') {
 		return { stackIds: [], repoIds: [] };
 	}
@@ -37,6 +38,16 @@ export async function getActiveGitMigrationScope(): Promise<GitMigrationScope> {
 		if (stack?.repositoryId) repoIds.add(stack.repositoryId);
 	}
 	return { stackIds, repoIds: [...repoIds] };
+}
+
+/**
+ * Whether system-triggered git operations for this stack must be suppressed
+ * right now (a per-stack migration is draining/provisioning it). DB-backed, so
+ * it stays correct across a mid-migration restart, unlike the in-memory cron
+ * unregister.
+ */
+export async function isStackMigrating(stackId: number): Promise<boolean> {
+	return isStackInMigrationScope(await getActiveGitMigrationScope(), stackId);
 }
 
 /**

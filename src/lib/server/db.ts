@@ -381,18 +381,18 @@ export async function updateSecretProvider(
 	if (data.config !== undefined) {
 		// The edit form pre-fills non-secret fields but leaves the token blank to mean
 		// "keep the stored secret". Merge the incoming config OVER the existing one so a
-		// blank/absent secret keeps its stored value instead of being wiped. Only applies
-		// when the provider type is unchanged (a type change is a full re-config).
+		// blank/absent secret keeps its stored value instead of being wiped. The edit
+		// form always sends `type` (its dropdown is read-only), so gate on the type not
+		// CHANGING rather than on it being absent - a genuine type change is a full
+		// re-config and skips the merge. (#1432)
 		let merged: Record<string, unknown> = { ...(data.config as Record<string, unknown>) };
-		const typeUnchanged = data.type === undefined;
-		if (typeUnchanged) {
-			const existing = await getSecretProviderById(id);
-			if (existing) {
-				merged = mergeProviderConfigForWrite(
-					data.config as Record<string, unknown>,
-					existing.config as Record<string, unknown>
-				);
-			}
+		const existing = await getSecretProviderById(id);
+		const typeUnchanged = data.type === undefined || (existing !== undefined && data.type === existing.type);
+		if (typeUnchanged && existing) {
+			merged = mergeProviderConfigForWrite(
+				data.config as Record<string, unknown>,
+				existing.config as Record<string, unknown>
+			);
 		}
 		const encrypted = encrypt(JSON.stringify(merged));
 		if (encrypted) updateData.config = encrypted;
@@ -5016,12 +5016,48 @@ export interface EnvUpdateCheckSettings {
 	cron: string;
 	autoUpdate: boolean;
 	vulnerabilityCriteria: VulnerabilityCriteria;
-	// Semver (newer-version-tag) detection — optional so pre-existing rows (which
-	// never had these) parse as "off" without any migration.
-	checkPinnedVersions?: boolean;
-	semverMaxBump?: 'patch' | 'minor' | 'major';
-	semverMatchFlavor?: boolean;
-	semverIncludePrerelease?: boolean;
+}
+
+/**
+ * Global newer-version-tag (semver) detection config. Per-env settings decide
+ * WHEN/whether to check on a schedule; this decides HOW versions are read, and
+ * applies to every check - scheduled and manual alike.
+ */
+export interface GlobalSemverConfig {
+	enabled: boolean;
+	maxBump: 'patch' | 'minor' | 'major';
+	matchFlavor: boolean;
+	includePrerelease: boolean;
+}
+
+const GLOBAL_SEMVER_KEY = 'global_semver_check';
+const DEFAULT_SEMVER_CONFIG: GlobalSemverConfig = {
+	enabled: false,
+	maxBump: 'major',
+	matchFlavor: true,
+	includePrerelease: false
+};
+
+export async function getGlobalSemverConfig(): Promise<GlobalSemverConfig> {
+	const result = await db.select().from(settings).where(eq(settings.key, GLOBAL_SEMVER_KEY));
+	if (!result[0]) return { ...DEFAULT_SEMVER_CONFIG };
+	try {
+		return { ...DEFAULT_SEMVER_CONFIG, ...JSON.parse(result[0].value) };
+	} catch {
+		return { ...DEFAULT_SEMVER_CONFIG };
+	}
+}
+
+export async function setGlobalSemverConfig(config: GlobalSemverConfig): Promise<void> {
+	const value = JSON.stringify(config);
+	const existing = await db.select().from(settings).where(eq(settings.key, GLOBAL_SEMVER_KEY));
+	if (existing.length > 0) {
+		await db.update(settings)
+			.set({ value, updatedAt: new Date().toISOString() })
+			.where(eq(settings.key, GLOBAL_SEMVER_KEY));
+	} else {
+		await db.insert(settings).values({ key: GLOBAL_SEMVER_KEY, value });
+	}
 }
 
 export async function getEnvUpdateCheckSettings(envId: number): Promise<EnvUpdateCheckSettings | null> {

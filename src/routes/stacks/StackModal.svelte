@@ -187,12 +187,26 @@
 		try {
 			const envId = $currentEnvironment?.id ?? null;
 			const name = (mode === 'edit' ? stackName : newStackName) || 'stack';
+			// Send the editor's current env vars (incl. secrets) so `docker compose config`
+			// resolves ${VAR} the same way a deploy will, instead of flagging "VAR not set".
+			const validateEnvVars: Record<string, string> = {};
+			for (const v of envVars) {
+				const k = v.key.trim();
+				if (k) validateEnvVars[k] = v.value ?? '';
+			}
 			const res = await fetch(
 				appendEnvParam(`/api/stacks/${encodeURIComponent(name)}/validate`, envId),
 				{
 					method: 'POST',
 					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ compose: composeContent })
+					body: JSON.stringify({
+							compose: composeContent,
+							envVars: validateEnvVars,
+							// Only an EDIT of an existing stack has "own" containers to exclude from
+							// collision checks. A NEW stack with a name that clashes with a running
+							// stack must still be flagged, so never self-exclude in create mode.
+							existing: mode === 'edit'
+						})
 				}
 			);
 			if (!res.ok) {
@@ -1120,8 +1134,8 @@
 	const STORAGE_KEY_VALIDATE_W = 'dockhand-validate-panel-width';
 	let validatePanelWidth = $state(
 		typeof localStorage !== 'undefined'
-			? Number(localStorage.getItem(STORAGE_KEY_VALIDATE_W)) || 288
-			: 288
+			? Math.max(320, Number(localStorage.getItem(STORAGE_KEY_VALIDATE_W)) || 320)
+			: 320
 	);
 	let isDraggingValidate = $state(false);
 	let editorRowRef = $state<HTMLDivElement | null>(null);
@@ -1140,7 +1154,9 @@
 			const rect = editorRowRef.getBoundingClientRect();
 			// panel is on the right: width = distance from cursor to the row's right edge.
 			const w = rect.right - e.clientX;
-			validatePanelWidth = Math.max(220, Math.min(560, w));
+			// Floor at 320px: below that the header's title + count chips + re-check button
+			// no longer fit on one line and start clipping.
+			validatePanelWidth = Math.max(320, Math.min(560, w));
 		}
 	}
 
@@ -1780,6 +1796,14 @@
 			// Reset mode to prop values on each open
 			mode = propMode;
 			stackName = propStackName;
+			// Clear any compose-validate panel state from a previous open (the modal is
+			// persistently mounted, so $state survives close/reopen - even across envs).
+			validatePanelOpen = false;
+			validateReport = null;
+			validateError = null;
+			validateLoading = false;
+			validateActiveLine = null;
+			validateSeq++;
 			if (mode === 'edit' && stackName) {
 				loadComposeFile().then(() => {
 					// Auto-validate after loading

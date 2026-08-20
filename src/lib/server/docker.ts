@@ -25,7 +25,8 @@ import { parseImageReference } from './registry/image-ref';
 export { parseImageReference } from './registry/image-ref';
 import { rebaseEnvOntoImage, rebaseLabelsOntoImage, rebaseCommand, describeEnvRebase, describeLabelRebase, type ImageEnvLabels } from './container-env-merge';
 import { db, environments, eq } from './db/drizzle.js';
-import { encodeRegistryAuth } from './registry-auth';
+import { encodeRegistryAuth, fetchRegistryToken, isSafeRegistryHost } from './registry-auth';
+import { classifyManifest, type ArtifactKind } from './semver/manifest-artifact';
 import { isSystemContainer, classifyEmptyDigestImage, localDigestIsIndexChild } from './scheduler/tasks/update-utils';
 import { deepDiff } from '../utils/diff.js';
 import { getInstanceId } from './backups/identity';
@@ -3130,15 +3131,22 @@ export async function findRegistryCredentials(registryHost: string): Promise<{ u
  */
 async function getRegistryBearerToken(registry: string, repo: string): Promise<string | null> {
 	try {
+		const hostSafety = isSafeRegistryHost(registry);
+		if (!hostSafety.ok) {
+			console.error(`[Registry] Refusing token request for ${registry}: ${hostSafety.reason}`);
+			return null;
+		}
 		const registryUrl = `https://${registry}`;
 
 		// Look up stored credentials for this registry
 		const credentials = await findRegistryCredentials(registry);
 
 		// Step 1: Challenge request to /v2/
+		// Do not follow redirects on the challenge; a 3xx is treated as a non-401 below.
 		const challengeResponse = await fetch(`${registryUrl}/v2/`, {
 			method: 'GET',
-			headers: { 'User-Agent': 'Dockhand/1.0' }
+			headers: { 'User-Agent': 'Dockhand/1.0' },
+			redirect: 'manual'
 		});
 
 		// If 200, no auth needed
@@ -3199,21 +3207,25 @@ async function getRegistryBearerToken(registry: string, repo: string): Promise<s
 		if (service) tokenUrl.searchParams.set('service', service);
 		if (scope) tokenUrl.searchParams.set('scope', scope);
 
-		const tokenHeaders: Record<string, string> = { 'User-Agent': 'Dockhand/1.0' };
-
-		// Add Basic auth header if we have credentials
-		if (credentials) {
-			const basicAuth = Buffer.from(`${credentials.username}:${credentials.password}`).toString('base64');
-			tokenHeaders['Authorization'] = `Basic ${basicAuth}`;
-		}
-
-		const tokenResponse = await fetch(tokenUrl.toString(), {
-			headers: tokenHeaders
-		});
+		const authHeader = credentials
+			? `Basic ${Buffer.from(`${credentials.username}:${credentials.password}`).toString('base64')}`
+			: null;
+		const tokenResponse = await fetchRegistryToken(tokenUrl.toString(), authHeader);
 
 		if (!tokenResponse.ok) {
-			await tokenResponse.text(); // Consume body to release socket
-			console.error(`Token request failed: ${tokenResponse.status}`);
+			// Surface enough to diagnose without leaking the secret: the response
+			// body (truncated), the final URL, and the identity (username only).
+			const errBody = (await tokenResponse.text()).slice(0, 300).replace(/\s+/g, ' ').trim();
+			const finalNote = tokenResponse.url && tokenResponse.url !== tokenUrl.toString()
+				? ` (final ${new URL(tokenResponse.url).origin})`
+				: '';
+			const identity = credentials
+				? ` as ${credentials.username.slice(0, 4)}...(len=${credentials.username.length})`
+				: ' anonymously';
+			console.error(
+				`[Registry] Token request failed: ${tokenResponse.status} at ${tokenUrl.origin}${finalNote}, sent${identity}` +
+					(errBody ? ` - response: ${errBody}` : '')
+			);
 			return null;
 		}
 
@@ -3255,12 +3267,19 @@ export async function getRegistryAuthHeader(
 	try {
 		// Parse URL to extract host (V2 API is always at the host root)
 		const parsed = parseRegistryUrl(registryUrl);
+		const hostSafety = isSafeRegistryHost(parsed.host);
+		if (!hostSafety.ok) {
+			console.error(`[Registry] Refusing auth challenge for ${parsed.host}: ${hostSafety.reason}`);
+			return null;
+		}
 		const apiBaseUrl = `${parsed.protocol}://${parsed.host}`;
 
-		// Step 1: Challenge request to /v2/ (always at registry root, not under org path)
+		// Step 1: Challenge request to /v2/ (always at registry root, not under org path).
+		// Do not follow redirects; a 3xx is treated as a non-401 below.
 		const challengeResponse = await fetch(`${apiBaseUrl}/v2/`, {
 			method: 'GET',
-			headers: { 'User-Agent': 'Dockhand/1.0' }
+			headers: { 'User-Agent': 'Dockhand/1.0' },
+			redirect: 'manual'
 		});
 
 		// If 200, no auth needed
@@ -3320,21 +3339,20 @@ export async function getRegistryAuthHeader(
 		if (service) tokenUrl.searchParams.set('service', service);
 		if (scope) tokenUrl.searchParams.set('scope', scope);
 
-		const tokenHeaders: Record<string, string> = { 'User-Agent': 'Dockhand/1.0' };
-
-		// Add Basic auth header if we have credentials
-		if (credentials) {
-			const basicAuth = Buffer.from(`${credentials.username}:${credentials.password}`).toString('base64');
-			tokenHeaders['Authorization'] = `Basic ${basicAuth}`;
-		}
-
-		const tokenResponse = await fetch(tokenUrl.toString(), {
-			headers: tokenHeaders
-		});
+		const authHeader = credentials
+			? `Basic ${Buffer.from(`${credentials.username}:${credentials.password}`).toString('base64')}`
+			: null;
+		const tokenResponse = await fetchRegistryToken(tokenUrl.toString(), authHeader);
 
 		if (!tokenResponse.ok) {
-			const errorBody = await tokenResponse.text().catch(() => '');
-			console.error(`Token request failed: ${tokenResponse.status} - ${errorBody}`);
+			const errorBody = (await tokenResponse.text().catch(() => '')).slice(0, 300).replace(/\s+/g, ' ').trim();
+			const finalNote = tokenResponse.url && tokenResponse.url !== tokenUrl.toString()
+				? ` (final ${new URL(tokenResponse.url).origin})`
+				: '';
+			const identity = credentials
+				? ` as ${credentials.username.slice(0, 4)}...(len=${credentials.username.length})`
+				: ' anonymously';
+			console.error(`[Registry] Token request failed: ${tokenResponse.status} at ${tokenUrl.origin}${finalNote}, sent${identity}${errorBody ? ` - response: ${errorBody}` : ''}`);
 			return null;
 		}
 
@@ -3636,6 +3654,7 @@ export async function harborSearchRepositories(
 export async function getRegistryManifestDigest(imageName: string): Promise<string | null> {
 	try {
 		const { registry, repo, tag } = parseImageReference(imageName);
+		if (!isSafeRegistryHost(registry).ok) return null;
 		const token = await getRegistryBearerToken(registry, repo);
 		const manifestUrl = `https://${registry}/v2/${repo}/manifests/${tag}`;
 
@@ -3678,6 +3697,54 @@ export async function getRegistryManifestDigest(imageName: string): Promise<stri
 }
 
 /**
+ * Classify what a `registry/repo:tag` actually is (image vs Helm chart vs other
+ * OCI artifact) by GET-ing its manifest, and return its manifest digest from the
+ * same response. Used by the semver check so a Helm chart tag isn't offered as a
+ * newer version, and so the offered image tag can be shown/copied digest-pinned
+ * without a second request. Returns kind:'image' on any failure (fail-open - never
+ * hide a real update because a probe failed); digest is null when unavailable.
+ * One request per call; the caller probes only the candidate tag.
+ */
+export async function getTagArtifactKind(
+	registry: string,
+	repo: string,
+	tag: string
+): Promise<{ kind: ArtifactKind; digest: string | null }> {
+	try {
+		if (!isSafeRegistryHost(registry).ok) return { kind: 'image', digest: null };
+		const token = await getRegistryBearerToken(registry, repo);
+		const headers: Record<string, string> = {
+			'User-Agent': 'Dockhand/1.0',
+			'Accept': [
+				'application/vnd.oci.image.index.v1+json',
+				'application/vnd.docker.distribution.manifest.list.v2+json',
+				'application/vnd.oci.image.manifest.v1+json',
+				'application/vnd.docker.distribution.manifest.v2+json'
+			].join(', ')
+		};
+		if (token) headers['Authorization'] = token;
+
+		const res = await fetch(`https://${registry}/v2/${repo}/manifests/${tag}`, {
+			method: 'GET',
+			headers,
+			signal: AbortSignal.timeout(8000)
+		});
+		if (!res.ok) {
+			await drainResponse(res);
+			return { kind: 'image', digest: null };
+		}
+		const digest = res.headers.get('Docker-Content-Digest');
+		const topMediaType = res.headers.get('Content-Type');
+		const body = (await res.json().catch(() => null)) as
+			| { mediaType?: string; config?: { mediaType?: string }; manifests?: unknown[] }
+			| null;
+		return { kind: classifyManifest(body, topMediaType), digest };
+	} catch {
+		return { kind: 'image', digest: null };
+	}
+}
+
+/**
  * A multi-arch tag is a manifest list / OCI image index: the list has one digest,
  * and each per-architecture child manifest has its own. `docker pull` usually records
  * the INDEX digest in RepoDigests, but some pulls leave only the PER-ARCH child digest.
@@ -3697,6 +3764,7 @@ async function localDigestMatchesRegistryChild(
 ): Promise<boolean> {
 	try {
 		const { registry, repo, tag } = parseImageReference(imageName);
+		if (!isSafeRegistryHost(registry).ok) return false;
 		const token = await getRegistryBearerToken(registry, repo);
 		const headers: Record<string, string> = {
 			'User-Agent': 'Dockhand/1.0',

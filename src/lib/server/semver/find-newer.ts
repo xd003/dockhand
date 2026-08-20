@@ -25,6 +25,12 @@ export interface FindNewerOptions {
 	includePrerelease?: boolean;
 	/** Require the same flavor/suffix (`-alpine`). Default true — the #1 noise-killer. */
 	matchFlavor?: boolean;
+	/**
+	 * A compiled `dockhand.version.pattern` override (from compileVersionPattern).
+	 * When set, both the current tag and every candidate are parsed with it, so an
+	 * image with a non-standard tag scheme can still be compared. Absent = default.
+	 */
+	versionPattern?: RegExp | null;
 }
 
 export interface NewerVersion {
@@ -34,6 +40,8 @@ export interface NewerVersion {
 	bump: VersionBump;
 	/** Every newer version between current and target (exclusive of current, inclusive of target), ordered. */
 	skipped: string[];
+	/** The target tag's manifest digest (`sha256:...`), when probed. Lets the UI show/copy the new tag digest-pinned. */
+	digest?: string;
 }
 
 /** Which segment first differs decides the bump: [0]=major, [1]=minor, else patch. */
@@ -65,15 +73,16 @@ export function findNewerVersionTag(
 	allTags: string[],
 	options: FindNewerOptions = {}
 ): NewerVersion | null {
-	const current = parseTag(currentTag);
+	const { maxBump = 'major', includePrerelease = false, matchFlavor = true, versionPattern = null } = options;
+
+	const current = parseTag(currentTag, versionPattern);
 	if (!current) return null; // floating tag — not a version, never suggest.
 
-	const { maxBump = 'major', includePrerelease = false, matchFlavor = true } = options;
 	const maxRank = BUMP_RANK[maxBump];
 	const currentIsPrerelease = isPrerelease(current);
 
 	const candidates = allTags
-		.map((tag) => ({ tag, parsed: parseTag(tag) }))
+		.map((tag) => ({ tag, parsed: parseTag(tag, versionPattern) }))
 		.filter((c): c is { tag: string; parsed: ParsedTag } => c.parsed !== null)
 		.filter((c) => prefixMatches(c.parsed.prefix, current.prefix))
 		.filter((c) => !matchFlavor || flavorMatches(c.parsed, current))
@@ -114,4 +123,36 @@ export function findNewerVersionTag(
 		bump: classifyBump(current, target.parsed),
 		skipped: deduped.map((c) => c.tag)
 	};
+}
+
+/**
+ * Like findNewerVersionTag, but verifies the chosen target is a real container
+ * image before offering it - dropping any tag that turns out to be a Helm chart or
+ * other non-image OCI artifact published into the same repo, and re-picking the
+ * next-highest version. `probe` returns `{ ok, digest }` where ok=true means a
+ * runnable image; the digest (when present) is attached to the result so the UI can
+ * offer the new tag digest-pinned. Async + injected so this stays pure/testable.
+ *
+ * Only the chosen candidate is probed, not every tag. `maxSkips` bounds the extra
+ * probes so a repo full of artifacts can't fan out unbounded. `probe` failures
+ * should resolve to `{ ok: true }` (fail-open) at the call site so a probe error
+ * never hides a real update.
+ */
+export async function findNewerImageTag(
+	currentTag: string,
+	allTags: string[],
+	probe: (tag: string) => Promise<{ ok: boolean; digest?: string | null }>,
+	options: FindNewerOptions = {},
+	maxSkips = 5
+): Promise<NewerVersion | null> {
+	const excluded = new Set<string>();
+	for (let i = 0; i <= maxSkips; i++) {
+		const pool = excluded.size ? allTags.filter((t) => !excluded.has(t)) : allTags;
+		const newer = findNewerVersionTag(currentTag, pool, options);
+		if (!newer) return null;
+		const { ok, digest } = await probe(newer.tag);
+		if (ok) return digest ? { ...newer, digest } : newer;
+		excluded.add(newer.tag);
+	}
+	return null;
 }

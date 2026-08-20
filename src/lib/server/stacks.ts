@@ -17,7 +17,11 @@ import { collectProcess } from './process-utils';
 import { redactEnvVarsForLog } from './log-utils';
 import {
 	applyFileDeletions,
+	computeDeletions,
+	deletionSafetyCheck,
 	hashDirFiles,
+	hashShippedFiles,
+	parseManifest,
 	skipReasonMessage,
 	normalizeSkipReason,
 	type FileToDelete,
@@ -46,7 +50,9 @@ import {
 	getStackComposePaths,
 	getStackSourceByComposePath,
 	getSecretProviderById,
-	setStackInjectedSecretKeys
+	setStackInjectedSecretKeys,
+	getEnvSetting,
+	setEnvSetting
 } from './db';
 import { getProvider } from './secretproviders';
 import { resolveComposeDockerHost, buildComposeBaseArgs } from './compose-docker-args';
@@ -327,6 +333,11 @@ async function lifecycleStackFiles(stackDir?: string): Promise<Record<string, st
 	} catch {
 		return undefined;
 	}
+}
+
+/** Settings key holding the last shipped-file manifest for a stack, per environment. */
+function stackFileManifestKey(stackName: string): string {
+	return `stackfiles:${stackName}`;
 }
 
 // =============================================================================
@@ -3419,6 +3430,16 @@ export async function removeStack(
 			cleanupErrors.push(`stack source: ${err.message}`);
 		}
 
+		// Clear the shipped-file manifest for the removed stack so a future stack
+		// reusing this name+env starts with a clean slate (no stale deletions).
+		if (envId != null) {
+			try {
+				await setEnvSetting(stackFileManifestKey(stackName), null, envId);
+			} catch (err: any) {
+				cleanupErrors.push(`file manifest: ${err.message}`);
+			}
+		}
+
 		try {
 			await deleteStackEnvVars(stackName, envId);
 		} catch (err: any) {
@@ -3673,6 +3694,21 @@ export async function deployStack(options: DeployStackOptions): Promise<StackOpe
 
 		}
 
+		// Hawser adopted/internal deploy: ship the whole compose directory (same
+		// map git deploy already uses) so relative binds and sibling files exist
+		// under STACKS_DIR/<stack>/. Git already populated stackFiles above.
+		let adoptedHawserSync = false;
+		let dirWalkCount = 0;
+		if (!stackFiles && existsSync(workingDir) && typeof envId === 'number') {
+			const hawserEnv = await getEnvironment(envId);
+			if (hawserEnv?.connectionType === 'hawser-standard' || hawserEnv?.connectionType === 'hawser-edge') {
+				stackFiles = await readDirFilesAsMap(workingDir);
+				dirWalkCount = Object.keys(stackFiles).length;
+				adoptedHawserSync = true;
+				console.log(`${logPrefix} Read ${dirWalkCount} files from compose directory for Hawser`);
+			}
+		}
+
 		// For Hawser deployments: include compose and .env in stackFiles
 		// Hawser writes files from the files map to disk at STACKS_DIR/{stackName}/
 		if (!stackFiles) {
@@ -3691,9 +3727,13 @@ export async function deployStack(options: DeployStackOptions): Promise<StackOpe
 			}
 			return 'compose.yaml';
 		})();
-		if (!stackFiles[composeRelPath]) {
-			stackFiles[composeRelPath] = compose;
-			console.log(`${logPrefix} Added ${composeRelPath} to stackFiles for Hawser (${compose.length} chars)`);
+		const composeFilename = composeRelPath;
+		// Git: keep the clone copy when already in the map. Adopted/internal Hawser:
+		// overlay the compose body this deploy is applying (the previous sparse
+		// payload always sent that content).
+		if (!stackFiles[composeFilename] || adoptedHawserSync) {
+			stackFiles[composeFilename] = compose;
+			console.log(`${logPrefix} Added ${composeFilename} to stackFiles for Hawser (${compose.length} chars)`);
 		}
 
 		let envFileContent: string | undefined = stackFiles['.env'];
@@ -3704,6 +3744,42 @@ export async function deployStack(options: DeployStackOptions): Promise<StackOpe
 				console.log(`${logPrefix} Added .env to stackFiles for Hawser (${envFileContent.length} chars)`);
 			} catch (err) {
 				console.warn(`${logPrefix} Failed to read .env file at ${actualEnvPath}:`, err);
+			}
+		}
+
+		// Adopted/internal Hawser: reuse git deletion sync against the shipped map.
+		let hawserFilesToDelete = filesToDelete;
+		let adoptedManifestToPersist: Record<string, string> | undefined;
+		if (adoptedHawserSync && typeof envId === 'number') {
+			const newShipped = hashShippedFiles(stackFiles);
+			const raw = await getEnvSetting(stackFileManifestKey(name), envId);
+			const previous = parseManifest(
+				typeof raw === 'string' ? raw : raw != null ? JSON.stringify(raw) : null
+			);
+			// The compose overlay above guarantees newShipped is non-empty even when
+			// the dir walk was empty, so the emptiness guard must be explicit rather
+			// than left to deletionSafetyCheck.
+			const emptyWalk = dirWalkCount === 0;
+			const blocked = emptyWalk
+				? 'the stack directory walk was empty — skipping all deletions this deploy'
+				: deletionSafetyCheck(previous.files, newShipped, composeFilename);
+			if (blocked) {
+				console.warn(`${logPrefix} Deletion sync: ${blocked}`);
+			} else {
+				const plan = computeDeletions(previous.files, newShipped);
+				if (plan.toDelete.length > 0) {
+					hawserFilesToDelete = [...(hawserFilesToDelete ?? []), ...plan.toDelete];
+				}
+				for (const file of plan.toDelete) {
+					console.log(`${logPrefix} Deletion sync: will remove "${file.path}" — deleted from the compose directory`);
+				}
+				for (const skip of plan.skipped) {
+					if (skip.reason === 'already-absent') continue;
+					console.warn(`${logPrefix} Deletion sync: keeping "${skip.path}" — ${skipReasonMessage(skip.reason)}`);
+				}
+			}
+			if (!emptyWalk) {
+				adoptedManifestToPersist = newShipped;
 			}
 		}
 
@@ -3751,7 +3827,7 @@ export async function deployStack(options: DeployStackOptions): Promise<StackOpe
 				useOverrideFile: isGitStack,
 				// Stack-relative compose path for Hawser (preserves nested layouts)
 				composeFileName: composeRelPath,
-				filesToDelete
+				filesToDelete: hawserFilesToDelete
 			},
 			compose,
 			isGitStack ? dbNonSecretVars : undefined,
@@ -3771,6 +3847,13 @@ export async function deployStack(options: DeployStackOptions): Promise<StackOpe
 		// for local deployments the local applier's result is the truth.
 		if (!result.deletion && localDeletionResult) {
 			result.deletion = localDeletionResult;
+		}
+		if (result.success && adoptedManifestToPersist && typeof envId === 'number') {
+			try {
+				await setEnvSetting(stackFileManifestKey(name), { commit: null, files: adoptedManifestToPersist }, envId);
+			} catch (err) {
+				console.warn(`${logPrefix} Failed to persist stack file manifest:`, err);
+			}
 		}
 		// Fire stack_deployed / stack_deploy_failed. This is the single point every deploy
 		// path funnels through, so all of them notify (#1295). A git deploy suppresses the

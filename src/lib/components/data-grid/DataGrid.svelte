@@ -1111,7 +1111,7 @@
 	</table>
 {/snippet}
 
-	<div class="mobile-grid-toolbar">
+<div class="mobile-grid-toolbar">
 	{#if selectable}
 		<button type="button" onclick={toggleSelectAll}>
 			{#if allSelected || someSelected}<CheckSquare class="size-4" />{:else}<SquareIcon class="size-4" />{/if}
@@ -1121,7 +1121,7 @@
 	<ColumnSettingsPopover {gridId} />
 </div>
 
-	<div data-grid-id={gridId} class="flex-1 min-h-0 min-w-0 overflow-auto rounded-lg data-grid-wrapper {wrapperClass}" bind:this={scrollContainer} role="region" aria-label={`${gridId} data table`} onscroll={handleScroll} onpointerover={handleRowPointerOver} onpointerout={handleRowPointerOut} onpointerleave={() => onRowPointerChange?.(false)} onpointercancel={() => onRowPointerChange?.(false)}>
+<div data-grid-id={gridId} class="flex-1 min-h-0 min-w-0 overflow-auto rounded-lg data-grid-wrapper {wrapperClass}" bind:this={scrollContainer} role="region" aria-label={`${gridId} data table`} onscroll={handleScroll} onpointerover={handleRowPointerOver} onpointerout={handleRowPointerOut} onpointerleave={() => onRowPointerChange?.(false)} onpointercancel={() => onRowPointerChange?.(false)}>
 	{#if loading && data.length === 0}
 		{#if loadingState}
 			{@render loadingState()}

@@ -14,7 +14,8 @@ import {
 	firstComposePathOutsideDir,
 	parseComposePathsColumn,
 	resolveEffectiveComposeFiles,
-	shouldUseExplicitFFlags
+	shouldUseExplicitFFlags,
+	composeSiblingRelPath
 } from './compose-files';
 import {
 	findStackNameCollision,
@@ -28,9 +29,17 @@ import { collectProcess } from './process-utils';
 import { redactEnvVarsForLog } from './log-utils';
 import {
 	applyFileDeletions,
+	computeDeletions,
 	hashDirFiles,
+	hashShippedFiles,
+	encodeHawserFileContent,
+	retainOmittedHashes,
+	changedHawserFiles,
+	withRequiredHawserFiles,
+	parseManifest,
 	skipReasonMessage,
 	normalizeSkipReason,
+	LOAD_BEARING_FILES,
 	type FileToDelete,
 	type DeletionApplyResult,
 	type DeletionSkipReason
@@ -59,6 +68,8 @@ import {
 	getStackSourceByComposePath,
 	getSecretProviderById,
 	setStackInjectedSecretKeys,
+	getEnvSetting,
+	setEnvSetting,
 	getStackSources
 } from './db';
 import { getProvider } from './secretproviders';
@@ -245,31 +256,19 @@ const COMPOSE_TIMEOUT_MS = parseInt(process.env.COMPOSE_TIMEOUT || '900') * 1000
 const COMPOSE_KILL_GRACE_MS = 5000; // 5 seconds grace period before SIGKILL
 
 /**
- * Check if content is binary (not valid UTF-8 text).
- */
-const utf8Decoder = new TextDecoder('utf-8', { fatal: true });
-function isBinaryContent(bytes: Uint8Array): boolean {
-	try {
-		utf8Decoder.decode(bytes);
-		return false;
-	} catch {
-		return true;
-	}
-}
-
-/**
  * Read all files from a directory as a map of relative path -> content.
  * Used to send files to Hawser for remote deployments.
- * Binary files are base64-encoded with a "base64:" prefix to preserve all bytes.
+ * Binary files and text that starts with `base64:` are encoded for the wire.
  */
 // Max file size: 10 MB per file, 256 MB total payload
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
 const MAX_TOTAL_SIZE = 256 * 1024 * 1024;
 
-async function readDirFilesAsMap(dirPath: string): Promise<Record<string, string>> {
+async function readDirFilesAsMap(dirPath: string): Promise<{ files: Record<string, string>; skipped: string[] }> {
 	const files: Record<string, string> = {};
 	let totalSize = 0;
 	const skipped: string[] = [];
+	const skippedNotes: string[] = [];
 
 	async function scanDir(currentPath: string, relativePath: string = ''): Promise<void> {
 		const entries = readdirSync(currentPath, { withFileTypes: true });
@@ -285,35 +284,56 @@ async function readDirFilesAsMap(dirPath: string): Promise<Record<string, string
 				const fileSize = statSync(fullPath).size;
 
 				if (fileSize > MAX_FILE_SIZE) {
-					skipped.push(`${relPath} (${(fileSize / 1024 / 1024).toFixed(1)} MB)`);
+					skipped.push(relPath);
+					skippedNotes.push(`${relPath} (${(fileSize / 1024 / 1024).toFixed(1)} MB)`);
 					continue;
 				}
 
 				if (totalSize + fileSize > MAX_TOTAL_SIZE) {
-					skipped.push(`${relPath} (would exceed ${MAX_TOTAL_SIZE / 1024 / 1024} MB total limit)`);
+					skipped.push(relPath);
+					skippedNotes.push(`${relPath} (would exceed ${MAX_TOTAL_SIZE / 1024 / 1024} MB total limit)`);
 					continue;
 				}
 
 				const bytes = readFileSync(fullPath);
 				totalSize += fileSize;
-
-				if (isBinaryContent(bytes)) {
-					files[relPath] = `base64:${bytes.toString('base64')}`;
-				} else {
-					files[relPath] = new TextDecoder().decode(bytes);
-				}
+				files[relPath] = encodeHawserFileContent(bytes);
 			}
 		}
 	}
 
 	await scanDir(dirPath);
 
-	if (skipped.length > 0) {
-		console.log(`[readDirFilesAsMap] Skipped ${skipped.length} file(s) exceeding size limits: ${skipped.join(', ')}`);
+	if (skippedNotes.length > 0) {
+		console.log(`[readDirFilesAsMap] Skipped ${skippedNotes.length} file(s) exceeding size limits: ${skippedNotes.join(', ')}`);
 	}
 
-	return files;
+	return { files, skipped };
 }
+
+function manifestFilesFromSetting(raw: unknown): Record<string, string> {
+	return parseManifest(typeof raw === 'string' ? raw : raw != null ? JSON.stringify(raw) : null).files;
+}
+
+async function readAdoptedFileManifest(stackName: string, envId: number): Promise<Record<string, string>> {
+	const raw = await getEnvSetting(stackFileManifestKey(stackName), envId);
+	return manifestFilesFromSetting(raw);
+}
+
+async function persistAdoptedFileManifest(
+	stackName: string,
+	envId: number,
+	files: Record<string, string>,
+	logPrefix?: string
+): Promise<void> {
+	try {
+		await setEnvSetting(stackFileManifestKey(stackName), { commit: null, files }, envId);
+	} catch (err) {
+		console.warn(`${logPrefix ?? `[Stack:${stackName}]`} Failed to persist stack file manifest:`, err);
+	}
+}
+
+type LifecycleHawserFiles = { payload: Record<string, string>; manifest: Record<string, string> };
 
 /**
  * Stack-dir files for a LIFECYCLE op (start/stop/restart/down) on Hawser.
@@ -325,14 +345,49 @@ async function readDirFilesAsMap(dirPath: string): Promise<Record<string, string
  * (executeLocalCompose has no stackFiles param); only the Hawser branch consumes it.
  * Best-effort: a missing/unreadable dir returns undefined -> exact prior behavior.
  */
-async function lifecycleStackFiles(stackDir?: string): Promise<Record<string, string> | undefined> {
+async function lifecycleStackFiles(
+	stackDir: string | undefined,
+	stackName: string,
+	envId?: number | null
+): Promise<LifecycleHawserFiles | undefined> {
 	if (!stackDir || !existsSync(stackDir)) return undefined;
 	try {
-		const files = await readDirFilesAsMap(stackDir);
-		return Object.keys(files).length > 0 ? files : undefined;
+		const { files, skipped } = await readDirFilesAsMap(stackDir);
+		if (Object.keys(files).length === 0) return undefined;
+		const prev = typeof envId === 'number' ? await readAdoptedFileManifest(stackName, envId) : {};
+		const manifest = retainOmittedHashes(prev, hashShippedFiles(files), skipped);
+		let payload = changedHawserFiles(files, prev);
+		if (Object.keys(payload).length === 0) {
+			payload = {};
+			for (const [path, content] of Object.entries(files)) {
+				if (LOAD_BEARING_FILES.has(basename(path)) || /\.ya?ml$/i.test(basename(path))) {
+					payload[path] = content;
+				}
+			}
+			if (Object.keys(payload).length === 0) payload = files;
+		}
+		return { payload, manifest };
 	} catch {
 		return undefined;
 	}
+}
+
+async function persistLifecycleHawserManifest(
+	isGitStack: boolean,
+	envId: number | null | undefined,
+	stackName: string,
+	success: boolean,
+	hawserFiles: LifecycleHawserFiles | undefined
+): Promise<void> {
+	if (isGitStack || !success || typeof envId !== 'number' || !hawserFiles) return;
+	const env = await getEnvironment(envId);
+	if (env?.connectionType !== 'hawser-standard' && env?.connectionType !== 'hawser-edge') return;
+	await persistAdoptedFileManifest(stackName, envId, hawserFiles.manifest);
+}
+
+/** Settings key holding the last shipped-file manifest for a stack, per environment. */
+function stackFileManifestKey(stackName: string): string {
+	return `stackfiles:${stackName}`;
 }
 
 // =============================================================================
@@ -1726,9 +1781,7 @@ async function executeLocalCompose(
 			}
 		}
 	} else {
-		// Single standard compose filename (compose.yaml / docker-compose.yml / …)
-		// without path translation: omit -f so Docker Compose auto-discovers from cwd.
-		// Non-standard names and multi-file sets always take the explicit -f path above.
+		// No resolved compose files (should not happen for a real stack).
 	}
 
 	// Always auto-detect .env in compose directory (defaultEnvPath already defined above)
@@ -1973,18 +2026,18 @@ async function executeComposeViaHawser(
 		// Build files map - include .env file ONLY for non-secret envVars
 		// Secrets are passed separately via allEnvVars and injected via shell env
 		const files: Record<string, string> = { ...(stackFiles || {}) };
+		const primaryComposeRel = composeFileNames?.[0] || composeFileName;
+		const envRel = composeSiblingRelPath(primaryComposeRel, '.env');
 		if (envVars && Object.keys(envVars).length > 0) {
-			if (files['.env']) {
-				// stackFiles already has .env (e.g., from git repo with comments)
-				// Don't overwrite - the envVars are already passed separately for variable substitution
-				console.log(`${logPrefix} Preserving existing .env from stackFiles (${files['.env'].length} chars), envVars passed separately for substitution`);
+			if (files[envRel]) {
+				// stackFiles already has .env next to the compose file (e.g. git comments)
+				console.log(`${logPrefix} Preserving existing ${envRel} from stackFiles (${files[envRel].length} chars), envVars passed separately for substitution`);
 			} else {
-				// No .env in stackFiles - generate one from NON-SECRET envVars only
 				const envContent = Object.entries(envVars)
 					.map(([key, value]) => `${key}=${value}`)
 					.join('\n');
-				files['.env'] = envContent;
-				console.log(`${logPrefix} Generated .env file with ${Object.keys(envVars).length} non-secret variables`);
+				files[envRel] = envContent;
+				console.log(`${logPrefix} Generated ${envRel} with ${Object.keys(envVars).length} non-secret variables`);
 			}
 		}
 
@@ -2239,15 +2292,9 @@ async function executeComposeCommand(
 			// suppresses Compose's adjacent-.env auto-discovery, so an empty file would
 			// blank a subdir compose's own .env interpolation (#1136).
 			if (useOverrideFile && envVars && Object.keys(envVars).length > 0) {
-				// Hawser anchors --env-file to the PRIMARY compose file's directory
-				// (composeProjectDir), so the override must live beside that file —
-				// NOT at the stack root, which the agent never looks in for a nested
-				// layout like apps/web/compose.yaml.
-				const primaryRel = hawserFileNames.length > 0 ? hawserFileNames[0] : composeBaseName;
-				const primaryDir = primaryRel.includes('/') ? primaryRel.slice(0, primaryRel.lastIndexOf('/')) : '';
-				const envDockhandRel = primaryDir ? `${primaryDir}/.env.dockhand` : '.env.dockhand';
-				hawserStackFiles = { ...(hawserStackFiles || {}), [envDockhandRel]: buildDockhandOverrideFile(envVars) };
-				console.log(`[Stack:${stackName}] Including .env.dockhand override file for Hawser at ${envDockhandRel} (${Object.keys(envVars).length} vars)`);
+				const dockhandRel = composeSiblingRelPath(hawserFileNames[0] ?? composeFileName, '.env.dockhand');
+				hawserStackFiles = { ...(hawserStackFiles || {}), [dockhandRel]: buildDockhandOverrideFile(envVars) };
+				console.log(`[Stack:${stackName}] Including ${dockhandRel} override file for Hawser (${Object.keys(envVars).length} vars)`);
 			}
 
 			return executeComposeViaHawser(
@@ -2786,7 +2833,7 @@ export async function redeployStackFromDir(
 	// otherwise a restored stack comes up with its secrets interpolating to "".
 	const secretVars = await getSecretEnvVarsAsRecord(stackName, envId);
 	// For Hawser, ship the entire tree (compose + include:d files + sidecars + .env).
-	const stackFiles = await readDirFilesAsMap(stackDir);
+	const stackFiles = (await readDirFilesAsMap(stackDir)).files;
 	return await executeComposeCommand(
 		'up',
 		{
@@ -2845,7 +2892,8 @@ export async function startStack(
 	// via getStackComposeFile/getStackSource) to avoid a redundant DB lookup.
 	const isGitStack = result.sourceType === 'git';
 
-	const opts: ComposeCommandOptions = { stackName, envId, workingDir: result.stackDir, composePath: result.composePath, composePaths: result.composePaths, envPath: result.envPath, useOverrideFile: isGitStack, stackFiles: await lifecycleStackFiles(result.stackDir) };
+	const hawserFiles = await lifecycleStackFiles(result.stackDir, stackName, envId);
+	const opts: ComposeCommandOptions = { stackName, envId, workingDir: result.stackDir, composePath: result.composePath, composePaths: result.composePaths, envPath: result.envPath, useOverrideFile: isGitStack, stackFiles: hawserFiles?.payload };
 
 	// Check if containers exist for this stack. If they do, use 'start' to resume
 	// them (preserves container IDs, avoids Traefik race conditions from recreation).
@@ -2864,6 +2912,7 @@ export async function startStack(
 		result.nonSecretVars,
 		result.secretVars
 	);
+	await persistLifecycleHawserManifest(isGitStack, envId, stackName, startResult.success, hawserFiles);
 	await notifyStackLifecycle(stackName, envId, 'stack_started', startResult);
 	return startResult;
 }
@@ -2891,9 +2940,10 @@ export async function stopStack(
 	// sourceType is plumbed through from requireComposeFile to avoid a redundant DB lookup.
 	const isGitStack = result.sourceType === 'git';
 
+	const hawserFiles = await lifecycleStackFiles(result.stackDir, stackName, envId);
 	const composeResult = await executeComposeCommand(
 		'stop',
-		{ stackName, envId, workingDir: result.stackDir, composePath: result.composePath, composePaths: result.composePaths, envPath: result.envPath, useOverrideFile: isGitStack, stackFiles: await lifecycleStackFiles(result.stackDir) },
+		{ stackName, envId, workingDir: result.stackDir, composePath: result.composePath, composePaths: result.composePaths, envPath: result.envPath, useOverrideFile: isGitStack, stackFiles: hawserFiles?.payload },
 		result.content!,
 		result.nonSecretVars,
 		result.secretVars
@@ -2902,6 +2952,7 @@ export async function stopStack(
 	// Stop any dynamically-spawned child containers not in the compose file
 	await cleanupOrphanStackContainers(stackName, envId, 'stop');
 
+	await persistLifecycleHawserManifest(isGitStack, envId, stackName, composeResult.success, hawserFiles);
 	await notifyStackLifecycle(stackName, envId, 'stack_stopped', composeResult);
 	return composeResult;
 }
@@ -2937,7 +2988,8 @@ export async function restartStack(
 	// sourceType is plumbed through from requireComposeFile to avoid a redundant DB lookup.
 	const isGitStack = result.sourceType === 'git';
 
-	const opts: ComposeCommandOptions = { stackName, envId, workingDir: result.stackDir, composePath: result.composePath, composePaths: result.composePaths, envPath: result.envPath, useOverrideFile: isGitStack, stackFiles: await lifecycleStackFiles(result.stackDir) };
+	const hawserFiles = await lifecycleStackFiles(result.stackDir, stackName, envId);
+	const opts: ComposeCommandOptions = { stackName, envId, workingDir: result.stackDir, composePath: result.composePath, composePaths: result.composePaths, envPath: result.envPath, useOverrideFile: isGitStack, stackFiles: hawserFiles?.payload };
 
 	let composeResult: StackOperationResult;
 
@@ -2958,6 +3010,7 @@ export async function restartStack(
 	// Restart any dynamically-spawned child containers not in the compose file
 	await cleanupOrphanStackContainers(stackName, envId, 'restart');
 
+	await persistLifecycleHawserManifest(isGitStack, envId, stackName, composeResult.success, hawserFiles);
 	return composeResult;
 }
 
@@ -2981,9 +3034,10 @@ export async function downStack(
 	// sourceType is plumbed through from requireComposeFile to avoid a redundant DB lookup.
 	const isGitStack = result.sourceType === 'git';
 
+	const hawserFiles = await lifecycleStackFiles(result.stackDir, stackName, envId);
 	const composeResult = await executeComposeCommand(
 		'down',
-		{ stackName, envId, removeVolumes, workingDir: result.stackDir, composePath: result.composePath, composePaths: result.composePaths, envPath: result.envPath, useOverrideFile: isGitStack, stackFiles: await lifecycleStackFiles(result.stackDir) },
+		{ stackName, envId, removeVolumes, workingDir: result.stackDir, composePath: result.composePath, composePaths: result.composePaths, envPath: result.envPath, useOverrideFile: isGitStack, stackFiles: hawserFiles?.payload },
 		result.content!,
 		result.nonSecretVars,
 		result.secretVars
@@ -2992,6 +3046,7 @@ export async function downStack(
 	// Remove any dynamically-spawned child containers not in the compose file
 	await cleanupOrphanStackContainers(stackName, envId, 'remove');
 
+	await persistLifecycleHawserManifest(isGitStack, envId, stackName, composeResult.success, hawserFiles);
 	return composeResult;
 }
 
@@ -3098,6 +3153,19 @@ export async function removeStack(
 					removalFiles = Object.entries(hashDirFiles(resolvedStaging)).map(
 						([path, hash]) => ({ path, hash })
 					);
+				}
+			}
+			// Adopted stacks live outside DATA_DIR/stacks, so hashDirFiles on the
+			// local compose dir is not a Dockhand-owned remote tree. Use the last
+			// shipped Hawser manifest instead so the agent can hash-verify cleanup.
+			if (!removalFiles && envId != null) {
+				const hawserEnv = await getEnvironment(envId);
+				if (hawserEnv?.connectionType === 'hawser-standard' || hawserEnv?.connectionType === 'hawser-edge') {
+					const previous = await readAdoptedFileManifest(stackName, envId);
+					const entries = Object.entries(previous);
+					if (entries.length > 0) {
+						removalFiles = entries.map(([path, hash]) => ({ path, hash }));
+					}
 				}
 			}
 
@@ -3252,6 +3320,16 @@ export async function removeStack(
 			await deleteStackSource(stackName, envId);
 		} catch (err: any) {
 			cleanupErrors.push(`stack source: ${err.message}`);
+		}
+
+		// Clear the shipped-file manifest for the removed stack so a future stack
+		// reusing this name+env starts with a clean slate (no stale deletions).
+		if (envId != null) {
+			try {
+				await setEnvSetting(stackFileManifestKey(stackName), null, envId);
+			} catch (err: any) {
+				cleanupErrors.push(`file manifest: ${err.message}`);
+			}
 		}
 
 		try {
@@ -3444,7 +3522,7 @@ export async function deployStack(options: DeployStackOptions): Promise<StackOpe
 			}
 
 			// Read all files for Hawser deployments
-			stackFiles = await readDirFilesAsMap(sourceDir);
+			stackFiles = (await readDirFilesAsMap(sourceDir)).files;
 			console.log(`${logPrefix} Read ${Object.keys(stackFiles).length} files from source directory`);
 			console.log(`${logPrefix} Files:`, Object.keys(stackFiles).join(', '));
 
@@ -3518,6 +3596,24 @@ export async function deployStack(options: DeployStackOptions): Promise<StackOpe
 
 		}
 
+		// Hawser adopted/internal deploy: ship the whole compose directory (same
+		// map git deploy already uses) so relative binds and sibling files exist
+		// under STACKS_DIR/<stack>/. Git already populated stackFiles above.
+		let adoptedHawserSync = false;
+		let dirWalkCount = 0;
+		let sizeOmitted: string[] = [];
+		if (!stackFiles && existsSync(workingDir) && typeof envId === 'number') {
+			const hawserEnv = await getEnvironment(envId);
+			if (hawserEnv?.connectionType === 'hawser-standard' || hawserEnv?.connectionType === 'hawser-edge') {
+				const walked = await readDirFilesAsMap(workingDir);
+				stackFiles = walked.files;
+				sizeOmitted = walked.skipped;
+				dirWalkCount = Object.keys(stackFiles).length;
+				adoptedHawserSync = true;
+				console.log(`${logPrefix} Read ${dirWalkCount} files from compose directory for Hawser`);
+			}
+		}
+
 		// For Hawser deployments: include compose and .env in stackFiles
 		// Hawser writes files from the files map to disk at STACKS_DIR/{stackName}/
 		if (!stackFiles) {
@@ -3536,20 +3632,65 @@ export async function deployStack(options: DeployStackOptions): Promise<StackOpe
 			}
 			return 'compose.yaml';
 		})();
-		if (!stackFiles[composeRelPath]) {
+		// Git: keep the clone copy when already in the map. Adopted/internal Hawser:
+		// overlay the compose body this deploy is applying (the previous sparse
+		// payload always sent that content).
+		if (!stackFiles[composeRelPath] || adoptedHawserSync) {
 			stackFiles[composeRelPath] = compose;
 			console.log(`${logPrefix} Added ${composeRelPath} to stackFiles for Hawser (${compose.length} chars)`);
 		}
 
-		let envFileContent: string | undefined = stackFiles['.env'];
+		const envRel = composeSiblingRelPath(composeRelPath, '.env');
+		let envFileContent: string | undefined = stackFiles[envRel] ?? stackFiles['.env'];
 		if (!envFileContent && actualEnvPath && existsSync(actualEnvPath)) {
 			try {
 				envFileContent = readFileSync(actualEnvPath, 'utf-8');
-				stackFiles['.env'] = envFileContent;
-				console.log(`${logPrefix} Added .env to stackFiles for Hawser (${envFileContent.length} chars)`);
+				const envMapKey = (() => {
+					const rel = relative(workingDir, actualEnvPath);
+					if (rel && !rel.startsWith('..') && !isAbsolute(rel)) {
+						return rel.split(pathSep).join('/');
+					}
+					return envRel;
+				})();
+				stackFiles[envMapKey] = envFileContent;
+				console.log(`${logPrefix} Added ${envMapKey} to stackFiles for Hawser (${envFileContent.length} chars)`);
 			} catch (err) {
 				console.warn(`${logPrefix} Failed to read .env file at ${actualEnvPath}:`, err);
 			}
+		}
+
+		// Adopted/internal Hawser: reuse git deletion sync against the shipped map.
+		let hawserFilesToDelete = filesToDelete;
+		let adoptedManifestToPersist: Record<string, string> | undefined;
+		if (adoptedHawserSync && typeof envId === 'number') {
+			const previous = await readAdoptedFileManifest(name, envId);
+			const newShipped = retainOmittedHashes(previous, hashShippedFiles(stackFiles), sizeOmitted);
+			// Compose overlay guarantees a compose key even on an empty walk, so
+			// deletionSafetyCheck cannot see emptiness. Skip deletions when the
+			// walk found nothing (and nothing was size-omitted).
+			const emptyWalk = dirWalkCount === 0 && sizeOmitted.length === 0;
+			if (emptyWalk) {
+				console.warn(`${logPrefix} Deletion sync: the stack directory walk was empty — skipping all deletions this deploy`);
+			} else {
+				const plan = computeDeletions(previous, newShipped);
+				if (plan.toDelete.length > 0) {
+					hawserFilesToDelete = plan.toDelete;
+				}
+				for (const file of plan.toDelete) {
+					console.log(`${logPrefix} Deletion sync: will remove "${file.path}" — deleted from the compose directory`);
+				}
+				for (const skip of plan.skipped) {
+					if (skip.reason === 'already-absent') continue;
+					console.warn(`${logPrefix} Deletion sync: keeping "${skip.path}" — ${skipReasonMessage(skip.reason)}`);
+				}
+			}
+			if (!emptyWalk) {
+				adoptedManifestToPersist = newShipped;
+			}
+			const required = [composeRelPath];
+			if (stackFiles[envRel]) required.push(envRel);
+			if (stackFiles['.env']) required.push('.env');
+			stackFiles = withRequiredHawserFiles(changedHawserFiles(stackFiles, previous), stackFiles, required);
 		}
 
 		console.log(`${logPrefix} Compose content length:`, compose.length, 'chars');
@@ -3593,7 +3734,7 @@ export async function deployStack(options: DeployStackOptions): Promise<StackOpe
 			useOverrideFile: isGitStack,
 			// Pass compose filename for Hawser (extracted from path or provided explicitly)
 			composeFileName: composeRelPath,
-			filesToDelete
+			filesToDelete: hawserFilesToDelete
 		};
 		const composeEnvVars = isGitStack ? dbNonSecretVars : undefined;
 
@@ -3630,6 +3771,9 @@ export async function deployStack(options: DeployStackOptions): Promise<StackOpe
 		// for local deployments the local applier's result is the truth.
 		if (!result.deletion && localDeletionResult) {
 			result.deletion = localDeletionResult;
+		}
+		if (result.success && adoptedManifestToPersist && typeof envId === 'number') {
+			await persistAdoptedFileManifest(name, envId, adoptedManifestToPersist, logPrefix);
 		}
 		// Fire stack_deployed / stack_deploy_failed. This is the single point every deploy
 		// path funnels through, so all of them notify (#1295). A git deploy suppresses the

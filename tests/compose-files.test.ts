@@ -14,6 +14,14 @@ import {
 
 const stackDir = '/stack';
 
+describe('composeSiblingRelPath', () => {
+	it('places a sibling next to nested and root compose paths', () => {
+		assert.equal(composeSiblingRelPath('apps/web/compose.yaml', '.env'), 'apps/web/.env');
+		assert.equal(composeSiblingRelPath('compose.yaml', '.env'), '.env');
+		assert.equal(composeSiblingRelPath(undefined, '.env'), '.env');
+	});
+});
+
 function existsComposeAndOverride(path: string): boolean {
 	return path.endsWith('compose.yaml') || path.endsWith('compose.override.yaml');
 }

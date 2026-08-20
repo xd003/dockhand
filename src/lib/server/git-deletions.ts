@@ -1,11 +1,11 @@
 /**
- * Git stack deletion sync (#966, #1162).
+ * Git stack deletion sync (#966, #1162) and adopted/internal Hawser dir sync.
  *
- * Propagates upstream file deletions to the stack deploy directory using the
- * per-stack manifest: a file is deleted ONLY when the manifest of files
- * Dockhand wrote on the previous sync lists it, the new clone no longer
- * contains it, AND the bytes on disk still match what Dockhand wrote
- * (nobody modified it locally).
+ * Propagates file deletions to the stack deploy directory using a per-stack
+ * manifest: a file is deleted ONLY when the manifest of files Dockhand wrote
+ * on the previous sync lists it, the new payload/clone no longer contains it,
+ * AND the bytes on disk still match what Dockhand wrote (nobody modified it
+ * locally).
  *
  * Every failure mode degrades to "delete less" — never to user-data loss:
  * - user-created files (volume data) → never in the manifest → untouchable
@@ -162,6 +162,90 @@ export function serializeManifest(manifest: SyncManifest): string {
 
 export function hashContent(content: Buffer | string): string {
 	return createHash('sha256').update(content).digest('hex');
+}
+
+/**
+ * Hash a Hawser `files` payload the same way the agent writes it to disk:
+ * `base64:` values hash over their decoded bytes; everything else hashes over
+ * the UTF-8 bytes of the string content the agent writes. Used by
+ * adopted/internal stack dir sync so deletion hashes match remote bytes.
+ */
+export function hashShippedFiles(files: Record<string, string>): Record<string, string> {
+	const result: Record<string, string> = {};
+	for (const [path, content] of Object.entries(files)) {
+		if (content.startsWith('base64:')) {
+			result[path] = hashContent(Buffer.from(content.slice('base64:'.length), 'base64'));
+		} else {
+			result[path] = hashContent(content);
+		}
+	}
+	return result;
+}
+
+/**
+ * Encode a file for the Hawser `files` map. Binary (invalid UTF-8) and any
+ * UTF-8 text that itself starts with `base64:` are wrapped so the agent cannot
+ * treat literal text as a wire encoding.
+ */
+export function encodeHawserFileContent(bytes: Buffer | Uint8Array): string {
+	const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
+	try {
+		const text = new TextDecoder('utf-8', { fatal: true }).decode(buf);
+		if (text.startsWith('base64:')) {
+			return `base64:${buf.toString('base64')}`;
+		}
+		return text;
+	} catch {
+		return `base64:${buf.toString('base64')}`;
+	}
+}
+
+/**
+ * Paths omitted from this payload (size limits, etc.) must keep their previous
+ * hashes so deletion sync does not treat them as locally deleted.
+ */
+export function retainOmittedHashes(
+	previousFiles: Record<string, string>,
+	newShipped: Record<string, string>,
+	omittedPaths: Iterable<string>
+): Record<string, string> {
+	const result = { ...newShipped };
+	for (const path of omittedPaths) {
+		if (path in result) continue;
+		const prev = previousFiles[path];
+		if (prev !== undefined) result[path] = prev;
+	}
+	return result;
+}
+
+/**
+ * Subset of a Hawser payload whose content hash changed since the last
+ * persisted manifest. Unchanged files are left off the wire so a redeploy
+ * does not clobber remote bind-mount data that still matches what we last wrote.
+ */
+export function changedHawserFiles(
+	files: Record<string, string>,
+	previousFiles: Record<string, string>
+): Record<string, string> {
+	const hashed = hashShippedFiles(files);
+	const out: Record<string, string> = {};
+	for (const [path, content] of Object.entries(files)) {
+		if (previousFiles[path] !== hashed[path]) out[path] = content;
+	}
+	return out;
+}
+
+/** Ensure compose (and any listed siblings) stay in the payload so Hawser stays on the disk path. */
+export function withRequiredHawserFiles(
+	payload: Record<string, string>,
+	full: Record<string, string>,
+	requiredPaths: string[]
+): Record<string, string> {
+	const out = { ...payload };
+	for (const path of requiredPaths) {
+		if (full[path] !== undefined && out[path] === undefined) out[path] = full[path];
+	}
+	return out;
 }
 
 /**

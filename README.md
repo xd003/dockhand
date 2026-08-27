@@ -28,6 +28,28 @@ Dockhand is a modern, efficient Docker management application providing real-tim
 - **File Browser**: Browse, upload, and download files from containers
 - **Authentication**: SSO via OIDC, local users, and optional RBAC (Enterprise)
 
+## This fork
+
+Changes relative to the upstream [Finsys/dockhand](https://github.com/Finsys/dockhand):
+
+- **Centralized Git engine — one shared clone per repository** instead of a full clone per stack. Repositories are cloned once under `DATA_DIR/git-repos/`, and stack creation now copies only the selected context directory.
+- **Background cloning with a live progress modal** and a repository file browser; pick one or more Compose files, and the chosen file's parent directory becomes the default stack name.
+- **Repository-level sync schedules and webhooks** replace the stack-level ones, with per-stack fan-out and coalescing. Sync logs show per-stack deploy/skip/failed results; stacks opted into force-redeploy may keep their own webhook, and the repository webhook then skips redeploying them.
+- **Opt-in per stack**: each stack's git model (`stack` | `centralized`) is stamped from a global default (Settings → General → Git repositories, or `DOCKHAND_GIT_CENTRALIZED_MODE=true`) at creation; existing stacks keep their current engine until explicitly migrated.
+- **Per-stack migration, not a fleet-wide cutover**: a per-stack migrate job plus `/migrate` and `/migrate-batch` (selected-only drain, scoped backfill/rollback, per-stack clone cleanup, boot resume), under a narrow migration lock.
+- **Dual engines, mixed dispatch**: the legacy `StackGitEngine` (per-stack clones, per-stack schedules, synchronous webhooks) and `CentralizedGitEngine` (shared clone, repository-level schedules/webhooks, per-stack fan-out) coexist; centralized clones are namespace-isolated from per-stack trees, and repo names colliding with environment names are refused.
+- **Unique Docker environments across connection types** — an environment must be unique across all connection types (socket, agent, direct TCP), not just within its own type. (15972fc)
+- **Sync adopted/internal stack directories to Hawser on deploy** — deploying an adopted/imported stack to a Hawser environment ships the whole compose directory (not just compose + .env + override), so sibling files referenced by relative binds arrive on the remote; deletions are propagated via a per-stack file manifest. (6f989de)
+- **Freeze stack stats refresh while hovering the grid** — the live 5s stats refresh pauses while the pointer is over the stacks table, so rows don't re-sort under the cursor on volatile metric columns. (4d45344)
+- **Pin svelte to 5.56.8** — fixes a build failure with svelte < 5.56.4. (74f0630)
+
+### Docker images
+
+```bash
+docker pull git.xd003.cc/xd003/dockhand:latest
+docker pull git.xd003.cc/xd003/hawser:latest
+```
+
 ## Tech Stack
 
 - **Base**: own OS layer built from scratch using <a href="https://github.com/wolfi-dev/os">Wolfi packages</a> via apko. Every package is explicitly declared in the Dockerfile.

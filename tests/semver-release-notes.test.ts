@@ -10,6 +10,12 @@ import {
 } from '../src/lib/server/semver/release-notes';
 import type { ReleaseSource } from '../src/lib/server/semver/release-source';
 
+// A CI runner sets GITHUB_TOKEN, which disables rate-limit detection in
+// fetchReleaseNotes. The mock fetch below is the whole point of these tests, so
+// drop the ambient token to keep them hermetic.
+delete process.env.GITHUB_TOKEN;
+delete process.env.DOCKHAND_GITHUB_TOKEN;
+
 const rel = (tag: string, body = 'notes') => ({
 	tag_name: tag,
 	name: tag,

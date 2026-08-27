@@ -1,0 +1,103 @@
+name: Build and push to Forgejo Packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag to publish'
+        type: string
+        required: false
+        default: 'manual'
+
+jobs:
+  docker:
+    runs-on: office-server-amd64-ubuntu
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Run unit tests
+        run: bun test tests/
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Forgejo Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: git.xd003.cc
+          username: ${{ github.actor }}
+          password: ${{ secrets.REGISTRY_PAT }}
+
+      - name: Determine tag
+        id: vars
+        run: echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            git.xd003.cc/${{ github.repository }}:${{ steps.vars.outputs.tag }}
+            git.xd003.cc/${{ github.repository }}:latest
+
+      - name: Build release notes
+        id: notes
+        env:
+          TAG: ${{ steps.vars.outputs.tag }}
+        run: |
+          VERSION="${TAG#v}"
+          BODY=$(jq -r --arg v "$VERSION" '
+            .[] | select(.version == $v) |
+            "## What'\''s new in v\(.version)\n\n" +
+            ([.changes[] |
+              if .type == "feature" then "- ✨ \(.text)"
+              elif .type == "fix" then "- 🐛 \(.text)"
+              elif .type == "improvement" then "- ⚡ \(.text)"
+              else "- \(.text)"
+              end
+            ] | join("\n")) +
+            "\n"
+          ' src/lib/data/changelog.json)
+
+          if [ -z "$BODY" ]; then
+            BODY="Release ${TAG}"
+          fi
+
+          cat <<EOF > /tmp/release-body.md
+          ${BODY}
+
+          ## Docker image
+
+          \`\`\`bash
+          docker pull git.xd003.cc/${{ github.repository }}:${TAG}
+          \`\`\`
+
+          Also available as \`git.xd003.cc/${{ github.repository }}:latest\`
+          EOF
+
+          sed -i 's/^          //' /tmp/release-body.md
+
+      - name: Create Forgejo release
+        if: startsWith(steps.vars.outputs.tag, 'v')
+        env:
+          TOKEN: ${{ secrets.REGISTRY_PAT }}
+          TAG: ${{ steps.vars.outputs.tag }}
+        run: |
+          jq -n --arg tag "$TAG" --rawfile body /tmp/release-body.md \
+            '{tag_name: $tag, name: $tag, body: $body}' > /tmp/release.json
+          curl -sS -X POST "https://git.xd003.cc/api/v1/repos/${{ github.repository }}/releases" \
+            -H "Authorization: token ${TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data @/tmp/release.json

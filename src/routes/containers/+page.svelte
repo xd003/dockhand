@@ -76,6 +76,7 @@
 	} from 'lucide-svelte';
 	import { broom } from '@lucide/lab';
 	import { copyToClipboard } from '$lib/utils/clipboard';
+	import { stabilizeRowOrder } from '$lib/utils/stabilize-row-order';
 	import CreateContainerModal from './CreateContainerModal.svelte';
 	import EditContainerModal from './EditContainerModal.svelte';
 	import TerminalPanel from '../terminal/TerminalPanel.svelte';
@@ -697,6 +698,12 @@
 
 	// Stats polling interval - module scope for cleanup in onDestroy
 	let statsInterval: ReturnType<typeof setInterval> | null = null;
+	// True while the pointer is over a data row. Live-sorted rows (CPU/Mem/Net/Disk)
+	// would re-sort on every stats refresh and shuffle out from under the cursor, so
+	// the rendered ORDER is frozen while over a row — stats keep refreshing (cells
+	// stay live) and the fresh sort applies once the pointer leaves the row.
+	let hoveringRow = $state(false);
+	let frozenContainerOrder: string[] | null = $state(null);
 	let unsubscribeDockerEvent: (() => void) | null = null;
 
 	// Logs state - track active logs per container (like terminals)
@@ -949,6 +956,12 @@
 			return sortDirection === 'asc' ? cmp : -cmp;
 		});
 
+		// Freeze visual order while the pointer is over a row. Returning the
+		// previous array verbatim also froze membership and, if hover got stuck,
+		// stopped reordering entirely even after the cursor left.
+		if (hoveringRow && frozenContainerOrder) {
+			return stabilizeRowOrder(result, frozenContainerOrder, (c) => c.id);
+		}
 		return result;
 	});
 
@@ -1961,6 +1974,15 @@
 				bind:selectedKeys={selectedContainers}
 				sortState={{ field: sortField, direction: sortDirection }}
 				onSortChange={(state) => { sortField = state.field as SortField; sortDirection = state.direction; }}
+				onRowPointerChange={(over) => {
+					if (over) {
+						if (!hoveringRow) frozenContainerOrder = filteredContainers.map((c) => c.id);
+						hoveringRow = true;
+					} else {
+						hoveringRow = false;
+						frozenContainerOrder = null;
+					}
+				}}
 				highlightedKey={highlightedRowId}
 				rowClass={(container) => {
 					let classes = '';

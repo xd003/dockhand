@@ -41,7 +41,6 @@ Changes relative to the upstream [Finsys/dockhand](https://github.com/Finsys/doc
 - **Unique Docker environments across connection types** — an environment must be unique across all connection types (socket, agent, direct TCP), not just within its own type. (15972fc)
 - **Sync adopted/internal stack directories to Hawser on deploy** — deploying an adopted/imported stack to a Hawser environment ships the whole compose directory (not just compose + .env + override), so sibling files referenced by relative binds arrive on the remote; deletions are propagated via a per-stack file manifest. (6f989de)
 - **Freeze stack stats refresh while hovering the grid** — the live 5s stats refresh pauses while the pointer is over the stacks table, so rows don't re-sort under the cursor on volatile metric columns. (4d45344)
-- **Pin svelte to 5.56.8** — fixes a build failure with svelte < 5.56.4. (74f0630)
 
 ### Docker images
 

@@ -28,6 +28,10 @@ Dockhand is a modern, efficient Docker management application providing real-tim
 - **File Browser**: Browse, upload, and download files from containers
 - **Authentication**: SSO via OIDC, local users, and optional RBAC (Enterprise)
 
+## This fork
+
+This fork's user-facing changes relative to [upstream Dockhand](https://github.com/Finsys/dockhand) are tracked in [FORK_CHANGES.md](FORK_CHANGES.md).
+
 ## Tech Stack
 
 - **Base**: own OS layer built from scratch using <a href="https://github.com/wolfi-dev/os">Wolfi packages</a> via apko. Every package is explicitly declared in the Dockerfile.

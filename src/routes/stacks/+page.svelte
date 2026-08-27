@@ -54,6 +54,7 @@ import { Play, Square, Trash2, Plus, ArrowBigDown, Search, Pencil, ExternalLink,
 	import { formatHostPortUrl } from '$lib/utils/url';
 	import { formatBytes, formatBytesCompact } from '$lib/utils/format';
 	import { copyToClipboard } from '$lib/utils/clipboard';
+	import { stabilizeRowOrder } from '$lib/utils/stabilize-row-order';
 	import { effectiveStackBranch } from '$lib/git-stack-branch';
 
 	type SortField = 'name' | 'containers' | 'status' | 'cpu' | 'memory' | 'diskRead' | 'diskWrite' | 'netRx' | 'netTx';
@@ -221,6 +222,13 @@ let stackSources = $state<Record<string, { sourceType: string; composePath?: str
 	let statsAbortController: AbortController | null = null;
 
 	let statsFetching = false;
+
+	// True while the pointer is over a data row. Live-sorted rows (CPU/Mem/Net/Disk)
+	// would re-sort on every stats refresh and shuffle out from under the cursor, so
+	// the rendered ORDER is frozen while over a row — stats keep refreshing (cells
+	// stay live) and the fresh sort applies once the pointer leaves the row.
+	let hoveringRow = $state(false);
+	let frozenStackOrder: string[] | null = $state(null);
 
 	async function fetchStats() {
 		// Skip if previous fetch is still in-flight
@@ -630,6 +638,12 @@ let stackSources = $state<Record<string, { sourceType: string; composePath?: str
 			return sortDirection === 'asc' ? cmp : -cmp;
 		});
 
+		// Freeze visual order while the pointer is over a row. Returning the
+		// previous array verbatim also froze membership and, if hover got stuck,
+		// stopped reordering entirely even after the cursor left.
+		if (hoveringRow && frozenStackOrder) {
+			return stabilizeRowOrder(result, frozenStackOrder, (s) => s.name);
+		}
 		return result;
 	});
 
@@ -1706,6 +1720,15 @@ let gitMigratingStackId = $state<number | null>(null);
 			onSortChange={(state) => {
 				sortField = state.field as SortField;
 				sortDirection = state.direction;
+			}}
+			onRowPointerChange={(over) => {
+				if (over) {
+					if (!hoveringRow) frozenStackOrder = filteredStacks.map((s) => s.name);
+					hoveringRow = true;
+				} else {
+					hoveringRow = false;
+					frozenStackOrder = null;
+				}
 			}}
 			onRowClick={(stack, e) => {
 				toggleExpand(stack.name);

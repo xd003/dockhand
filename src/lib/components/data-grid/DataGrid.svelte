@@ -55,6 +55,10 @@
 		onRowClick?: (item: T, event: MouseEvent) => void;
 		highlightedKey?: unknown;
 		rowClass?: (item: T) => string;
+		// True while the pointer is over a data row (not the header, toolbar, or
+		// empty space). Pages freeze live-sorted row ORDER on this so CPU/Mem/Net
+		// refreshes don't shuffle the row out from under the cursor.
+		onRowPointerChange?: (over: boolean) => void;
 
 		// Selection filter - return false to make an item non-selectable
 		selectableFilter?: (item: T) => boolean;
@@ -104,6 +108,7 @@
 		onRowClick,
 		highlightedKey,
 		rowClass,
+		onRowPointerChange,
 		selectableFilter,
 		expandable = false,
 		expandedKeys = $bindable(new Set<unknown>()),
@@ -558,6 +563,24 @@
 		});
 	}
 
+	function isOverDataRow(node: EventTarget | null): boolean {
+		const el =
+			node instanceof Element ? node : node instanceof Node ? node.parentElement : null;
+		return !!el?.closest('tr[data-grid-row]');
+	}
+
+	// pointerover/out bubble; relatedTarget is where the pointer is going.
+	// Per-row pointerenter/leave on <tr> is unreliable (sticky header, cell
+	// overflow, DOM reuse) and left hoveringRow stuck true, which froze sort
+	// order even after the cursor left the row.
+	function handleRowPointerOver(event: PointerEvent) {
+		onRowPointerChange?.(isOverDataRow(event.target));
+	}
+
+	function handleRowPointerOut(event: PointerEvent) {
+		onRowPointerChange?.(isOverDataRow(event.relatedTarget));
+	}
+
 	// Update container dimensions on mount and resize
 	onMount(() => {
 		if (scrollContainer) {
@@ -884,6 +907,7 @@
 -->
 {#snippet dataRow(item: T, rowState: ReturnType<typeof getRowState>)}
 	<tr
+		data-grid-row
 		class="group cursor-pointer {rowState.isHighlighted ? 'selected' : ''} {rowState.isSelected ? 'checkbox-selected' : ''} {rowState.isExpanded ? 'row-expanded' : ''} {rowClass?.(item) ?? ''}"
 		onclick={(e) => onRowClick?.(item, e)}
 	>
@@ -958,7 +982,7 @@
 
 	<!-- Expanded row content -->
 	{#if rowState.isExpanded && expandedRow}
-		<tr class="expanded-row">
+		<tr class="expanded-row" data-grid-row>
 			<td colspan={fixedStartCols.length + orderedColumns.length + fixedEndCols.length}>
 				{@render expandedRow(item, rowState)}
 			</td>
@@ -981,7 +1005,7 @@
 	</table>
 {/snippet}
 
-<div class="flex-1 min-h-0 overflow-auto rounded-lg data-grid-wrapper {wrapperClass}" bind:this={scrollContainer} onscroll={handleScroll}>
+<div class="flex-1 min-h-0 overflow-auto rounded-lg data-grid-wrapper {wrapperClass}" bind:this={scrollContainer} onscroll={handleScroll} onpointerover={handleRowPointerOver} onpointerout={handleRowPointerOut} onpointerleave={() => onRowPointerChange?.(false)} onpointercancel={() => onRowPointerChange?.(false)}>
 	{#if loading && data.length === 0}
 		{#if loadingState}
 			{@render loadingState()}

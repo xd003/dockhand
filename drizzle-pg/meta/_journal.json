@@ -169,6 +169,13 @@
       "when": 1793400000000,
       "tag": "0023_compose_paths",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1793400060000,
+      "tag": "0024_centralized_git",
+      "breakpoints": true
     }
   ]
 }

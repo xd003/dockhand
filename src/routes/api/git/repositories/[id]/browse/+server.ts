@@ -2,9 +2,12 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { statSync, readdirSync, existsSync, realpathSync } from 'node:fs';
 import { join, resolve, isAbsolute, relative } from 'node:path';
-import { getGitRepository, getGitStack } from '$lib/server/db';
-import { getStackRepoPath } from '$lib/server/git';
+import { getGitRepository, getGitStack, repositoryHasCentralizedStack, getGitStacksByRepositoryId } from '$lib/server/db';
+import { syncRepositoryExclusive, provisionSharedClone, getRepoPath } from '$lib/server/git';
 import { getPendingGitClonePath } from '$lib/server/git-stack';
+import { getStackRepoPath } from '$lib/server/git-stack';
+import { getDesiredGitMode } from '$lib/server/git-mode';
+import { assertNotMigrating } from '$lib/server/git-migration-guard';
 import { authorize } from '$lib/server/authorize';
 import { isPathUnderRoot } from '$lib/server/stack-path-utils';
 
@@ -38,10 +41,15 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 		return json({ error: 'Permission denied' }, { status: 403 });
 	}
 
+	// Block only while THIS repository is being provisioned by a migration — the
+	// blocking sync below could otherwise race a clone mid-provision.
 	const id = parseInt(params.id);
 	if (isNaN(id)) {
 		return json({ error: 'Invalid repository ID' }, { status: 400 });
 	}
+	const locked = await assertNotMigrating([], [id]);
+	if (locked) return locked;
+
 	const repo = await getGitRepository(id);
 	if (!repo) {
 		return json({ error: 'Repository not found' }, { status: 404 });
@@ -68,7 +76,24 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 		repoRoot = await getStackRepoPath(gitStack.id, gitStack.stackName, gitStack.environmentId);
 		if (!existsSync(repoRoot)) return json({ error: 'Repository has not been deployed yet' }, { status: 404 });
 	} else {
-		return json({ error: 'A pending clone or stack ID is required' }, { status: 400 });
+		// Repository-level browsing remains available for centralized stacks and
+		// centralized create provisioning. Stack-mode creation uses `pending` above.
+		const hasCentralized = await repositoryHasCentralizedStack(id);
+		const repoStacks = await getGitStacksByRepositoryId(id);
+		const provisioning = (await getDesiredGitMode()) === 'centralized' && repoStacks.length === 0;
+		if (!hasCentralized && !provisioning) {
+			return json({ error: 'Repository browsing is not available for stack-mode repositories' }, { status: 404 });
+		}
+
+		repoRoot = getRepoPath(repo.name);
+		// Always sync (clone or pull) before listing so the browser shows up-to-date content.
+		console.log(`[BrowseAPI] Syncing repository ${id} before browse`);
+		const syncResult = hasCentralized
+			? await syncRepositoryExclusive(id)
+			: await provisionSharedClone(id);
+		if (!syncResult.success) {
+			return json({ error: `Failed to sync repository: ${syncResult.error}` }, { status: 500 });
+		}
 	}
 
 	// Resolve the requested path (default to repo root). Absolute paths are
@@ -127,8 +152,8 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 		const dirEntries = readdirSync(realTarget, { withFileTypes: true });
 
 		for (const entry of dirEntries) {
-			// Hide the .git directory from the browser
-			if (entry.name === '.git') continue;
+			// Hide the .git directory and the adopted-checkout marker from the browser
+			if (entry.name === '.git' || entry.name === '.dockhand-pending-clone.json') continue;
 
 			try {
 				const fullPath = join(realTarget, entry.name);

@@ -11,7 +11,7 @@
  */
 
 import { describe, test, expect } from 'bun:test';
-import { validateEnvName, isValidEnvName, ENV_NAME_MAX_LENGTH } from '../src/lib/utils/env-name';
+import { validateEnvName, isValidEnvName, ENV_NAME_MAX_LENGTH, RESERVED_ENV_NAMES, RESERVED_ENV_NAME_RE } from '../src/lib/utils/env-name';
 
 describe('validateEnvName', () => {
 	// Realistic environment names covering every accepted character class.
@@ -217,6 +217,30 @@ describe('validateEnvName', () => {
 			const r = validateEnvName('bad/name');
 			expect(r.reason).toContain('slashes');
 			expect(r.reason).toContain('wildcards');
+		});
+	});
+
+	// Reserved names for the git-repos layout (git-paths.ts): "shared" is the
+	// centralized namespace and "stack-<n>" the per-stack fallback layout; both
+	// would collide with clone cleanup. See env-name.ts RESERVED_ENV_NAMES.
+	describe('reserved names (git-repos layout)', () => {
+		test('allows normal environment names', () => {
+			for (const name of ['production', 'staging', 'rambo (ARM)', 'docker-websites', 'dev-01']) {
+				expect(validateEnvName(name).ok).toBe(true);
+			}
+		});
+
+		test('rejects the reserved "shared" namespace', () => {
+			expect(RESERVED_ENV_NAMES.has('shared')).toBe(true);
+			const result = validateEnvName('shared');
+			expect(result.ok).toBe(false);
+			expect(result.reason).toMatch(/reserved/);
+		});
+
+		test('rejects "stack-<n>" fallback-clone names', () => {
+			expect(RESERVED_ENV_NAME_RE.test('stack-12')).toBe(true);
+			expect(validateEnvName('stack-12').ok).toBe(false);
+			expect(validateEnvName('stack-0').ok).toBe(false);
 		});
 	});
 });

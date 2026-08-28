@@ -64,7 +64,18 @@ export interface AppSettings {
 	// Scanner Advanced settings (#1219). Empty values = use auto-detection.
 	defaultScannerNetworkMode: string;   // '' | 'host' | 'bridge' | 'none' | <custom-network>
 	defaultScannerDns: string[];         // ['1.1.1.1', '8.8.8.8']; empty = inherit
-	stackLogOperations: StackLogOperation[]; // stack ops that show the log popover (#1558)
+	stackLogOperations: StackLogOperation[];
+	// Git repository model (stack vs centralized)
+	gitRepositoryMode: 'stack' | 'centralized';
+	gitRepositoryDesiredMode: 'stack' | 'centralized';
+	gitRepositoryModeForcedByEnv: boolean;
+	gitMigrationState: {
+		state: 'idle' | 'draining' | 'provisioning' | 'cutting_over';
+		jobId: string | null;
+		startedAt: string | null;
+		finishedAt: string | null;
+		error: string | null;
+	};
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -109,6 +120,10 @@ const DEFAULT_SETTINGS: AppSettings = {
 	defaultScannerNetworkMode: '',
 	defaultScannerDns: [],
 	stackLogOperations: DEFAULT_STACK_LOG_OPERATIONS,
+	gitRepositoryMode: 'stack',
+	gitRepositoryDesiredMode: 'stack',
+	gitRepositoryModeForcedByEnv: false,
+	gitMigrationState: { state: 'idle', jobId: null, startedAt: null, finishedAt: null, error: null },
 	defaultComposeTemplate: `version: "3.8"
 
 services:
@@ -152,8 +167,8 @@ function createSettingsStore() {
 	let initialized = false;
 
 	// Load settings from database on initialization
-	async function loadSettings() {
-		if (!browser || initialized) return;
+	async function loadSettings(force = false) {
+		if (!browser || (initialized && !force)) return;
 		initialized = true;
 
 		try {
@@ -203,7 +218,11 @@ function createSettingsStore() {
 					protectScannerImages: settings.protectScannerImages ?? DEFAULT_SETTINGS.protectScannerImages,
 					defaultScannerNetworkMode: settings.defaultScannerNetworkMode ?? DEFAULT_SETTINGS.defaultScannerNetworkMode,
 					defaultScannerDns: Array.isArray(settings.defaultScannerDns) ? settings.defaultScannerDns : DEFAULT_SETTINGS.defaultScannerDns,
-					stackLogOperations: sanitizeStackLogOperations(settings.stackLogOperations)
+					stackLogOperations: sanitizeStackLogOperations(settings.stackLogOperations),
+					gitRepositoryMode: settings.gitRepositoryMode ?? DEFAULT_SETTINGS.gitRepositoryMode,
+					gitRepositoryDesiredMode: settings.gitRepositoryDesiredMode ?? DEFAULT_SETTINGS.gitRepositoryDesiredMode,
+					gitRepositoryModeForcedByEnv: settings.gitRepositoryModeForcedByEnv ?? DEFAULT_SETTINGS.gitRepositoryModeForcedByEnv,
+					gitMigrationState: settings.gitMigrationState ?? DEFAULT_SETTINGS.gitMigrationState
 				});
 			}
 		} catch {
@@ -266,7 +285,11 @@ function createSettingsStore() {
 					protectScannerImages: updatedSettings.protectScannerImages ?? DEFAULT_SETTINGS.protectScannerImages,
 					defaultScannerNetworkMode: updatedSettings.defaultScannerNetworkMode ?? DEFAULT_SETTINGS.defaultScannerNetworkMode,
 					defaultScannerDns: Array.isArray(updatedSettings.defaultScannerDns) ? updatedSettings.defaultScannerDns : DEFAULT_SETTINGS.defaultScannerDns,
-					stackLogOperations: sanitizeStackLogOperations(updatedSettings.stackLogOperations)
+					stackLogOperations: sanitizeStackLogOperations(updatedSettings.stackLogOperations),
+					gitRepositoryMode: updatedSettings.gitRepositoryMode ?? DEFAULT_SETTINGS.gitRepositoryMode,
+					gitRepositoryDesiredMode: updatedSettings.gitRepositoryDesiredMode ?? DEFAULT_SETTINGS.gitRepositoryDesiredMode,
+					gitRepositoryModeForcedByEnv: updatedSettings.gitRepositoryModeForcedByEnv ?? DEFAULT_SETTINGS.gitRepositoryModeForcedByEnv,
+					gitMigrationState: updatedSettings.gitMigrationState ?? DEFAULT_SETTINGS.gitMigrationState
 				});
 			}
 		} catch (error) {
@@ -285,6 +308,14 @@ function createSettingsStore() {
 			set(value);
 			saveSettings(value);
 		},
+		/**
+		 * Re-fetch settings from the server (used by git modals so the client mode
+		 * can never disagree with the server after a toggle elsewhere — F11).
+		 */
+		reload: () => {
+			initialized = false;
+			return loadSettings(true);
+		},
 		update: (fn: (settings: AppSettings) => AppSettings) => {
 			update((current) => {
 				const newSettings = fn(current);
@@ -293,6 +324,13 @@ function createSettingsStore() {
 			});
 		},
 		// Convenience methods for individual settings
+		setStackLogOperations: (value: StackLogOperation[]) => {
+			const clean = sanitizeStackLogOperations(value);
+			update((current) => {
+				saveSettings({ stackLogOperations: clean });
+				return { ...current, stackLogOperations: clean };
+			});
+		},
 		setConfirmDestructive: (value: boolean) => {
 			update((current) => {
 				const newSettings = { ...current, confirmDestructive: value };
@@ -300,12 +338,40 @@ function createSettingsStore() {
 				return newSettings;
 			});
 		},
-		setStackLogOperations: (value: StackLogOperation[]) => {
-			const clean = sanitizeStackLogOperations(value);
-			update((current) => {
-				saveSettings({ stackLogOperations: clean });
-				return { ...current, stackLogOperations: clean };
+		/**
+		 * Change the desired git repository mode (stack | centralized). Returns the
+		 * fetch result so the UI can surface 400 (env-forced) / 409 (mid-transition).
+		 * After a successful start, polls until the background transition settles
+		 * (idle) so the UI never stays stuck on "transition in progress".
+		 */
+		saveGitRepositoryMode: async (mode: 'stack' | 'centralized'): Promise<{ ok: boolean; status: number; error?: string }> => {
+			if (!browser) return { ok: false, status: 0, error: 'Not in browser' };
+			const response = await fetch('/api/settings/general', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ gitRepositoryDesiredMode: mode })
 			});
+			if (response.ok) {
+				try {
+					const updated = await response.json();
+					update((current) => ({
+						...current,
+						gitRepositoryDesiredMode: updated.gitRepositoryDesiredMode ?? mode,
+						gitRepositoryMode: updated.gitRepositoryMode ?? current.gitRepositoryMode,
+						gitRepositoryModeForcedByEnv: updated.gitRepositoryModeForcedByEnv ?? current.gitRepositoryModeForcedByEnv,
+						gitMigrationState: updated.gitMigrationState ?? current.gitMigrationState
+					}));
+				} catch { /* ignore response parse */ }
+
+				// The default change is KV-only — no fleet cutover to poll for.
+				return { ok: true, status: response.status };
+			}
+			let error = '';
+			try {
+				const body = await response.json();
+				error = body?.error || '';
+			} catch { /* ignore */ }
+			return { ok: false, status: response.status, error };
 		},
 		setShowStoppedContainers: (value: boolean) => {
 			update((current) => {

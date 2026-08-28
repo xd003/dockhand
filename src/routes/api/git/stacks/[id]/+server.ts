@@ -1,12 +1,12 @@
-import { dirname } from 'node:path';
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getGitStack, updateGitStack, deleteGitStack, deleteStackSource, updateStackSourceName, updateStackEnvVarsName, setStackEnvVars, getStackEnvVars, deleteStackEnvVars, updateStackSource, secretProviderExists } from '$lib/server/db';
 import { deleteGitStackFiles, deployGitStack } from '$lib/server/git';
-import { firstComposePathOutsideDir, parseComposePathsColumn, validateComposePathsInput } from '$lib/server/compose-files';
+import { parseComposePathsColumn, validateComposePathsInput } from '$lib/server/compose-files';
 import { normalizeStackBranchUpdate } from '$lib/git-stack-branch';
+import { assertNotMigrating } from '$lib/server/git-migration-guard';
+import { registerSchedule, unregisterSchedule, unregisterScheduleByFamily } from '$lib/server/scheduler';
 import { authorize } from '$lib/server/authorize';
-import { registerSchedule, unregisterSchedule } from '$lib/server/scheduler';
 import { auditGitStack } from '$lib/server/audit';
 import { computeAuditDiff } from '$lib/utils/diff';
 import { createJobResponse } from '$lib/server/sse';
@@ -73,6 +73,10 @@ export const PUT: RequestHandler = async (event) => {
 
 		const data = await request.json();
 
+		// Block only when THIS stack or its repository is being migrated (narrow lock).
+		const locked = await assertNotMigrating([id], existing.repositoryId ? [existing.repositoryId] : []);
+		if (locked) return locked;
+
 		if (
 			'secretProviderId' in data &&
 			data.secretProviderId !== null &&
@@ -122,9 +126,9 @@ export const PUT: RequestHandler = async (event) => {
 		if (composePathsError) return json({ error: composePathsError }, { status: 400 });
 
 		// composePaths[0] is the primary compose file (stored denormalized in
-		// composePath). Keep them in sync when the array is updated. A client that
-		// sends only composePath gets it remapped onto the stored list so the stale
-		// list doesn't stay authoritative for sync/deploy.
+		// composePath). Keep them in sync when the array is updated. The update
+		// route only sends composePath (no array) — remap its first entry so the
+		// stale stored array doesn't stay authoritative for sync/deploy.
 		const existingComposePaths = parseComposePathsColumn(existing.composePaths);
 		if (data.composePaths === undefined && data.composePath !== undefined &&
 			existingComposePaths.length > 0 && existingComposePaths[0] !== data.composePath) {
@@ -132,13 +136,6 @@ export const PUT: RequestHandler = async (event) => {
 		}
 		if (Array.isArray(data.composePaths) && data.composePaths.length > 0) {
 			data.composePath = data.composePaths[0];
-			// Deploys copy only the context dir (default: the primary's dir), so every
-			// additional file must live inside it.
-			const contextDir = data.contextDir !== undefined ? data.contextDir : existing.contextDir;
-			const outsidePath = firstComposePathOutsideDir(data.composePaths, contextDir || dirname(data.composePath));
-			if (outsidePath) {
-				return json({ error: `Compose file "${outsidePath}" must be inside the stack's source directory` }, { status: 400 });
-			}
 		}
 
 		const oldStackName = existing.stackName;
@@ -157,23 +154,56 @@ export const PUT: RequestHandler = async (event) => {
 		const branchValue: string | null | undefined =
 			'branch' in data ? branchNext.next : undefined;
 
-		const updated = await updateGitStack(id, {
-			stackName: data.stackName,
-			branch: branchValue,
-			composePath: data.composePath,
-			composePaths: data.composePaths,
-			envFilePath: data.envFilePath,
-			autoUpdate: data.autoUpdate,
-			autoUpdateSchedule: data.autoUpdateSchedule,
-			autoUpdateCron: data.autoUpdateCron,
-			webhookEnabled: data.webhookEnabled,
-			webhookSecret: data.webhookSecret,
-			contextDir: data.contextDir,
-			buildOnDeploy: data.buildOnDeploy,
-			noBuildCache: data.noBuildCache,
-			repullImages: data.repullImages,
-			forceRedeploy: data.forceRedeploy
-		});
+		// Schedule/webhook field semantics follow THAT stack's model, not the
+		// global default (mixed installs edit stacks of both models).
+		const stackCentralized = existing.engine === 'centralized';
+		const updated = await updateGitStack(id, stackCentralized
+			? {
+				stackName: data.stackName,
+				branch: branchValue,
+				composePath: data.composePath,
+				composePaths: data.composePaths,
+				envFilePath: data.envFilePath,
+				contextDir: data.contextDir,
+				buildOnDeploy: data.buildOnDeploy,
+				noBuildCache: data.noBuildCache,
+				repullImages: data.repullImages,
+				forceRedeploy: data.forceRedeploy,
+				webhookEnabled: data.forceRedeploy === false ? false : data.webhookEnabled,
+				webhookSecret: data.forceRedeploy === false || data.webhookEnabled === false ? null : data.webhookSecret
+			}
+			: {
+				// Stack mode: stack-level scheduled sync + webhook, not gated by forceRedeploy.
+				stackName: data.stackName,
+				branch: branchValue,
+				composePath: data.composePath,
+				composePaths: data.composePaths,
+				envFilePath: data.envFilePath,
+				contextDir: data.contextDir,
+				buildOnDeploy: data.buildOnDeploy,
+				noBuildCache: data.noBuildCache,
+				repullImages: data.repullImages,
+				forceRedeploy: data.forceRedeploy,
+				webhookEnabled: data.webhookEnabled,
+				webhookSecret: data.webhookEnabled === false ? null : data.webhookSecret,
+				autoUpdate: data.autoUpdate,
+				autoUpdateSchedule: data.autoUpdate === false ? null : (data.autoUpdateSchedule ?? (data.autoUpdate === true ? existing.autoUpdateSchedule ?? 'daily' : undefined)),
+				autoUpdateCron: data.autoUpdate === false ? null : (data.autoUpdateCron ?? (data.autoUpdate === true ? existing.autoUpdateCron ?? '0 3 * * *' : undefined))
+			}
+		);
+
+		if (!updated) {
+			return json({ error: 'Failed to update git stack' }, { status: 500 });
+		}
+
+		// Stack model: keep the per-stack schedule in sync with the stack-level setting.
+		if (!stackCentralized) {
+			if (updated.autoUpdate && updated.autoUpdateCron) {
+				await registerSchedule(updated.id, 'git_stack_sync', updated.environmentId);
+			} else {
+				await unregisterSchedule(updated.id, 'git_stack_sync');
+			}
+		}
 
 		// If stack name changed, update related records
 		if (data.stackName && data.stackName !== oldStackName) {
@@ -186,13 +216,6 @@ export const PUT: RequestHandler = async (event) => {
 			await updateStackSource(updated.stackName, existing.environmentId, {
 				secretProviderId: data.secretProviderId ?? null
 			});
-		}
-
-		// Register or unregister schedule with croner
-		if (updated.autoUpdate && updated.autoUpdateCron) {
-			await registerSchedule(id, 'git_stack_sync', updated.environmentId);
-		} else {
-			unregisterSchedule(id, 'git_stack_sync');
 		}
 
 		// Compute diff for audit (exclude sensitive fields)
@@ -300,9 +323,8 @@ export const DELETE: RequestHandler = async (event) => {
 			return json({ error: 'Permission denied' }, { status: 403 });
 		}
 
-		// Unregister schedule from croner
-		unregisterSchedule(id, 'git_stack_sync');
-
+		// Stop the background job before deleting its record.
+		unregisterScheduleByFamily(id);
 		// Delete git files first
 		await deleteGitStackFiles(id, existing.stackName, existing.environmentId);
 

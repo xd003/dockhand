@@ -7,7 +7,7 @@ import { authorize } from '$lib/server/authorize';
 /**
  * @openapi
  * summary: Clone a repository into a temporary checkout for the Git stack create flow, so its compose files can be browsed before the stack exists
- * description: The returned token is scoped to this repository and only usable with GET /api/git/repositories/{id}/browse. Checkouts are removed after one hour.
+ * description: The returned token is scoped to this repository, usable with GET /api/git/repositories/{id}/browse, and consumed when the created Git stack adopts the checkout. Unadopted checkouts are removed after 24 hours.
  * path: id:integer! Git repository ID (from GET /api/git/repositories)
  * body: {branch:string}
  * resp-200: {token:string!, commit:string}

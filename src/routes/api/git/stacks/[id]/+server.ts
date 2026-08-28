@@ -4,7 +4,8 @@ import { getGitStack, updateGitStack, deleteGitStack, deleteStackSource, updateS
 import { deleteGitStackFiles, deployGitStack } from '$lib/server/git';
 import { parseComposePathsColumn, validateComposePathsInput } from '$lib/server/compose-files';
 import { normalizeStackBranchUpdate } from '$lib/git-stack-branch';
-import { registerSchedule, unregisterSchedule } from '$lib/server/scheduler';
+import { assertNotMigrating } from '$lib/server/git-migration-guard';
+import { registerSchedule, unregisterSchedule, unregisterScheduleByFamily } from '$lib/server/scheduler';
 import { authorize } from '$lib/server/authorize';
 import { auditGitStack } from '$lib/server/audit';
 import { computeAuditDiff } from '$lib/utils/diff';
@@ -71,6 +72,10 @@ export const PUT: RequestHandler = async (event) => {
 		}
 
 		const data = await request.json();
+
+		// Block only when THIS stack or its repository is being migrated (narrow lock).
+		const locked = await assertNotMigrating([id], existing.repositoryId ? [existing.repositoryId] : []);
+		if (locked) return locked;
 
 		if (
 			'secretProviderId' in data &&
@@ -149,7 +154,26 @@ export const PUT: RequestHandler = async (event) => {
 		const branchValue: string | null | undefined =
 			'branch' in data ? branchNext.next : undefined;
 
-		const updated = await updateGitStack(id, {
+		// Schedule/webhook field semantics follow THAT stack's model, not the
+		// global default (mixed installs edit stacks of both models).
+		const stackCentralized = existing.engine === 'centralized';
+		const updated = await updateGitStack(id, stackCentralized
+			? {
+				stackName: data.stackName,
+				branch: branchValue,
+				composePath: data.composePath,
+				composePaths: data.composePaths,
+				envFilePath: data.envFilePath,
+				contextDir: data.contextDir,
+				buildOnDeploy: data.buildOnDeploy,
+				noBuildCache: data.noBuildCache,
+				repullImages: data.repullImages,
+				forceRedeploy: data.forceRedeploy,
+				webhookEnabled: data.forceRedeploy === false ? false : data.webhookEnabled,
+				webhookSecret: data.forceRedeploy === false || data.webhookEnabled === false ? null : data.webhookSecret
+			}
+			: {
+				// Stack mode: stack-level scheduled sync + webhook, not gated by forceRedeploy.
 				stackName: data.stackName,
 				branch: branchValue,
 				composePath: data.composePath,
@@ -165,16 +189,20 @@ export const PUT: RequestHandler = async (event) => {
 				autoUpdate: data.autoUpdate,
 				autoUpdateSchedule: data.autoUpdate === false ? null : (data.autoUpdateSchedule ?? (data.autoUpdate === true ? existing.autoUpdateSchedule ?? 'daily' : undefined)),
 				autoUpdateCron: data.autoUpdate === false ? null : (data.autoUpdateCron ?? (data.autoUpdate === true ? existing.autoUpdateCron ?? '0 3 * * *' : undefined))
-			});
+			}
+		);
 
 		if (!updated) {
 			return json({ error: 'Failed to update git stack' }, { status: 500 });
 		}
 
-		if (updated.autoUpdate && updated.autoUpdateCron) {
-			await registerSchedule(updated.id, 'git_stack_sync', updated.environmentId);
-		} else {
-			await unregisterSchedule(updated.id, 'git_stack_sync');
+		// Stack model: keep the per-stack schedule in sync with the stack-level setting.
+		if (!stackCentralized) {
+			if (updated.autoUpdate && updated.autoUpdateCron) {
+				await registerSchedule(updated.id, 'git_stack_sync', updated.environmentId);
+			} else {
+				await unregisterSchedule(updated.id, 'git_stack_sync');
+			}
 		}
 
 		// If stack name changed, update related records
@@ -296,7 +324,7 @@ export const DELETE: RequestHandler = async (event) => {
 		}
 
 		// Stop the background job before deleting its record.
-		unregisterSchedule(id, 'git_stack_sync');
+		unregisterScheduleByFamily(id);
 		// Delete git files first
 		await deleteGitStackFiles(id, existing.stackName, existing.environmentId);
 

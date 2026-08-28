@@ -15,7 +15,7 @@
 export const BACKUPS_ENABLED = process.env.FEAT_BACKUPS_ENABLED === 'true';
 
 /**
- * API docs (OpenAPI spec + Scalar viewer at /api/docs and /api/docs/ui).
+* API docs (OpenAPI spec + Scalar viewer at /api/docs and /api/docs/ui).
  * Off by default: the docs routes are unauthenticated, so exposing the full
  * API surface is opt-in per instance with FEAT_API_DOCS=true. Read once at boot.
  */
@@ -28,3 +28,11 @@ export const API_DOCS_ENABLED = process.env.FEAT_API_DOCS === 'true';
  * boot. Default false: a secret is required.
  */
 export const ALLOW_WEBHOOKS_WITHOUT_SECRET = process.env.ALLOW_WEBHOOKS_WITHOUT_SECRET === 'true';
+
+/**
+ * Git repository model: setting `DOCKHAND_GIT_CENTRALIZED_MODE` locks the desired
+ * mode from the UI. The effective mode is transition-job-controlled; see git-mode.ts.
+ */
+export const GIT_CENTRALIZED_MODE_ENV_FORCED =
+	process.env.DOCKHAND_GIT_CENTRALIZED_MODE !== undefined &&
+	process.env.DOCKHAND_GIT_CENTRALIZED_MODE !== '';

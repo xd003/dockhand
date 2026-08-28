@@ -4,8 +4,9 @@ import { getGitStack, updateGitStack, deleteGitStack, deleteStackSource, updateS
 import { deleteGitStackFiles, deployGitStack } from '$lib/server/git';
 import { parseComposePathsColumn, validateComposePathsInput } from '$lib/server/compose-files';
 import { normalizeStackBranchUpdate } from '$lib/git-stack-branch';
-import { authorize } from '$lib/server/authorize';
+import { assertNotMigrating } from '$lib/server/git-migration-guard';
 import { registerSchedule, unregisterSchedule } from '$lib/server/scheduler';
+import { authorize } from '$lib/server/authorize';
 import { auditGitStack } from '$lib/server/audit';
 import { computeAuditDiff } from '$lib/utils/diff';
 import { createJobResponse } from '$lib/server/sse';
@@ -71,6 +72,10 @@ export const PUT: RequestHandler = async (event) => {
 		}
 
 		const data = await request.json();
+
+		// Block only when THIS stack or its repository is being migrated (narrow lock).
+		const locked = await assertNotMigrating([id], existing.repositoryId ? [existing.repositoryId] : []);
+		if (locked) return locked;
 
 		if (
 			'secretProviderId' in data &&
@@ -143,23 +148,56 @@ export const PUT: RequestHandler = async (event) => {
 		const branchValue: string | null | undefined =
 			'branch' in data ? branchNext.next : undefined;
 
-		const updated = await updateGitStack(id, {
-			stackName: data.stackName,
-			branch: branchValue,
-			composePath: data.composePath,
-			composePaths: data.composePaths,
-			envFilePath: data.envFilePath,
-			autoUpdate: data.autoUpdate,
-			autoUpdateSchedule: data.autoUpdateSchedule,
-			autoUpdateCron: data.autoUpdateCron,
-			webhookEnabled: data.webhookEnabled,
-			webhookSecret: data.webhookSecret,
-			contextDir: data.contextDir,
-			buildOnDeploy: data.buildOnDeploy,
-			noBuildCache: data.noBuildCache,
-			repullImages: data.repullImages,
-			forceRedeploy: data.forceRedeploy
-		});
+		// Schedule/webhook field semantics follow THAT stack's model, not the
+		// global default (mixed installs edit stacks of both models).
+		const stackCentralized = existing.engine === 'centralized';
+		const updated = await updateGitStack(id, stackCentralized
+			? {
+				stackName: data.stackName,
+				branch: branchValue,
+				composePath: data.composePath,
+				composePaths: data.composePaths,
+				envFilePath: data.envFilePath,
+				contextDir: data.contextDir,
+				buildOnDeploy: data.buildOnDeploy,
+				noBuildCache: data.noBuildCache,
+				repullImages: data.repullImages,
+				forceRedeploy: data.forceRedeploy,
+				webhookEnabled: data.forceRedeploy === false ? false : data.webhookEnabled,
+				webhookSecret: (data.forceRedeploy !== false && data.webhookEnabled) ? data.webhookSecret : null
+			}
+			: {
+				// Stack mode: stack-level scheduled sync + webhook, not gated by forceRedeploy.
+				stackName: data.stackName,
+				branch: branchValue,
+				composePath: data.composePath,
+				composePaths: data.composePaths,
+				envFilePath: data.envFilePath,
+				contextDir: data.contextDir,
+				buildOnDeploy: data.buildOnDeploy,
+				noBuildCache: data.noBuildCache,
+				repullImages: data.repullImages,
+				forceRedeploy: data.forceRedeploy,
+				webhookEnabled: data.webhookEnabled,
+				webhookSecret: data.webhookEnabled ? data.webhookSecret : null,
+				autoUpdate: data.autoUpdate,
+				autoUpdateSchedule: data.autoUpdate ? (data.autoUpdateSchedule ?? existing.autoUpdateSchedule ?? 'daily') : null,
+				autoUpdateCron: data.autoUpdate ? (data.autoUpdateCron ?? existing.autoUpdateCron ?? '0 3 * * *') : null
+			}
+		);
+
+		if (!updated) {
+			return json({ error: 'Failed to update git stack' }, { status: 500 });
+		}
+
+		// Stack model: keep the per-stack schedule in sync with the stack-level setting.
+		if (!stackCentralized) {
+			if (updated.autoUpdate && updated.autoUpdateCron) {
+				await registerSchedule(updated.id, 'git_stack_sync', updated.environmentId);
+			} else {
+				await unregisterSchedule(updated.id, 'git_stack_sync');
+			}
+		}
 
 		// If stack name changed, update related records
 		if (data.stackName && data.stackName !== oldStackName) {
@@ -172,13 +210,6 @@ export const PUT: RequestHandler = async (event) => {
 			await updateStackSource(updated.stackName, existing.environmentId, {
 				secretProviderId: data.secretProviderId ?? null
 			});
-		}
-
-		// Register or unregister schedule with croner
-		if (updated.autoUpdate && updated.autoUpdateCron) {
-			await registerSchedule(id, 'git_stack_sync', updated.environmentId);
-		} else {
-			unregisterSchedule(id, 'git_stack_sync');
 		}
 
 		// Compute diff for audit (exclude sensitive fields)
@@ -281,9 +312,6 @@ export const DELETE: RequestHandler = async (event) => {
 		if (auth.authEnabled && !await auth.can('stacks', 'remove', existing.environmentId || undefined)) {
 			return json({ error: 'Permission denied' }, { status: 403 });
 		}
-
-		// Unregister schedule from croner
-		unregisterSchedule(id, 'git_stack_sync');
 
 		// Delete git files first
 		await deleteGitStackFiles(id, existing.stackName, existing.environmentId);

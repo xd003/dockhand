@@ -3045,7 +3045,7 @@ export async function computeStackDeletionPaths(
 	const gitStack = await getGitStackByName(stackName, envId);
 	if (gitStack) {
 		try {
-			const { getStackRepoPath } = await import('./git');
+			const { getStackRepoPath } = await import('./git-stack');
 			const repoPath = await getStackRepoPath(gitStack.id, gitStack.stackName, gitStack.environmentId);
 			if (repoPath && existsSync(repoPath)) gitDir = repoPath;
 		} catch { /* best-effort: no git dir shown if we can't resolve it */ }

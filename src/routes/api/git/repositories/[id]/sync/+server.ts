@@ -2,6 +2,7 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getGitRepository } from '$lib/server/db';
 import { syncRepository, checkForUpdates } from '$lib/server/git';
+import { assertNotMigrating } from '$lib/server/git-migration-guard';
 import { authorize } from '$lib/server/authorize';
 
 /**
@@ -11,11 +12,11 @@ import { authorize } from '$lib/server/authorize';
  * resp-200: {success:boolean!, error:string}
  * resp-200-example: {"success":true}
  * resp-400: The id path segment is not a valid integer
- * resp-403: Caller lacks the git:edit permission
  * resp-404: No repository exists with that ID
  * resp-500: The sync failed
  */
-export const POST: RequestHandler = async ({ params, cookies }) => {
+export const POST: RequestHandler = async (event) => {
+	const { params, cookies } = event;
 	const auth = await authorize(cookies);
 	if (auth.authEnabled && !await auth.can('git', 'edit')) {
 		return json({ error: 'Permission denied' }, { status: 403 });
@@ -26,6 +27,10 @@ export const POST: RequestHandler = async ({ params, cookies }) => {
 		if (isNaN(id)) {
 			return json({ error: 'Invalid repository ID' }, { status: 400 });
 		}
+
+		// Block only while THIS repository is being provisioned by a migration.
+		const locked = await assertNotMigrating([], [id]);
+		if (locked) return locked;
 
 		const repository = await getGitRepository(id);
 		if (!repository) {
@@ -47,17 +52,16 @@ export const POST: RequestHandler = async ({ params, cookies }) => {
  * resp-200: {hasUpdates:boolean!, error:string}
  * resp-200-example: {"hasUpdates":false}
  * resp-400: The id path segment is not a valid integer
- * resp-403: Caller lacks the git:view permission
  * resp-404: No repository exists with that ID
  * resp-500: The update check failed
  */
 export const GET: RequestHandler = async ({ params, cookies }) => {
+	// Check for updates without syncing
 	const auth = await authorize(cookies);
 	if (auth.authEnabled && !await auth.can('git', 'view')) {
 		return json({ error: 'Permission denied' }, { status: 403 });
 	}
 
-	// Check for updates without syncing
 	try {
 		const id = parseInt(params.id);
 		if (isNaN(id)) {

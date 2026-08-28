@@ -11,13 +11,12 @@ import { authorize } from '$lib/server/authorize';
  * resp-200: {success:boolean!, error:string}
  * resp-200-example: {"success":true}
  * resp-400: The id path segment is not a valid integer
- * resp-403: Caller lacks the git:edit permission
  * resp-404: No repository exists with that ID
  * resp-500: The connectivity test failed
  */
 export const POST: RequestHandler = async ({ params, cookies }) => {
 	const auth = await authorize(cookies);
-	if (auth.authEnabled && !await auth.can('git', 'edit')) {
+	if (auth.authEnabled && !await auth.can('git', 'view')) {
 		return json({ error: 'Permission denied' }, { status: 403 });
 	}
 

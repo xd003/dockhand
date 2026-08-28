@@ -14,7 +14,7 @@
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import * as Popover from '$lib/components/ui/popover';
 	import MultiSelectFilter from '$lib/components/MultiSelectFilter.svelte';
-	import { Play, Square, Trash2, Plus, ArrowBigDown, Search, Pencil, ExternalLink, GitBranch, RefreshCw, Loader2, FileCode, FileText, FileOutput, Box, RotateCcw, ScrollText, Terminal, Eye, Network, HardDrive, Heart, HeartPulse, HeartOff, ChevronsUpDown, ChevronsDownUp, Rocket, AlertTriangle, X, Layers, Pause, CircleDashed, Skull, FolderOpen, Variable, Clock, RotateCw, Import, Ship, Cable, LayoutPanelLeft, Rows3, GripVertical, Globe, CircleArrowUp, NotepadText, Tag, Copy, Check } from 'lucide-svelte';
+import { Play, Square, Trash2, Plus, ArrowBigDown, Search, Pencil, ExternalLink, GitBranch, RefreshCw, Loader2, FileCode, FileText, FileOutput, Box, RotateCcw, ScrollText, Terminal, Eye, Network, HardDrive, Heart, HeartPulse, HeartOff, ChevronsUpDown, ChevronsDownUp, Rocket, AlertTriangle, X, Layers, Pause, CircleDashed, Skull, FolderOpen, Variable, Clock, RotateCw, Import, Ship, Cable, LayoutPanelLeft, Rows3, GripVertical, Globe, CircleArrowUp, NotepadText, Tag, Copy, Check, ArrowRightCircle } from 'lucide-svelte';
 	import { formatPorts } from '$lib/utils/port-format';
 	import { parseCustomUrl } from '$lib/utils/custom-url';
 	import { extractTraefikUrls } from '$lib/utils/traefik-urls';
@@ -64,7 +64,7 @@
 	// rate-limited), with the error text for the tooltip — session-only (#1255).
 	let failedUpdateCheckIds = $state<Set<string>>(new Set());
 	let failedUpdateCheckErrors = $state<Map<string, string>>(new Map());
-	let stackSources = $state<Record<string, { sourceType: string; composePath?: string | null; composePaths?: string | null; repository?: any; gitStack?: any; icon?: string | null }>>({});
+let stackSources = $state<Record<string, { sourceType: string; composePath?: string | null; composePaths?: string | null; repository?: any; gitStack?: any; icon?: string | null }>>({});
 	let stackEnvVarCounts = $state<Record<string, number>>({});
 	let gitStacks = $state<any[]>([]);
 	let copiedWebhookStackId = $state<number | null>(null);
@@ -96,6 +96,7 @@
 	let editingStackName = $state('');
 	let stackModalReadonly = $state(false);
 	let stackModalGitInfo = $state<{ commit?: string; url?: string; branch?: string } | null>(null);
+	let stackModalSource = $state<{ sourceType: string; repository?: { url?: string; branch?: string } | null; gitStack?: { lastCommit?: string | null } | null } | null>(null);
 	let editingGitStack = $state<any>(null);
 	let envId = $state<number | null>(null);
 
@@ -944,7 +945,31 @@
 		return stack.status;
 	}
 
-	async function openGitModal(gitStack: any = undefined) {
+let gitMigratingStackId = $state<number | null>(null);
+
+	async function migrateGitStackFromList(gitStack: any) {
+		if (!gitStack || gitStack.engine === 'centralized') return;
+		if (!window.confirm(
+			`Migrate "${gitStack.stackName}" to centralized Git mode?\n\nThis stack moves onto the shared repository clone; its per-stack sync schedule and webhook URL may change, and its per-stack clone is removed after the shared clone is ready. Unselected stacks are unaffected.`
+		)) return;
+		gitMigratingStackId = gitStack.id;
+		try {
+			const res = await fetch(`/api/git/stacks/${gitStack.id}/migrate`, { method: 'POST' });
+			const data = await res.json();
+			if (res.ok) {
+				toast.success(`Migration started for "${gitStack.stackName}"`);
+				await fetchStacks();
+			} else {
+				toast.error(data.error || 'Failed to start migration');
+			}
+		} catch {
+			toast.error('Failed to start migration');
+		} finally {
+			gitMigratingStackId = null;
+		}
+	}
+
+	async function openGitModal(gitStack?: any) {
 		editingGitStack = gitStack || null;
 		// Fetch repositories and credentials before opening modal
 		try {
@@ -1114,6 +1139,8 @@
 	function editStack(name: string) {
 		editingStackName = name;
 		stackModalReadonly = false;
+		stackModalSource = getStackSource(name);
+		stackModalGitInfo = null;
 		showEditModal = true;
 	}
 
@@ -1121,6 +1148,7 @@
 		editingStackName = name;
 		stackModalReadonly = true;
 		const src = getStackSource(name);
+		stackModalSource = src;
 		// Effective branch: per-stack override wins, else repository default
 		// (shared with the server-side resolver in src/lib/git-stack-branch.ts).
 		const eff = effectiveStackBranch(src?.gitStack ?? null, src?.repository ?? undefined);
@@ -2073,6 +2101,20 @@
 							{/if}
 							{#if $canAccess('stacks', 'edit')}
 								{#if source.sourceType === 'git' && source.gitStack}
+									{#if source.gitStack.engine === 'stack'}
+										<button
+											type="button"
+											onclick={(e) => { e.stopPropagation(); migrateGitStackFromList(source.gitStack); }}
+											title="Migrate to centralized"
+											class="p-1 rounded hover:bg-muted transition-colors opacity-70 hover:opacity-100 cursor-pointer"
+										>
+											{#if gitMigratingStackId === source.gitStack.id}
+												<Loader2 class="w-3.5 h-3.5 animate-spin text-muted-foreground" />
+											{:else}
+												<ArrowRightCircle class="grid-action-icon grid-action-edit text-muted-foreground hover:text-purple-500" />
+											{/if}
+										</button>
+									{/if}
 									<button
 										type="button"
 										onclick={(e) => { e.stopPropagation(); openGitModal(source.gitStack); }}
@@ -2737,11 +2779,13 @@
 	stackName={editingStackName}
 	readonly={stackModalReadonly}
 	gitInfo={stackModalGitInfo}
+	stackSource={stackModalSource}
 	onClose={() => {
 		showEditModal = false;
 		editingStackName = '';
 		stackModalReadonly = false;
 		stackModalGitInfo = null;
+		stackModalSource = null;
 	}}
 	onSuccess={fetchStacks}
 />
@@ -2758,6 +2802,14 @@
 		editingGitStack = null;
 	}}
 	onSaved={fetchStacks}
+	onRepositoryCreated={async () => {
+		try {
+			const reposRes = await fetch('/api/git/repositories');
+			gitRepositories = await reposRes.json();
+		} catch {
+			// Non-fatal — dropdown may not reflect the new repo immediately
+		}
+	}}
 />
 
 <ImportStackModal

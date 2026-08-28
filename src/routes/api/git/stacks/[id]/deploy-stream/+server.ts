@@ -2,6 +2,7 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getGitStack } from '$lib/server/db';
 import { deployGitStackWithProgress } from '$lib/server/git';
+import { assertNotMigrating } from '$lib/server/git-migration-guard';
 import { authorize } from '$lib/server/authorize';
 import { createJob, appendLine, completeJob, failJob } from '$lib/server/jobs';
 import { prefersJSON, sseToJSON } from '$lib/server/sse';
@@ -22,6 +23,10 @@ export const POST: RequestHandler = async (event) => {
 	const auth = await authorize(cookies);
 
 	const id = parseInt(params.id);
+	// Block only while THIS stack is being migrated (narrow lock).
+	const locked = await assertNotMigrating([id]);
+	if (locked) return locked;
+
 	const gitStack = await getGitStack(id);
 
 	if (!gitStack) {

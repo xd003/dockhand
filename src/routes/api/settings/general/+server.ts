@@ -34,6 +34,9 @@ import {
 import { authorize } from '$lib/server/authorize';
 import { refreshSystemJobs } from '$lib/server/scheduler';
 import { sendToEventSubprocess, sendToMetricsSubprocess } from '$lib/server/subprocess-manager';
+import { getGitMode, getDesiredGitMode, isGitModeEnvForced } from '$lib/server/git-mode';
+import { getGitMigrationState } from '$lib/server/db';
+import { audit } from '$lib/server/audit';
 import { DEFAULT_GRYPE_IMAGE, DEFAULT_TRIVY_IMAGE } from '$lib/server/scanner';
 import { DEFAULT_HELPER_IMAGE } from '$lib/server/backups/restic';
 
@@ -126,6 +129,17 @@ export interface GeneralSettings {
 	// Scanner Advanced settings (#1219). Empty = use auto-detection.
 	defaultScannerNetworkMode: string;
 	defaultScannerDns: string[];
+	// Git repository model (stack vs centralized)
+	gitRepositoryMode: 'stack' | 'centralized';
+	gitRepositoryDesiredMode: 'stack' | 'centralized';
+	gitRepositoryModeForcedByEnv: boolean;
+	gitMigrationState: {
+		state: 'idle' | 'draining' | 'provisioning' | 'cutting_over';
+		jobId: string | null;
+		startedAt: string | null;
+		finishedAt: string | null;
+		error: string | null;
+	};
 }
 
 const DEFAULT_SETTINGS: Omit<GeneralSettings, 'scheduleRetentionDays' | 'eventRetentionDays' | 'scheduleCleanupCron' | 'eventCleanupCron' | 'scheduleCleanupEnabled' | 'eventCleanupEnabled' | 'scannerCleanupCron' | 'scannerCleanupEnabled'> = {
@@ -170,6 +184,10 @@ const DEFAULT_SETTINGS: Omit<GeneralSettings, 'scheduleRetentionDays' | 'eventRe
 	protectScannerImages: true,
 	defaultScannerNetworkMode: '',
 	defaultScannerDns: [],
+	gitRepositoryMode: 'stack',
+	gitRepositoryDesiredMode: 'stack',
+	gitRepositoryModeForcedByEnv: false,
+	gitMigrationState: { state: 'idle', jobId: null, startedAt: null, finishedAt: null, error: null },
 	defaultComposeTemplate: `version: "3.8"
 
 services:
@@ -340,7 +358,7 @@ export const GET: RequestHandler = async ({ cookies }) => {
 			getSetting('default_scanner_dns')
 		]);
 
-		const settings: GeneralSettings = {
+		const baseSettings = {
 			confirmDestructive: confirmDestructive ?? DEFAULT_SETTINGS.confirmDestructive,
 			showStoppedContainers: showStoppedContainers ?? DEFAULT_SETTINGS.showStoppedContainers,
 			highlightUpdates: highlightUpdates ?? DEFAULT_SETTINGS.highlightUpdates,
@@ -396,6 +414,27 @@ export const GET: RequestHandler = async ({ cookies }) => {
 			defaultScannerDns: parseScannerDnsStorage(defaultScannerDnsRaw)
 		};
 
+		// Git repository model — fetched separately (cheap, keeps the bulk fetch untouched)
+		const [effectiveMode, desiredMode, stackMigration] = await Promise.all([
+			getGitMode(),
+			getDesiredGitMode(),
+			getGitMigrationState()
+		]);
+
+		const settings: GeneralSettings = {
+			...baseSettings,
+			gitRepositoryMode: effectiveMode,
+			gitRepositoryDesiredMode: desiredMode,
+			gitRepositoryModeForcedByEnv: isGitModeEnvForced(),
+			gitMigrationState: {
+				state: stackMigration?.state ?? 'idle',
+				jobId: stackMigration?.jobId ?? null,
+				startedAt: stackMigration?.startedAt ?? null,
+				finishedAt: stackMigration?.finishedAt ?? null,
+				error: stackMigration?.error ?? null
+			}
+		};
+
 		return json(settings);
 	} catch (error) {
 		console.error('Failed to get general settings:', error);
@@ -407,11 +446,13 @@ export const GET: RequestHandler = async ({ cookies }) => {
  * @openapi
  * summary: Update global general settings (all fields optional; only supplied keys are written)
  * description: A large flat settings bag - theme/fonts, scanner defaults, cleanup schedules, event/metrics collection, editor options (e.g. editorIndentGuides), and more.
- * body: {animateIcons:boolean, editorIndentGuides:boolean, coloredActionButtons:boolean, lightTheme:string, darkTheme:string, defaultTimezone:string, logBufferSizeKb:integer, externalStackPaths:string, actionIconSize:string, compactPorts:boolean, confirmDestructive:boolean, dateFormat:string, defaultBackupImage:string, defaultComposeTemplate:string, defaultGrypeArgs:string, defaultGrypeImage:string, defaultScannerDns:array<string>, defaultScannerNetworkMode:string, defaultTrivyArgs:string, defaultTrivyImage:string, downloadFormat:string, editorFont:string, eventCleanupCron:string, eventCleanupEnabled:boolean, eventCollectionMode:string, eventPollInterval:integer, eventRetentionDays:integer, font:string, fontSize:string, formatLogTimestamps:boolean, gridFontSize:string, highlightUpdates:boolean, honorProxyLabels:boolean, labelFilterMode:string, logMaxLines:integer, metricsCollectionInterval:integer, primaryStackLocation:string, protectScannerImages:boolean, scannerCleanupCron:string, scannerCleanupEnabled:boolean, scheduleCleanupCron:string, scheduleCleanupEnabled:boolean, scheduleRetentionDays:integer, showExposedPorts:boolean, showGitCommitHash:boolean, showImageChangelogLinks:boolean, showStoppedContainers:boolean, showWhatsNew:boolean, terminalFont:string, timeFormat:string, useSelfhstIcons:boolean}
+ * body: {animateIcons:boolean, editorIndentGuides:boolean, coloredActionButtons:boolean, lightTheme:string, darkTheme:string, defaultTimezone:string, logBufferSizeKb:integer, externalStackPaths:string, actionIconSize:string, compactPorts:boolean, confirmDestructive:boolean, dateFormat:string, defaultBackupImage:string, defaultComposeTemplate:string, defaultGrypeArgs:string, defaultGrypeImage:string, defaultScannerDns:array<string>, defaultScannerNetworkMode:string, defaultTrivyArgs:string, defaultTrivyImage:string, downloadFormat:string, editorFont:string, eventCleanupCron:string, eventCleanupEnabled:boolean, eventCollectionMode:string, eventPollInterval:integer, eventRetentionDays:integer, font:string, fontSize:string, formatLogTimestamps:boolean, gitRepositoryDesiredMode:string, gridFontSize:string, highlightUpdates:boolean, honorProxyLabels:boolean, labelFilterMode:string, logMaxLines:integer, metricsCollectionInterval:integer, primaryStackLocation:string, protectScannerImages:boolean, scannerCleanupCron:string, scannerCleanupEnabled:boolean, scheduleCleanupCron:string, scheduleCleanupEnabled:boolean, scheduleRetentionDays:integer, showExposedPorts:boolean, showGitCommitHash:boolean, showImageChangelogLinks:boolean, showStoppedContainers:boolean, showWhatsNew:boolean, terminalFont:string, timeFormat:string, useSelfhstIcons:boolean}
+ * resp-400: Invalid git repository mode or a migration is already running
  * resp-403: Permission denied (needs settings:edit)
  * resp-500: Failed to save settings
  */
-export const POST: RequestHandler = async ({ request, cookies }) => {
+export const POST: RequestHandler = async (event) => {
+	const { request, cookies } = event;
 	const auth = await authorize(cookies);
 	if (auth.authEnabled && !await auth.can('settings', 'edit')) {
 		return json({ error: 'Permission denied' }, { status: 403 });
@@ -419,7 +460,33 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
 
 	try {
 		const body = await request.json();
-		const { confirmDestructive, showStoppedContainers, highlightUpdates, coloredActionButtons, actionIconSize, timeFormat, dateFormat, downloadFormat, defaultGrypeArgs, defaultTrivyArgs, scheduleRetentionDays, eventRetentionDays, scheduleCleanupCron, eventCleanupCron, scheduleCleanupEnabled, eventCleanupEnabled, scannerCleanupCron, scannerCleanupEnabled, logBufferSizeKb, logMaxLines, defaultTimezone, eventCollectionMode, eventPollInterval, metricsCollectionInterval, lightTheme, darkTheme, font, fontSize, gridFontSize, terminalFont, editorFont, compactPorts, showExposedPorts, showGitCommitHash, formatLogTimestamps, externalStackPaths, primaryStackLocation, defaultGrypeImage, defaultTrivyImage, defaultComposeTemplate, labelFilterMode, defaultBackupImage, honorProxyLabels, showImageChangelogLinks, useSelfhstIcons, animateIcons, editorIndentGuides, protectScannerImages, showWhatsNew, defaultScannerNetworkMode, defaultScannerDns } = body;
+		const { confirmDestructive, showStoppedContainers, highlightUpdates, coloredActionButtons, actionIconSize, timeFormat, dateFormat, downloadFormat, defaultGrypeArgs, defaultTrivyArgs, scheduleRetentionDays, eventRetentionDays, scheduleCleanupCron, eventCleanupCron, scheduleCleanupEnabled, eventCleanupEnabled, scannerCleanupCron, scannerCleanupEnabled, logBufferSizeKb, logMaxLines, defaultTimezone, eventCollectionMode, eventPollInterval, metricsCollectionInterval, lightTheme, darkTheme, font, fontSize, gridFontSize, terminalFont, editorFont, compactPorts, showExposedPorts, showGitCommitHash, formatLogTimestamps, externalStackPaths, primaryStackLocation, defaultGrypeImage, defaultTrivyImage, defaultComposeTemplate, labelFilterMode, defaultBackupImage, honorProxyLabels, showImageChangelogLinks, useSelfhstIcons, animateIcons, editorIndentGuides, protectScannerImages, showWhatsNew, defaultScannerNetworkMode, defaultScannerDns, gitRepositoryDesiredMode } = body;
+
+		// Git repository model change — validated up-front so a bad/mid-transition
+		// toggle never falls through to the bulk setting writes. Only an actual
+		// change is gated (a no-op value from a full settings save is allowed).
+		if (gitRepositoryDesiredMode !== undefined) {
+			if (gitRepositoryDesiredMode !== 'stack' && gitRepositoryDesiredMode !== 'centralized') {
+				return json({ error: 'Invalid git repository mode. Must be "stack" or "centralized".' }, { status: 400 });
+			}
+			const currentDesired = await getDesiredGitMode();
+			if (currentDesired !== gitRepositoryDesiredMode) {
+				if (isGitModeEnvForced()) {
+					return json({ error: 'Git repository mode is managed by the DOCKHAND_GIT_CENTRALIZED_MODE environment variable' }, { status: 400 });
+				}
+				const { setDesiredGitMode } = await import('$lib/server/git-mode');
+				await setDesiredGitMode(gitRepositoryDesiredMode);
+
+				// The global setting is a DEFAULT for NEW Git stacks, not a
+				// fleet cutover: no transition job is started. Existing stacks
+				// keep their current engine until explicitly migrated.
+				await audit(event, 'update', 'settings', {
+					entityName: 'Git repository default',
+					description: `Git repository default set to "${gitRepositoryDesiredMode}" (applies to new Git stacks)`,
+					details: { gitRepositoryDesiredMode }
+				});
+			}
+		}
 
 		if (confirmDestructive !== undefined) {
 			await setSetting('confirm_destructive', confirmDestructive);
@@ -714,7 +781,7 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
 			getSetting('default_scanner_dns')
 		]);
 
-		const settings: GeneralSettings = {
+		const baseSettings = {
 			confirmDestructive: confirmDestructiveVal ?? DEFAULT_SETTINGS.confirmDestructive,
 			showStoppedContainers: showStoppedContainersVal ?? DEFAULT_SETTINGS.showStoppedContainers,
 			highlightUpdates: highlightUpdatesVal ?? DEFAULT_SETTINGS.highlightUpdates,
@@ -768,6 +835,26 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
 			editorIndentGuides: editorIndentGuidesVal ?? DEFAULT_SETTINGS.editorIndentGuides,
 			defaultScannerNetworkMode: defaultScannerNetworkModeVal ?? DEFAULT_SETTINGS.defaultScannerNetworkMode,
 			defaultScannerDns: parseScannerDnsStorage(defaultScannerDnsRawVal)
+		};
+
+		const [effectiveModeVal, desiredModeVal, stackMigrationVal] = await Promise.all([
+			getGitMode(),
+			getDesiredGitMode(),
+			getGitMigrationState()
+		]);
+
+		const settings: GeneralSettings = {
+			...baseSettings,
+			gitRepositoryMode: effectiveModeVal,
+			gitRepositoryDesiredMode: desiredModeVal,
+			gitRepositoryModeForcedByEnv: isGitModeEnvForced(),
+			gitMigrationState: {
+				state: stackMigrationVal?.state ?? 'idle',
+				jobId: stackMigrationVal?.jobId ?? null,
+				startedAt: stackMigrationVal?.startedAt ?? null,
+				finishedAt: stackMigrationVal?.finishedAt ?? null,
+				error: stackMigrationVal?.error ?? null
+			}
 		};
 
 		return json(settings);

@@ -1,9 +1,11 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
+	import { appSettings } from '$lib/stores/settings';
 	import { Button } from '$lib/components/ui/button';
 	import * as Dialog from '$lib/components/ui/dialog';
 	import * as Select from '$lib/components/ui/select';
 	import { Label } from '$lib/components/ui/label';
+	import { Badge } from '$lib/components/ui/badge';
 	import { Input } from '$lib/components/ui/input';
 	import { TogglePill } from '$lib/components/ui/toggle-pill';
 	import { Loader2, GitBranch, RefreshCw, Webhook, Rocket, RefreshCcw, Copy, Check, XCircle, FolderGit2, Github, Key, KeyRound, Lock, FileText, HelpCircle, GripVertical, X, Download, Hammer, ArrowDownToLine, Zap, FolderOpen, Ban, TriangleAlert, Settings2, Archive, GitFork, ArrowUp, ArrowDown } from 'lucide-svelte';
@@ -28,6 +30,7 @@
 	import WebhookSecretInput from '$lib/components/WebhookSecretInput.svelte';
 	import WebhookUrlCopyField from '$lib/components/WebhookUrlCopyField.svelte';
 	import { ensureWebhookSecret, webhookSecretValidationError } from '$lib/utils/webhook-secret';
+	import { startJobPolling, type JobPollingHandle } from '$lib/utils/job-polling';
 	import { detectedComposeOverridePaths } from '$lib/compose-overrides';
 
 
@@ -72,7 +75,8 @@
 		forceRedeploy: boolean;
 		webhookEnabled: boolean;
 		webhookSecret: string | null;
-		// Stack-level scheduled sync
+		engine?: 'stack' | 'centralized';
+		// Stack-level scheduled sync (deprecated in centralized mode)
 		autoUpdate?: boolean;
 		autoUpdateSchedule?: string | null;
 		autoUpdateCron?: string | null;
@@ -118,6 +122,10 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 	let formNewRepoUrl = $state('');
 	let formNewRepoBranch = $state('main');
 	let formNewRepoCredentialId = $state<number | null>(null);
+	let formNewRepoAutoUpdate = $state(false);
+	let formNewRepoAutoUpdateCron = $state('0 3 * * *');
+	let formNewRepoWebhookEnabled = $state(false);
+	let formNewRepoWebhookSecret = $state('');
 
 	// Tabs: Settings (the deploy form) and Backups (edit mode + feature flag only).
 	let activeTab = $state<'settings' | 'backups'>('settings');
@@ -291,7 +299,7 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 	function configureGitBrowser() {
 		if (!formRepositoryId) return;
 		const params = new URLSearchParams();
-		if (gitStack && formRepositoryId === gitStack.repositoryId) {
+		if (gitStack?.engine === 'stack' && formRepositoryId === gitStack.repositoryId) {
 			params.set('stackId', String(gitStack.id));
 		}
 		else if (temporaryCloneToken) params.set('pending', temporaryCloneToken);
@@ -349,7 +357,16 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 	let formError = $state('');
 	let formSaving = $state(false);
 	let showExistsWarning = $state(false);
-	let errors = $state<{ stackName?: string; repository?: string; repoName?: string; repoUrl?: string; stackWebhookSecret?: string; stackAutoUpdateCron?: string }>({});
+	let errors = $state<{ stackName?: string; repository?: string; repoName?: string; repoUrl?: string; newRepoWebhookSecret?: string; stackWebhookSecret?: string; stackAutoUpdateCron?: string }>({});
+	// Per-stack model: new stacks inherit the global DEFAULT (no chooser); editing
+	// follows the stack's own engine. This drives which fields/contracts apply.
+	const isCentralizedMode = $derived(
+		gitStack ? (gitStack.engine === 'centralized') : ($appSettings.gitRepositoryDesiredMode === 'centralized')
+	);
+	const instanceDefaultLabel = $derived($appSettings.gitRepositoryDesiredMode === 'centralized'
+		? 'centralized (shared clone)'
+		: 'per-stack clones');
+	let migrating = $state(false);
 
 // Branch selection
 	let formBranch = $state<string | null>(null);
@@ -370,6 +387,29 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 	const STACK_NAME_REGEX = /^[a-z0-9][a-z0-9_-]*$/;
 	let copiedWebhookUrl = $state<'ok' | 'error' | null>(null);
 	let copiedWebhookSecret = $state<'ok' | 'error' | null>(null);
+
+	async function migrateStack() {
+		if (!gitStack || gitStack.engine !== 'stack') return;
+		if (!window.confirm(
+			`Migrate "${gitStack.stackName}" to centralized Git mode?\n\nThis stack will move onto the shared repository clone, its per-stack sync schedule and webhook URL may change, and the per-stack clone will be removed after the shared clone is ready. This only affects this stack.`
+		)) return;
+		migrating = true;
+		try {
+			const res = await fetch(`/api/git/stacks/${gitStack.id}/migrate`, { method: 'POST' });
+			const data = await res.json();
+			if (res.ok) {
+				toast.success('Migration started for this stack');
+				onSaved();
+				onClose();
+			} else {
+				toast.error(data.error || 'Failed to start migration');
+			}
+		} catch {
+			toast.error('Failed to start migration');
+		} finally {
+			migrating = false;
+		}
+	}
 
 	// Secret providers
 	type SecretProviderOption = { id: number; name: string; type: string };
@@ -407,8 +447,16 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 
 	let cloneStatus = $state<'idle' | 'cloning' | 'success' | 'error'>('idle');
 	let cloneError = $state<string | null>(null);
+	let cloningRepoId = $state<number | null>(null);
+	let pollHandle: JobPollingHandle | null = null;
+
+	function stopPolling() {
+		pollHandle?.stop();
+		pollHandle = null;
+	}
+
 	async function deleteRepositoryAndClose() {
-		const targetId = formRepositoryId;
+		const targetId = cloningRepoId ?? formRepositoryId;
 		if (!targetId) return;
 		try {
 			await fetch(`/api/git/repositories/${targetId}`, { method: 'DELETE' });
@@ -417,6 +465,36 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 			// ignore
 		}
 		cloneStatus = 'idle';
+		stopPolling();
+		cloningRepoId = null;
+	}
+
+	function startPolling(jobId: string, repoId: number) {
+		stopPolling();
+		pollHandle = startJobPolling(jobId, {
+			onDone: async () => {
+				cloneStatus = 'success';
+				cloningRepoId = null;
+				onRepositoryCreated?.(); // refresh list
+				// Switch to 'existing' mode so the stack-save flow uses the real repo ID
+				formRepositoryId = repoId;
+				formRepoMode = 'existing';
+				configureGitBrowser();
+				showGitRepoBrowser = true;
+				await addDetectedGitComposeOverrides(formComposePaths[0] || formComposePath || 'compose.yaml');
+				cloneStatus = 'idle';
+			},
+			onError: (error) => {
+				cloneStatus = 'error';
+				// Keep cloningRepoId set so they can delete it
+				cloneError = error ?? 'Clone failed — check the repository URL and credentials.';
+				onRepositoryCreated?.();
+			},
+			onUnavailable: () => {
+				cloneStatus = 'error';
+				cloneError = 'Could not retrieve clone status. The repository may still be cloning in the background.';
+			}
+		});
 	}
 
 	// Track which gitStack was initialized to avoid repeated resets
@@ -442,6 +520,8 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 	let selectedRepo = $derived(formRepositoryId ? repositories.find(r => r.id === formRepositoryId) : null);
 
 	onMount(() => {
+		// F11: sync the client's git mode with the server before showing the modal.
+		appSettings.reload();
 		// Load saved split ratio
 		const savedSplit = localStorage.getItem(STORAGE_KEY_SPLIT);
 		if (savedSplit) {
@@ -697,6 +777,10 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 			formNewRepoUrl = '';
 			formNewRepoBranch = 'main';
 			formNewRepoCredentialId = null;
+			formNewRepoAutoUpdate = false;
+			formNewRepoAutoUpdateCron = '0 3 * * *';
+			formNewRepoWebhookEnabled = false;
+			formNewRepoWebhookSecret = '';
 			formStackName = '';
 			formStackNameUserModified = false;
 			formComposePath = 'compose.yaml';
@@ -794,9 +878,25 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 			hasErrors = true;
 		}
 
-		const stackWebhookSecretError = $page.data.allowSecretlessWebhook && formStackWebhookEnabled && !formStackWebhookSecret.trim()
+		const newRepoWebhookSecretError = formRepoMode === 'new'
+			? ($page.data.allowSecretlessWebhook && formNewRepoWebhookEnabled && !formNewRepoWebhookSecret.trim()
 				? undefined
-				: webhookSecretValidationError(formStackWebhookEnabled, formStackWebhookSecret);
+				: webhookSecretValidationError(formNewRepoWebhookEnabled, formNewRepoWebhookSecret))
+			: undefined;
+		if (newRepoWebhookSecretError) {
+			errors.newRepoWebhookSecret = newRepoWebhookSecretError;
+			hasErrors = true;
+		}
+
+		const stackWebhookSecretError = isCentralizedMode
+			? (formForceRedeploy
+				? ($page.data.allowSecretlessWebhook && formStackWebhookEnabled && !formStackWebhookSecret.trim()
+					? undefined
+					: webhookSecretValidationError(formStackWebhookEnabled, formStackWebhookSecret))
+				: undefined)
+			: ($page.data.allowSecretlessWebhook && formStackWebhookEnabled && !formStackWebhookSecret.trim()
+				? undefined
+				: webhookSecretValidationError(formStackWebhookEnabled, formStackWebhookSecret));
 		if (stackWebhookSecretError) {
 			errors.stackWebhookSecret = stackWebhookSecretError;
 			hasErrors = true;
@@ -855,13 +955,20 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 					isSecret: v.isSecret
 				}))
 			};
-			if (temporaryCloneToken) body.temporaryCloneToken = temporaryCloneToken;
+			if (temporaryCloneToken && !isCentralizedMode) body.temporaryCloneToken = temporaryCloneToken;
 
-			body.webhookEnabled = formStackWebhookEnabled;
-			body.webhookSecret = formStackWebhookEnabled ? formStackWebhookSecret || null : null;
-			body.autoUpdate = formStackAutoUpdate;
-			body.autoUpdateSchedule = formStackAutoUpdate ? formStackAutoUpdateSchedule : undefined;
-			body.autoUpdateCron = formStackAutoUpdate ? (formStackAutoUpdateSchedule === 'custom' ? formStackAutoUpdateCron : undefined) : undefined;
+			if (isCentralizedMode) {
+				// Centralized: stack webhook only under force redeploy; schedules live on the repository.
+				body.webhookEnabled = formForceRedeploy ? formStackWebhookEnabled : false;
+				body.webhookSecret = (formForceRedeploy && formStackWebhookEnabled) ? formStackWebhookSecret || null : null;
+			} else {
+				// Stack mode: stack-level scheduled sync + webhook (not gated by force redeploy).
+				body.webhookEnabled = formStackWebhookEnabled;
+				body.webhookSecret = formStackWebhookEnabled ? formStackWebhookSecret || null : null;
+				body.autoUpdate = formStackAutoUpdate;
+				body.autoUpdateSchedule = formStackAutoUpdate ? formStackAutoUpdateSchedule : undefined;
+				body.autoUpdateCron = formStackAutoUpdate ? (formStackAutoUpdateSchedule === 'custom' ? formStackAutoUpdateCron : undefined) : undefined;
+			}
 
 			if (formRepoMode === 'existing') {
 				body.repositoryId = formRepositoryId;
@@ -874,6 +981,12 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 				body.url = formNewRepoUrl;
 				body.branch = formNewRepoBranch || 'main';
 				body.credentialId = formNewRepoCredentialId;
+				if (isCentralizedMode) {
+					body.autoUpdate = formNewRepoAutoUpdate;
+					body.autoUpdateCron = formNewRepoAutoUpdateCron;
+					body.webhookEnabled = formNewRepoWebhookEnabled;
+					body.webhookSecret = formNewRepoWebhookEnabled ? formNewRepoWebhookSecret : null;
+				}
 			}
 
 			const url = gitStack
@@ -983,6 +1096,7 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 				);
 
 				let repoId: number;
+				let cloneJobId: string | undefined;
 				if (existingRepo) {
 					// Reuse the existing repository — no duplicate created
 					repoId = existingRepo.id;
@@ -992,7 +1106,10 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 					// temporary checkout below and adopted on first deployment.
 					const res = await fetch('/api/git/repositories', {
 						method: 'POST',
-						headers: { 'Content-Type': 'application/json' },
+						headers: {
+							'Content-Type': 'application/json',
+							...(isCentralizedMode ? { 'X-Dockhand-Async': '1' } : {})
+						},
 						body: JSON.stringify({
 							name: formNewRepoName.trim(),
 							url: formNewRepoUrl.trim(),
@@ -1007,11 +1124,21 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 						return;
 					}
 					repoId = data.id;
+					cloneJobId = data.jobId;
 				}
 
 				formRepositoryId = repoId;
 				formRepoMode = 'existing';
-				if (!(await prepareTemporaryClone(repoId, formNewRepoBranch || 'main'))) return;
+				if (isCentralizedMode && cloneJobId) {
+					cloneStatus = 'cloning';
+					cloneError = null;
+					cloningRepoId = repoId;
+					startPolling(cloneJobId, repoId);
+					return;
+				}
+				if (!isCentralizedMode) {
+					if (!(await prepareTemporaryClone(repoId, formNewRepoBranch || 'main'))) return;
+				}
 				configureGitBrowser();
 				showGitRepoBrowser = true;
 				await addDetectedGitComposeOverrides(formComposePaths[0] || formComposePath || 'compose.yaml');
@@ -1021,7 +1148,7 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 			}
 		} else {
 			if (!formRepositoryId) return;
-			if (!gitStack || gitStack.repositoryId !== formRepositoryId) {
+			if (!isCentralizedMode && (!gitStack || gitStack.engine !== 'stack' || gitStack.repositoryId !== formRepositoryId)) {
 				if (!(await prepareTemporaryClone(formRepositoryId, formBranch || selectedRepo?.branch))) return;
 			}
 			configureGitBrowser();
@@ -1096,6 +1223,19 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 						<Dialog.Description class="text-xs text-zinc-500 dark:text-zinc-400">
 							{gitStack ? 'Update git stack settings' : 'Deploy a compose stack from a Git repository'}
 						</Dialog.Description>
+						<div class="flex items-center gap-2 mt-1">
+							<Badge variant="outline" class="text-2xs py-0 px-1.5">
+								{gitStack
+									? (gitStack.engine === 'centralized' ? 'Centralized (shared clone)' : 'Per-stack clone')
+									: (isCentralizedMode ? 'Centralized (shared clone)' : 'Per-stack clone')}
+							</Badge>
+							{#if gitStack && gitStack.engine === 'stack'}
+								<Button size="sm" variant="outline" class="h-5 px-2 text-2xs" onclick={migrateStack} disabled={migrating}>
+									{#if migrating}<Loader2 class="w-3 h-3 animate-spin" />{/if}
+									Migrate to centralized
+								</Button>
+							{/if}
+						</div>
 					</div>
 				</div>
 
@@ -1338,6 +1478,46 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 								</div>
 							</div>
 
+							{#if isCentralizedMode}
+							<div class="space-y-3 mt-4 border-t pt-4 border-muted">
+								<p class="text-xs font-medium text-muted-foreground uppercase tracking-wider">Repository Sync</p>
+
+								<!-- Auto-update section -->
+								<div class="flex items-center gap-3">
+									<div class="flex items-center gap-2 flex-1">
+										<RefreshCw class="w-4 h-4 text-muted-foreground" />
+										<Label class="text-sm font-normal">Enable scheduled sync</Label>
+									</div>
+									<TogglePill bind:checked={formNewRepoAutoUpdate} />
+								</div>
+								{#if formNewRepoAutoUpdate}
+									<CronEditor
+										value={formNewRepoAutoUpdateCron}
+										onchange={(cron) => formNewRepoAutoUpdateCron = cron}
+									/>
+								{/if}
+
+								<!-- Webhook section -->
+								<div class="flex items-center gap-3 pt-2">
+									<div class="flex items-center gap-2 flex-1">
+										<Webhook class="w-4 h-4 text-muted-foreground" />
+										<Label class="text-sm font-normal">Enable webhook</Label>
+									</div>
+									<TogglePill
+										bind:checked={formNewRepoWebhookEnabled}
+										onchange={(enabled) => { formNewRepoWebhookSecret = ensureWebhookSecret(enabled, formNewRepoWebhookSecret); }}
+									/>
+								</div>
+								{#if formNewRepoWebhookEnabled}
+									<WebhookSecretInput
+										id="new-repo-webhook-secret"
+										bind:value={formNewRepoWebhookSecret}
+										error={errors.newRepoWebhookSecret}
+										oninput={() => errors.newRepoWebhookSecret = undefined}
+									/>
+								{/if}
+							</div>
+							{/if}
 						</div>
 					{/if}
 				</div>
@@ -1541,11 +1721,59 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 						<Zap class="w-4 h-4 text-muted-foreground" />
 						<Label class="text-sm font-normal">Force redeployment</Label>
 					</div>
-					<TogglePill bind:checked={formForceRedeploy} />
+					<TogglePill bind:checked={formForceRedeploy} onchange={() => { if (!formForceRedeploy) { formStackWebhookEnabled = false; formStackWebhookSecret = ''; } }} />
 				</div>
 				<p class="text-xs text-muted-foreground">
 					Always redeploy the stack on webhook or scheduled sync, even if no git changes are detected.
 				</p>
+				{#if isCentralizedMode && formForceRedeploy}
+				<div class="space-y-3 ml-6 p-3 bg-muted/50 rounded-md">
+					<div class="flex items-center gap-3">
+						<div class="flex items-center gap-2 flex-1">
+							<Webhook class="w-4 h-4 text-muted-foreground" />
+							<Label class="text-sm font-normal">Enable stack webhook</Label>
+							<span class="text-2xs uppercase tracking-wide text-amber-600 dark:text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded">Stack</span>
+						</div>
+						<TogglePill
+							bind:checked={formStackWebhookEnabled}
+							onchange={(enabled) => { formStackWebhookSecret = ensureWebhookSecret(enabled, formStackWebhookSecret); }}
+						/>
+					</div>
+					<p class="text-xs text-muted-foreground">
+						Call this webhook to force redeploy <strong>this stack only</strong>. The repository-level webhook redeploys all linked stacks with force redeployment enabled.
+					</p>
+					<p class="text-xs text-amber-600 dark:text-amber-400">
+						With a stack webhook enabled, the <strong>repository-level webhook skips this stack</strong> — it is only triggered by its own webhook, so one push won't deploy it twice.
+					</p>
+					{#if formStackWebhookEnabled}
+						{#if gitStack}
+							<WebhookUrlCopyField
+								url={`${typeof window !== 'undefined' ? window.location.origin : ''}/api/git/stacks/${gitStack.id}/webhook`}
+								label="Stack webhook URL"
+							/>
+						{:else}
+							<p class="text-xs text-muted-foreground">
+								The stack webhook URL will be available after creating the stack.
+							</p>
+						{/if}
+						<WebhookSecretInput
+							id="stack-webhook-secret"
+							bind:value={formStackWebhookSecret}
+							error={errors.stackWebhookSecret}
+							showCopy={!!gitStack}
+							oninput={() => errors.stackWebhookSecret = undefined}
+						/>
+						<p class="text-xs text-muted-foreground">
+							{#if gitStack}
+								Configure this URL in your Git provider or CI/CD pipeline. Secret is used for signature verification.
+							{:else}
+								Secret will be saved when you create the stack.
+							{/if}
+						</p>
+					{/if}
+				</div>
+				{/if}
+				{#if !isCentralizedMode}
 				<div class="space-y-3 p-3 bg-muted/50 rounded-md mt-3">
 					<p class="text-xs font-medium text-muted-foreground uppercase tracking-wider">Scheduled sync</p>
 					<div class="flex items-center gap-3">
@@ -1620,6 +1848,7 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 						/>
 					{/if}
 				</div>
+				{/if}
 			</div>
 
 			<!-- Deploy now option (only for new stacks) -->
@@ -1795,7 +2024,7 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 />
 
 <!-- Cloning Progress Dialog for newly added repo inside Stack creation -->
-<Dialog.Root open={cloneStatus === 'cloning' || cloneStatus === 'error'} onOpenChange={(v) => { if (!v) cloneStatus = 'idle'; }}>
+<Dialog.Root open={cloneStatus === 'cloning' || cloneStatus === 'error'} onOpenChange={(v) => { if (!v) { cloneStatus = 'idle'; stopPolling(); } }}>
 	<Dialog.Content class="max-w-lg">
 		{#if cloneStatus === 'cloning'}
 			<!-- ── Cloning state ── -->
@@ -1834,7 +2063,7 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 				<Button variant="destructive" onclick={deleteRepositoryAndClose}>
 					Delete repository
 				</Button>
-				<Button variant="outline" onclick={() => { cloneStatus = 'idle'; }}>Close</Button>
+				<Button variant="outline" onclick={() => { cloneStatus = 'idle'; stopPolling(); }}>Close</Button>
 			</Dialog.Footer>
 		{/if}
 	</Dialog.Content>

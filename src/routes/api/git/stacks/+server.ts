@@ -14,6 +14,9 @@ import {
 import { deployGitStack } from '$lib/server/git';
 import { adoptPendingGitClone } from '$lib/server/git-stack';
 import { validateComposePathsInput } from '$lib/server/compose-files';
+import { getDesiredGitMode } from '$lib/server/git-mode';
+import { createStackModel } from '$lib/utils/git-model-routing';
+import { assertNotMigrating } from '$lib/server/git-migration-guard';
 import { authorize } from '$lib/server/authorize';
 import { auditGitStack } from '$lib/server/audit';
 import { createJobResponse } from '$lib/server/sse';
@@ -68,10 +71,19 @@ export const POST: RequestHandler = async (event) => {
 	try {
 		const data = await request.json();
 
+		// Block only when the target repository is being provisioned by a migration.
+		// New stacks themselves are never in an active job's scope (narrow lock).
+		const locked = await assertNotMigrating([], typeof data?.repositoryId === 'number' ? [data.repositoryId] : []);
+		if (locked) return locked;
+
 		// Permission check with environment context
 		if (auth.authEnabled && !await auth.can('stacks', 'create', data.environmentId || undefined)) {
 			return json({ error: 'Permission denied' }, { status: 403 });
 		}
+
+		// New stacks inherit the GLOBAL DEFAULT (env lock wins). Any model sent by
+		// the client is ignored — there is no per-stack chooser (createStackModel).
+		const model = createStackModel(await getDesiredGitMode(), data.engine);
 
 		if (!data.stackName || typeof data.stackName !== 'string') {
 			return json({ error: 'Stack name is required' }, { status: 400 });
@@ -150,13 +162,33 @@ export const POST: RequestHandler = async (event) => {
 			// Create the repository first
 			const repoName = data.repoName || data.stackName;
 			try {
-				const repo = await createGitRepository({
-					name: repoName,
-					url: data.url,
-					branch: data.branch || 'main',
-					credentialId: data.credentialId || null
-				});
-				repositoryId = repo.id;
+				if (model === 'centralized') {
+					const repo = await createGitRepository({
+						name: repoName,
+						url: data.url,
+						branch: data.branch || 'main',
+						credentialId: data.credentialId || null,
+						autoUpdate: data.autoUpdate || false,
+						autoUpdateSchedule: data.autoUpdateSchedule || undefined,
+						autoUpdateCron: data.autoUpdate ? (data.autoUpdateCron || '0 3 * * *') : undefined,
+						webhookEnabled: data.webhookEnabled || false,
+						webhookSecret: data.webhookEnabled ? (data.webhookSecret || null) : null
+					});
+					repositoryId = repo.id;
+					if (repo.autoUpdate) {
+						await registerSchedule(repo.id, 'git_repository_sync', null);
+					}
+				} else {
+					// Stack mode: repositories are thin records — no clone, no repo-level
+					// schedule/webhook. Syncs and webhooks are configured per stack.
+					const repo = await createGitRepository({
+						name: repoName,
+						url: data.url,
+						branch: data.branch || 'main',
+						credentialId: data.credentialId || null
+					});
+					repositoryId = repo.id;
+				}
 			} catch (error: any) {
 				if (error.message?.includes('UNIQUE constraint failed')) {
 					return json({ error: 'A repository with this name already exists' }, { status: 400 });
@@ -171,7 +203,8 @@ export const POST: RequestHandler = async (event) => {
 			}
 		}
 
-		const gitStack = await createGitStack({
+		const gitStack = await createGitStack(model === 'centralized'
+			? {
 				stackName: trimmedStackName,
 				environmentId: data.environmentId || null,
 				repositoryId: repositoryId,
@@ -189,21 +222,47 @@ export const POST: RequestHandler = async (event) => {
 				noBuildCache: data.noBuildCache ?? false,
 				repullImages: data.repullImages ?? false,
 				forceRedeploy: data.forceRedeploy ?? false,
+				engine: model,
+				webhookEnabled: data.forceRedeploy ? (data.webhookEnabled || false) : false,
+				webhookSecret: (data.forceRedeploy && data.webhookEnabled) ? (data.webhookSecret || null) : null
+			}
+			: {
+				// Stack mode: stack-level scheduled sync + webhook, not gated by forceRedeploy.
+				stackName: trimmedStackName,
+				environmentId: data.environmentId || null,
+				repositoryId: repositoryId,
+				// Per-stack branch override — only when targeting an existing repository.
+				// In new-repo mode data.branch becomes the repository's default instead;
+				// the stack inherits it (branch stays null).
+				...(data.repositoryId && typeof data.branch === 'string' && data.branch.trim()
+					? { branch: data.branch.trim() }
+					: {}),
+				composePath: composePath,
+				composePaths: composePaths,
+				envFilePath: data.envFilePath || null,
+				contextDir: data.contextDir || null,
+				buildOnDeploy: data.buildOnDeploy ?? false,
+				noBuildCache: data.noBuildCache ?? false,
+				repullImages: data.repullImages ?? false,
+				forceRedeploy: data.forceRedeploy ?? false,
+				engine: model,
 				webhookEnabled: data.webhookEnabled || false,
 				webhookSecret: data.webhookEnabled ? (data.webhookSecret || null) : null,
 				autoUpdate: data.autoUpdate || false,
 				autoUpdateSchedule: data.autoUpdate ? (data.autoUpdateSchedule || 'daily') : undefined,
 				autoUpdateCron: data.autoUpdate ? (data.autoUpdateCron || '0 3 * * *') : undefined
-			});
+			}
+		);
 
-		if (typeof data.temporaryCloneToken === 'string' && data.temporaryCloneToken.trim()) {
+		if (model === 'stack' && typeof data.temporaryCloneToken === 'string' && data.temporaryCloneToken.trim()) {
 			const adoption = await adoptPendingGitClone(gitStack.id, data.temporaryCloneToken.trim());
 			if (!adoption.success) {
 				return json({ error: adoption.error || 'Failed to attach the pre-cloned repository' }, { status: 400 });
 			}
 		}
 
-		if (gitStack.autoUpdate && gitStack.autoUpdateCron) {
+		// Stack mode: register the per-stack schedule when scheduled sync is enabled.
+		if (model === 'stack' && gitStack.autoUpdate && gitStack.autoUpdateCron) {
 			await registerSchedule(gitStack.id, 'git_stack_sync', gitStack.environmentId);
 		}
 

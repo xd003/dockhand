@@ -977,12 +977,18 @@ export async function getStackComposeFile(
 	const baseDir = source.sourceType === 'git' ? gitStackBaseDir(source.gitStack) : '';
 	let foundStackDir: string | null;
 	if (source.sourceType === 'git' && source.gitStack) {
-		const { getStackRepoPath } = await import('./git-stack');
-		const repoPath = await getStackRepoPath(
-			source.gitStack.id,
-			source.gitStack.stackName,
-			source.gitStack.environmentId
-		);
+		let repoPath: string;
+		if (source.gitStack.engine === 'centralized') {
+			const { getRepoPath } = await import('./git');
+			repoPath = getRepoPath(source.gitStack.repository.name);
+		} else {
+			const { getStackRepoPath } = await import('./git-stack');
+			repoPath = await getStackRepoPath(
+				source.gitStack.id,
+				source.gitStack.stackName,
+				source.gitStack.environmentId
+			);
+		}
 		foundStackDir = baseDir ? join(repoPath, baseDir) : repoPath;
 	} else {
 		foundStackDir = await findStackDir(stackName, envId);
@@ -3066,7 +3072,7 @@ export async function computeStackDeletionPaths(
 	const gitStack = await getGitStackByName(stackName, envId);
 	if (gitStack) {
 		try {
-			const { getStackRepoPath } = await import('./git');
+			const { getStackRepoPath } = await import('./git-stack');
 			const repoPath = await getStackRepoPath(gitStack.id, gitStack.stackName, gitStack.environmentId);
 			if (repoPath && existsSync(repoPath)) gitDir = repoPath;
 		} catch { /* best-effort: no git dir shown if we can't resolve it */ }

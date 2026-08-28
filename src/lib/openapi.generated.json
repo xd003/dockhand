@@ -13859,7 +13859,7 @@
             "description": "The id path segment is not a valid integer"
           },
           "403": {
-            "description": "Caller lacks the git:edit permission"
+            "description": "Caller lacks git:edit, or cannot deploy any of the repository's stacks' environments"
           },
           "404": {
             "description": "No repository exists with that ID"
@@ -13925,7 +13925,7 @@
             "description": "The id path segment is not a valid integer"
           },
           "403": {
-            "description": "Caller lacks the git:view permission"
+            "description": "Permission denied (needs git:view)"
           },
           "404": {
             "description": "No repository exists with that ID"
@@ -13989,7 +13989,7 @@
             "description": "The id path segment is not a valid integer"
           },
           "403": {
-            "description": "Caller lacks the git:edit permission"
+            "description": "Permission denied (needs git:edit)"
           },
           "404": {
             "description": "No repository exists with that ID"
@@ -14116,7 +14116,7 @@
             "description": "The id path segment is not a valid integer"
           },
           "403": {
-            "description": "Caller lacks the git:edit permission"
+            "description": "Permission denied (needs git:view)"
           },
           "404": {
             "description": "No repository exists with that ID"
@@ -14751,6 +14751,73 @@
         }
       }
     },
+    "/api/git/stacks/{id}/migrate": {
+      "post": {
+        "operationId": "post_api_git_stacks_id_migrate",
+        "tags": [
+          "git"
+        ],
+        "summary": "Migrate a single stack-model git stack to the centralized model",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "The git stack id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "started": {
+                      "type": "boolean"
+                    }
+                  }
+                },
+                "example": {
+                  "success": true,
+                  "started": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The id path segment is not a valid integer"
+          },
+          "403": {
+            "description": "Permission denied (needs stacks:edit)"
+          },
+          "404": {
+            "description": "Git stack not found"
+          },
+          "409": {
+            "description": "The stack is already centralized, is currently syncing, or a migration job is already running"
+          },
+          "500": {
+            "description": "Failed to start the migration"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
     "/api/git/stacks/{id}/sync": {
       "post": {
         "operationId": "post_api_git_stacks_id_sync",
@@ -14883,7 +14950,7 @@
         "tags": [
           "git"
         ],
-        "summary": "GET webhook trigger for a git stack, with the secret passed as the `secret` query parameter",
+        "summary": "GET webhook trigger for a git stack",
         "parameters": [
           {
             "name": "id",
@@ -14893,15 +14960,6 @@
               "type": "integer"
             },
             "description": "Git stack ID (from GET /api/git/stacks)"
-          },
-          {
-            "name": "secret",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string"
-            },
-            "description": "Webhook secret; required only if the stack has a webhook secret configured"
           }
         ],
         "responses": {
@@ -14930,20 +14988,11 @@
               }
             }
           },
-          "400": {
-            "description": "The id path segment is not a valid integer"
-          },
-          "401": {
-            "description": "The provided secret did not match the stack's webhook secret"
-          },
-          "403": {
-            "description": "Webhooks are not enabled for this stack"
-          },
           "404": {
             "description": "No git stack exists with that ID"
           },
           "500": {
-            "description": "The deployment triggered by the webhook failed"
+            "description": "An unexpected server error occurred (not a failed deploy — that returns 200)"
           }
         },
         "security": []
@@ -14991,24 +15040,91 @@
               }
             }
           },
-          "400": {
-            "description": "The id path segment is not a valid integer"
-          },
-          "401": {
-            "description": "The webhook signature or token did not verify"
-          },
-          "403": {
-            "description": "Webhooks are not enabled for this stack"
-          },
           "404": {
             "description": "No git stack exists with that ID"
           },
           "500": {
-            "description": "The deployment triggered by the webhook failed"
+            "description": "An unexpected server error occurred (not a failed deploy — that returns 200)"
           }
         },
         "security": [],
-        "description": "Public endpoint authenticated by the stack's webhook secret via `X-Hub-Signature-256` (GitHub) or `X-Gitlab-Token` (GitLab); the raw request body is used for HMAC verification."
+        "description": "Public endpoint authenticated by the stack's webhook secret via `X-Hub-Signature-256` (GitHub) or `X-Gitlab-Token` (GitLab); the raw request body is used for HMAC verification. Stack-model deploys are synchronous: the deploy result is returned with HTTP 200 even on failure/skip (a 5xx would make the provider redeliver a skipped deploy in a loop)."
+      }
+    },
+    "/api/git/stacks/migrate-batch": {
+      "post": {
+        "operationId": "post_api_git_stacks_migrate-batch",
+        "tags": [
+          "git"
+        ],
+        "summary": "Migrate a set of stack-model git stacks to the centralized model in one job",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "started": {
+                      "type": "boolean"
+                    },
+                    "count": {
+                      "type": "integer"
+                    }
+                  }
+                },
+                "example": {
+                  "success": true,
+                  "started": true,
+                  "count": 0
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "stackIds is empty or not an array of numbers"
+          },
+          "403": {
+            "description": "Permission denied (needs stacks:edit)"
+          },
+          "409": {
+            "description": "A migration job is already running"
+          },
+          "500": {
+            "description": "Failed to start the migration"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "stackIds": {
+                    "type": "number"
+                  }
+                }
+              },
+              "example": {
+                "stackIds": 0
+              }
+            }
+          }
+        }
       }
     },
     "/api/git/webhook/{id}": {
@@ -15017,7 +15133,7 @@
         "tags": [
           "git"
         ],
-        "summary": "GET webhook trigger for a git repository, with the secret passed as the `secret` query parameter",
+        "summary": "GET webhook trigger for a git repository",
         "parameters": [
           {
             "name": "id",
@@ -15027,15 +15143,6 @@
               "type": "integer"
             },
             "description": "Git repository ID (from GET /api/git/repositories)"
-          },
-          {
-            "name": "secret",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string"
-            },
-            "description": "Webhook secret; required only if the repository has a webhook secret configured"
           }
         ],
         "responses": {
@@ -15059,18 +15166,6 @@
                 }
               }
             }
-          },
-          "400": {
-            "description": "The id path segment is not a valid integer"
-          },
-          "401": {
-            "description": "The provided secret did not match the repository's webhook secret"
-          },
-          "403": {
-            "description": "Webhooks are not enabled for this repository"
-          },
-          "404": {
-            "description": "No repository exists with that ID"
           },
           "500": {
             "description": "The deployment triggered by the webhook failed"
@@ -15118,40 +15213,12 @@
               }
             }
           },
-          "400": {
-            "description": "The id path segment is not a valid integer"
-          },
-          "401": {
-            "description": "The webhook signature or token did not verify"
-          },
-          "403": {
-            "description": "Webhooks are not enabled for this repository"
-          },
-          "404": {
-            "description": "No repository exists with that ID"
-          },
           "500": {
             "description": "The deployment triggered by the webhook failed"
           }
         },
         "security": [],
-        "description": "Public endpoint authenticated by the repository's webhook secret via `X-Hub-Signature-256` (GitHub) or `X-Gitlab-Token` (GitLab); the raw request body is used for HMAC verification. A secret is required by default; set ALLOW_WEBHOOKS_WITHOUT_SECRET=true to accept a secret-less trigger on an isolated network.",
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "ref": {
-                    "type": "string"
-                  }
-                },
-                "description": "Fields auto-detected from the handler's destructuring of the request body - generic string type, no @openapi annotation for this body yet."
-              }
-            }
-          }
-        }
+        "description": "Public endpoint authenticated by the repository's webhook secret via `X-Hub-Signature-256` (GitHub) or `X-Gitlab-Token` (GitLab); the raw request body is used for HMAC verification. A secret is required by default; set ALLOW_WEBHOOKS_WITHOUT_SECRET=true to accept a secret-less trigger on an isolated network."
       }
     },
     "/api/hawser/connect": {
@@ -23824,6 +23891,9 @@
           "200": {
             "description": "Successful response"
           },
+          "400": {
+            "description": "Invalid git repository mode or a migration is already running"
+          },
           "403": {
             "description": "Permission denied (needs settings:edit)"
           },
@@ -23940,6 +24010,9 @@
                   "formatLogTimestamps": {
                     "type": "boolean"
                   },
+                  "gitRepositoryDesiredMode": {
+                    "type": "string"
+                  },
                   "gridFontSize": {
                     "type": "string"
                   },
@@ -24038,6 +24111,7 @@
                 "font": "string",
                 "fontSize": "string",
                 "formatLogTimestamps": true,
+                "gitRepositoryDesiredMode": "string",
                 "gridFontSize": "string",
                 "highlightUpdates": true,
                 "honorProxyLabels": true,

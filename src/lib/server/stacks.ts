@@ -27,6 +27,14 @@ import {
 	composeSiblingRelPath
 } from './compose-files';
 import {
+	findStackNameCollision,
+	getStackPathHintsFromContainers,
+	isPathUnderRoot,
+	moveStackFilePathCrossDevice,
+	resolveStackDirForLayout
+} from './stack-path-utils';
+import { redactEnvVarsForLog } from './log-utils';
+import {
 	applyFileDeletions,
 	hashDirFiles,
 	skipReasonMessage,
@@ -36,7 +44,6 @@ import {
 	type DeletionSkipReason
 } from './git-deletions';
 import { buildComposeOperationArgs, runsSeparateBuild, pullThenUp, pullBuildThenUp, stepOptions, deployPlan } from './compose-args';
-import { findStackNameCollision, getStackPathHintsFromContainers, isPathUnderRoot, moveStackFilePathCrossDevice, resolveStackDirForLayout } from './stack-path-utils';
 import { isValidStackName } from './stack-name-guard';
 import { readDirFilesAsMap, reportSkippedStackFiles, StackPayloadTooLargeError, type StackFilesPayload } from './stack-files-core';
 import { db, environments, eq } from './db/drizzle.js';
@@ -296,12 +303,6 @@ async function withStackLock<T>(stackName: string, fn: () => Promise<T>): Promis
 const COMPOSE_TIMEOUT_MS = parseInt(process.env.COMPOSE_TIMEOUT || '900') * 1000; // Default 15 min
 const COMPOSE_KILL_GRACE_MS = 5000; // 5 seconds grace period before SIGKILL
 
-// collectProcess lives in ./process-output-core (imported above) -- pure,
-// dependency-free, so it stays unit-testable without dragging in the DB
-// module chain. Re-exported here so existing call sites (loginToRegistries,
-// executeLocalCompose) are unaffected.
-export { collectProcess };
-
 /**
  * Stack-dir files for a LIFECYCLE op (start/stop/restart/down) on Hawser.
  *
@@ -330,21 +331,6 @@ async function lifecycleStackFiles(stackDir?: string, requireFiles = false): Pro
 /** Spread a StackFilesPayload into the ComposeCommandOptions fields. */
 function stackFileOpts(p: StackFilesPayload | undefined): { stackFiles?: Record<string, string>; stackFileModes?: Record<string, number>; stackFilesSkipped?: string[] } {
 	return { stackFiles: p?.files, stackFileModes: p?.modes, stackFilesSkipped: p?.skipped };
-}
-
-// =============================================================================
-// DEBUG UTILITIES
-// =============================================================================
-
-/**
- * Redact all env var values for safe logging. Only key names are preserved.
- */
-function redactEnvVarsForLog(vars: Record<string, string>): Record<string, string> {
-	const redacted: Record<string, string> = {};
-	for (const key of Object.keys(vars)) {
-		redacted[key] = '***';
-	}
-	return redacted;
 }
 
 // =============================================================================
@@ -384,13 +370,6 @@ export function getLocalStacksDir(): string {
 	if (_localStacksDir) return _localStacksDir;
 	_localStacksDir = resolve(process.env.STACKS_DIR!);
 	return _localStacksDir;
-}
-
-/**
- * @deprecated Prefer getDefaultStacksDir() for Hawser staging or getLocalStacksDir() for local managed paths.
- */
-export function getStacksDir(): string {
-	return getDefaultStacksDir();
 }
 
 export function isHawserConnection(env: { connectionType?: string | null } | null | undefined): boolean {
@@ -3234,7 +3213,7 @@ export async function computeStackDeletionPaths(
 	const gitStack = await getGitStackByName(stackName, envId);
 	if (gitStack) {
 		try {
-			const { getStackRepoPath } = await import('./git');
+			const { getStackRepoPath } = await import('./git-stack');
 			const repoPath = await getStackRepoPath(gitStack.id, gitStack.stackName, gitStack.environmentId);
 			if (repoPath && existsSync(repoPath)) gitDir = repoPath;
 		} catch { /* best-effort: no git dir shown if we can't resolve it */ }

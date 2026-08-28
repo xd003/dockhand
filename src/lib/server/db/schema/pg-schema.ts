@@ -81,6 +81,25 @@ export const settings = pgTable('settings', {
 });
 
 // =============================================================================
+// =============================================================================
+// GIT STACK MIGRATION TABLE (per-stack, single-row state machine)
+// =============================================================================
+// Persists the per-stack migrate-to-centralized job (git-stack-migrate.ts).
+// Only one row is ever written; state drives a narrow 409 lock-out scoped to
+// the migrating stack ids / repos being provisioned (not the whole Git API).
+export const gitMigrationState = pgTable('git_migration_state', {
+	id: serial('id').primaryKey(),
+	state: text('state').notNull().default('idle'), // idle | draining | provisioning | cutting_over
+	jobId: text('job_id'),
+	stackIds: text('stack_ids'), // JSON array of migrating stack ids
+	snapshot: text('snapshot'), // JSON BackfillSnapshot scoped to this job
+	error: text('error'),
+	startedAt: timestamp('started_at', { mode: 'string' }),
+	finishedAt: timestamp('finished_at', { mode: 'string' }),
+	updatedAt: timestamp('updated_at', { mode: 'string' }).defaultNow()
+});
+
+// =============================================================================
 // EVENT TRACKING TABLES
 // =============================================================================
 
@@ -328,11 +347,12 @@ export const gitStacks = pgTable('git_stacks', {
 	composePath: text('compose_path').default('docker-compose.yml'), // Primary compose file path (denormalized from composePaths[0])
 	composePaths: text('compose_paths'), // JSON array of ordered compose file paths (repo-relative)
 	envFilePath: text('env_file_path'), // Path to .env file in repository (e.g., ".env", "config/.env.prod")
-	autoUpdate: boolean('auto_update').default(false),
+	autoUpdate: boolean('auto_update').default(false), // Deprecated: kept for downgrade compatibility (0010 is additive)
 	autoUpdateSchedule: text('auto_update_schedule').default('daily'),
 	autoUpdateCron: text('auto_update_cron').default('0 3 * * *'),
 	webhookEnabled: boolean('webhook_enabled').default(false),
 	webhookSecret: text('webhook_secret'),
+	engine: text('engine').notNull().default('stack'), // 'stack' | 'centralized' — per-stack engine selection
 	contextDir: text('context_dir'), // Working directory relative to repo root (null = compose file's directory)
 	buildOnDeploy: boolean('build_on_deploy').default(false),
 	noBuildCache: boolean('no_build_cache').default(false),

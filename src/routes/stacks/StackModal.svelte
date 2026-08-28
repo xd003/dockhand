@@ -1217,6 +1217,11 @@ import * as Tabs from '$lib/components/ui/tabs';
 	const displayName = $derived(mode === 'edit' ? stackName : (newStackName || 'New stack'));
 
 	const composePathsLocked = $derived(readonly || (mode === 'edit' && !needsFileLocation));
+	const isGitView = $derived(
+		readonly &&
+			(stackSource?.sourceType === 'git' ||
+				!!(gitInfo && (gitInfo.commit || gitInfo.url || gitInfo.branch)))
+	);
 	const activeComposeDisplayPath = $derived(activeComposePath || workingComposePaths[0] || workingComposePath || '');
 
 	function shortGitUrl(url: string): string {
@@ -2258,13 +2263,17 @@ import * as Tabs from '$lib/components/ui/tabs';
 				{/if}
 
 				<!-- File location needed banner -->
-				{#if mode === 'edit' && needsFileLocation && !readonly}
+				{#if mode === 'edit' && needsFileLocation}
 					<div class="px-4 py-3 border-b border-zinc-200 dark:border-zinc-700 bg-amber-50/50 dark:bg-amber-950/20">
 						<div class="flex items-start gap-3">
 							<AlertCircle class="w-4 h-4 shrink-0 text-amber-500 mt-0.5" />
 							<div class="flex-1 min-w-0">
 								<p class="text-sm text-zinc-600 dark:text-zinc-400 mb-2">
-									<span class="font-medium text-amber-800 dark:text-amber-300">Untracked stack</span> — this stack is running in Docker but Dockhand doesn't know where its compose file is stored on disk. Browse to locate the file to start editing and managing it.
+									{#if readonly}
+										<span class="font-medium text-amber-800 dark:text-amber-300">Untracked stack</span> — this stack is running in Docker but Dockhand doesn't know where its compose file is stored on disk. Close this view and use Edit to locate the file.
+									{:else}
+										<span class="font-medium text-amber-800 dark:text-amber-300">Untracked stack</span> — this stack is running in Docker but Dockhand doesn't know where its compose file is stored on disk. Browse to locate the file to start editing and managing it.
+									{/if}
 								</p>
 								{#if stackContainers.length > 0}
 									<div class="text-xs text-zinc-500 dark:text-zinc-400">
@@ -2405,11 +2414,19 @@ import * as Tabs from '$lib/components/ui/tabs';
 												</div>
 											{:else if readonly && needsFileLocation && !composeContent}
 												<div class="flex h-full flex-col items-center justify-center px-8 text-center">
-													<GitGraph class="mb-4 h-12 w-12 text-zinc-300 dark:text-zinc-600" />
-													<h3 class="mb-2 text-sm font-medium text-zinc-700 dark:text-zinc-300">Compose file not available</h3>
-													<p class="max-w-sm text-xs text-zinc-500 dark:text-zinc-400">
-														Deploy or sync this Git stack first so Dockhand has a local copy of its compose file.
-													</p>
+													{#if isGitView}
+														<GitGraph class="mb-4 h-12 w-12 text-zinc-300 dark:text-zinc-600" />
+														<h3 class="mb-2 text-sm font-medium text-zinc-700 dark:text-zinc-300">Compose file not available</h3>
+														<p class="max-w-sm text-xs text-zinc-500 dark:text-zinc-400">
+															Deploy or sync this Git stack first so Dockhand has a local copy of its compose file.
+														</p>
+													{:else}
+														<FolderOpen class="mb-4 h-12 w-12 text-zinc-300 dark:text-zinc-600" />
+														<h3 class="mb-2 text-sm font-medium text-zinc-700 dark:text-zinc-300">Compose file location unknown</h3>
+														<p class="max-w-sm text-xs text-zinc-500 dark:text-zinc-400">
+															Dockhand does not know where this stack's compose file is stored. Use Edit to browse and attach it.
+														</p>
+													{/if}
 												</div>
 											{:else if needsFileLocation && !composeContent}
 												<div class="flex h-full flex-col items-center justify-center px-8 text-center">
@@ -2625,7 +2642,13 @@ import * as Tabs from '$lib/components/ui/tabs';
 			<div class="flex min-w-0 items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
 				{#if readonly}
 					<Lock class="h-3.5 w-3.5 shrink-0" />
-					<span>All files are synced from Git and read-only. Edit the compose files in your repository and redeploy to apply changes.</span>
+					{#if isGitView}
+						<span>All files are synced from Git and read-only. Edit the compose files in your repository and redeploy to apply changes.</span>
+					{:else if needsFileLocation}
+						<span>Compose file location is unknown. Use Edit to browse and attach it.</span>
+					{:else}
+						<span>Viewing only. Use Edit to change the compose file and environment variables.</span>
+					{/if}
 				{:else if isDirty}
 					<span class="text-amber-600 dark:text-amber-500">Unsaved changes</span>
 				{:else}

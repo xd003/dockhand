@@ -22,6 +22,14 @@ import {
 	composeSiblingRelPath
 } from './compose-files';
 import {
+	findStackNameCollision,
+	getStackPathHintsFromContainers,
+	isPathUnderRoot,
+	moveStackFilePathCrossDevice,
+	resolveStackDirForLayout
+} from './stack-path-utils';
+import { redactEnvVarsForLog } from './log-utils';
+import {
 	applyFileDeletions,
 	hashDirFiles,
 	skipReasonMessage,
@@ -31,7 +39,6 @@ import {
 	type DeletionSkipReason
 } from './git-deletions';
 import { buildComposeOperationArgs, shouldRunSeparateBuildStep } from './compose-args';
-import { findStackNameCollision, getStackPathHintsFromContainers, isPathUnderRoot, moveStackFilePathCrossDevice, resolveStackDirForLayout } from './stack-path-utils';
 import { db, environments, eq } from './db/drizzle.js';
 import { isAllowedStackFilename } from './stack-filename';
 import { coolingDown as coolingDownRows } from '$lib/utils/pending-update-rows';
@@ -288,12 +295,6 @@ function isBinaryContent(bytes: Uint8Array): boolean {
 	}
 }
 
-// collectProcess lives in ./process-output-core (imported above) -- pure,
-// dependency-free, so it stays unit-testable without dragging in the DB
-// module chain. Re-exported here so existing call sites (loginToRegistries,
-// executeLocalCompose) are unaffected.
-export { collectProcess };
-
 /**
  * Read all files from a directory as a map of relative path -> content.
  * Used to send files to Hawser for remote deployments.
@@ -373,21 +374,6 @@ async function lifecycleStackFiles(stackDir?: string): Promise<Record<string, st
 }
 
 // =============================================================================
-// DEBUG UTILITIES
-// =============================================================================
-
-/**
- * Redact all env var values for safe logging. Only key names are preserved.
- */
-function redactEnvVarsForLog(vars: Record<string, string>): Record<string, string> {
-	const redacted: Record<string, string> = {};
-	for (const key of Object.keys(vars)) {
-		redacted[key] = '***';
-	}
-	return redacted;
-}
-
-// =============================================================================
 // UTILITIES
 // =============================================================================
 
@@ -424,13 +410,6 @@ export function getLocalStacksDir(): string {
 	if (_localStacksDir) return _localStacksDir;
 	_localStacksDir = resolve(process.env.STACKS_DIR!);
 	return _localStacksDir;
-}
-
-/**
- * @deprecated Prefer getDefaultStacksDir() for Hawser staging or getLocalStacksDir() for local managed paths.
- */
-export function getStacksDir(): string {
-	return getDefaultStacksDir();
 }
 
 export function isHawserConnection(env: { connectionType?: string | null } | null | undefined): boolean {
@@ -3116,7 +3095,7 @@ export async function computeStackDeletionPaths(
 	const gitStack = await getGitStackByName(stackName, envId);
 	if (gitStack) {
 		try {
-			const { getStackRepoPath } = await import('./git');
+			const { getStackRepoPath } = await import('./git-stack');
 			const repoPath = await getStackRepoPath(gitStack.id, gitStack.stackName, gitStack.environmentId);
 			if (repoPath && existsSync(repoPath)) gitDir = repoPath;
 		} catch { /* best-effort: no git dir shown if we can't resolve it */ }

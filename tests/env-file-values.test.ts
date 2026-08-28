@@ -141,9 +141,13 @@ describe('where values are resolved and where they are not', () => {
 	});
 
 	test('the deploy paths resolve', () => {
-		// Sync and deploy-with-progress pass no options, so they expand.
-		expect(git).toContain("parseEnvFileContent(envFileContent, gitStack.stackName)");
-		expect(git).toContain("parseEnvFileContent(envContent, gitStack.stackName)");
+		// Sync and deploy-with-progress pass no options, so they expand. Both engines
+		// read the env file on their own sync path.
+		const stackEngine = readFileSync(new URL('../src/lib/server/git-stack.ts', import.meta.url), 'utf8');
+		const centralizedEngine = readFileSync(new URL('../src/lib/server/git-centralized.ts', import.meta.url), 'utf8');
+		expect(stackEngine).toContain("parseEnvFileContent(envFileContent, gitStack.stackName)");
+		expect(stackEngine).toContain("parseEnvFileContent(envContent, gitStack.stackName)");
+		expect(centralizedEngine).toContain("parseEnvFileContent(envFileContent, gitStack.stackName)");
 	});
 });
 

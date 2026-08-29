@@ -20,7 +20,7 @@
 	import * as Dialog from '$lib/components/ui/dialog';
 	import * as Select from '$lib/components/ui/select';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
-	import { Trash2, Upload, RefreshCw, Play, Search, Layers, Server, ShieldCheck, ShieldAlert, Shield, ShieldQuestion, CheckSquare, Square, Tag, Check, XCircle, Icon, AlertTriangle, X, Images, Copy, Download, ChevronRight, ChevronDown, Loader2, ArrowUp, ArrowDown, ArrowUpDown, CircleDashed, CircleDot, Circle, Filter, FileJson, FileSpreadsheet, ShieldPlus } from 'lucide-svelte';
+	import { Trash2, Upload, RefreshCw, Play, Search, Layers, Server, ShieldCheck, ShieldAlert, Shield, ShieldQuestion, CheckSquare, Square, Tag, Check, XCircle, Icon, AlertTriangle, X, Images, Copy, Download, ChevronRight, ChevronDown, Loader2, ArrowUp, ArrowDown, ArrowUpDown, CircleDashed, CircleDot, Circle, Filter, FileJson, FileSpreadsheet, ShieldPlus, EllipsisVertical, Plus } from 'lucide-svelte';
 	import { broom, whale } from '@lucide/lab';
 	import { formatBytes } from '$lib/utils/format';
 	import * as Tooltip from '$lib/components/ui/tooltip';
@@ -41,6 +41,7 @@
 	import { readJobResponse } from '$lib/utils/sse-fetch';
 	import { EmptyState, NoEnvironment } from '$lib/components/ui/empty-state';
 	import TabbedPageHeader from '$lib/components/TabbedPageHeader.svelte';
+	import SelectionToolbar from '$lib/components/SelectionToolbar.svelte';
 	import MultiSelectFilter from '$lib/components/MultiSelectFilter.svelte';
 	import { DataGrid } from '$lib/components/data-grid';
 	import type { DataGridSortState } from '$lib/components/data-grid/types';
@@ -782,6 +783,14 @@
 		pendingTimeouts.push(setTimeout(() => { pruneUnusedStatus = 'idle'; }, 3000));
 	}
 
+	function requestPrune(allUnused: boolean) {
+		const label = allUnused ? 'all images not used by any container' : 'dangling images';
+		if (!$appSettings.confirmDestructive || window.confirm(`Prune ${label}?`)) {
+			if (allUnused) pruneUnusedImages();
+			else pruneImages();
+		}
+	}
+
 	async function removeImage(id: string, tagName: string) {
 		deleteError = null;
 		const imageSize = images.find(img => img.id === id)?.size;
@@ -950,7 +959,7 @@
 </script>
 
 <div class="flex-1 min-h-0 flex flex-col gap-3 overflow-hidden">
-	<div class="shrink-0 flex flex-wrap justify-between items-center gap-3 min-h-8">
+	<div class="flex min-h-8 min-w-0 shrink-0 flex-wrap items-center justify-between gap-2 md:gap-3">
 		<TabbedPageHeader
 			tabs={[
 				{
@@ -974,11 +983,40 @@
 		/>
 
 		{#if activeTab === 'images'}
-		<div class="flex flex-wrap items-center gap-2">
+		<!-- Mobile actions menu -->
+		<div class="flex items-center md:hidden">
+			<DropdownMenu.Root>
+				<DropdownMenu.Trigger>
+					{#snippet child({ props })}
+						<button {...props} type="button" class="flex size-11 shrink-0 items-center justify-center rounded-lg hover:bg-muted" aria-label="Image actions">
+							<EllipsisVertical class="size-5" />
+						</button>
+					{/snippet}
+				</DropdownMenu.Trigger>
+				<DropdownMenu.Content align="end" class="w-56 p-1">
+					<DropdownMenu.Item onclick={fetchImages} class="min-h-11">
+						<RefreshCw />
+						Refresh
+					</DropdownMenu.Item>
+					{#if $canAccess('images', 'remove')}
+						<DropdownMenu.Item onclick={() => requestPrune(false)} disabled={pruneStatus === 'pruning'} class="min-h-11">
+							<Icon iconNode={broom} />
+							Prune dangling
+						</DropdownMenu.Item>
+						<DropdownMenu.Item onclick={() => requestPrune(true)} disabled={pruneUnusedStatus === 'pruning'} variant="destructive" class="min-h-11">
+							<Icon iconNode={broom} />
+							Prune unused
+						</DropdownMenu.Item>
+					{/if}
+				</DropdownMenu.Content>
+			</DropdownMenu.Root>
+		</div>
+		<div class="hidden w-full sm:w-auto flex-wrap items-center gap-2 min-w-0 md:flex">
 			<div class="relative">
 				<Search class="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
 				<Input
 					type="text"
+					aria-label="Search images"
 					placeholder="Search images..."
 					bind:value={searchQuery}
 					onkeydown={(e) => e.key === 'Escape' && (searchQuery = '')}
@@ -1102,15 +1140,16 @@
 		{/if}
 
 		{#if activeTab === 'vulnerabilities'}
-		<div class="flex flex-wrap items-center gap-2 w-full">
-			<div class="relative">
+		<div class="flex w-full min-w-0 flex-wrap items-center gap-2">
+			<div class="relative w-full md:w-auto">
 				<Search class="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
 				<Input
 					type="text"
+					aria-label="Search vulnerabilities"
 					placeholder="Search CVE, package, image, container, stack..."
 					bind:value={vulnSearch}
 					onkeydown={(e) => e.key === 'Escape' && (vulnSearch = '')}
-					class="pl-8 h-8 w-80 text-sm"
+					class="h-11 w-full pl-8 text-sm md:h-8 md:w-80"
 				/>
 			</div>
 			<MultiSelectFilter
@@ -1118,7 +1157,7 @@
 				options={vulnSeverityOptions}
 				placeholder="All severities"
 				pluralLabel="severities"
-				width="w-40"
+				width="w-full data-[size=sm]:h-11 md:w-40 md:data-[size=sm]:h-8"
 				defaultIcon={ShieldCheck}
 			/>
 			<MultiSelectFilter
@@ -1126,27 +1165,27 @@
 				options={vulnImageOptions}
 				placeholder="All images"
 				pluralLabel="images"
-				width="w-48"
+				width="w-full data-[size=sm]:h-11 md:w-48 md:data-[size=sm]:h-8"
 			/>
 			<MultiSelectFilter
 				bind:value={vulnContainerFilter}
 				options={vulnContainerOptions}
 				placeholder="All containers"
 				pluralLabel="containers"
-				width="w-44"
+				width="w-full data-[size=sm]:h-11 md:w-44 md:data-[size=sm]:h-8"
 			/>
 			<MultiSelectFilter
 				bind:value={vulnStackFilter}
 				options={vulnStackOptions}
 				placeholder="All stacks"
 				pluralLabel="stacks"
-				width="w-40"
+				width="w-full data-[size=sm]:h-11 md:w-40 md:data-[size=sm]:h-8"
 			/>
-			<div class="flex items-center gap-2 ml-auto">
+			<div class="grid w-full grid-cols-2 items-center gap-2 md:ml-auto md:flex md:w-auto">
 				<DropdownMenu.Root>
 					<DropdownMenu.Trigger>
 						{#snippet child({ props })}
-							<Button size="sm" variant="outline" title="Export findings" {...props}>
+							<Button size="sm" variant="outline" title="Export findings" class="h-11 w-full md:h-8 md:w-auto" {...props}>
 								<Download class="w-3.5 h-3.5" />
 								Export
 							</Button>
@@ -1167,12 +1206,12 @@
 						</DropdownMenu.Item>
 					</DropdownMenu.Content>
 				</DropdownMenu.Root>
-				<Button size="sm" variant="outline" onclick={refreshVulnerabilities} disabled={vulnList.loading}>
+				<Button size="sm" variant="outline" class="h-11 w-full md:h-8 md:w-auto" onclick={refreshVulnerabilities} disabled={vulnList.loading}>
 					<RefreshCw class="w-3.5 h-3.5 {vulnList.loading ? 'animate-spin' : ''}" />
 					Refresh
 				</Button>
 				{#if scannerEnabled}
-					<Button size="sm" variant="secondary" onclick={() => showVulnScanModal = true}>
+					<Button size="sm" variant="secondary" class="col-span-2 h-11 w-full md:h-8 md:w-auto" onclick={() => showVulnScanModal = true}>
 						<ShieldCheck class="w-3.5 h-3.5" />
 						Scan all images
 					</Button>
@@ -1186,19 +1225,11 @@
 		<Tabs.Content value="images" class="flex-1 min-h-0 flex flex-col gap-2">
 		{#if activeTab === 'images'}
 
-	<!-- Selection bar - only occupies space when something is selected -->
-	{#if selectedImages.size > 0}
-	<div class="shrink-0">
+	<!-- Selection bar - desktop only; mobile cards have no checkboxes -->
+	<div class="hidden h-4 shrink-0 flex-wrap items-center gap-1 md:flex">
 		{#if selectedImages.size > 0}
-			<div class="flex items-center gap-1 text-xs text-muted-foreground h-full">
-			<span>{selectedInFilter.length} selected</span>
-			<button
-				type="button"
-				class="inline-flex items-center gap-1 px-1.5 py-0 rounded border border-border hover:border-foreground/30 hover:shadow transition-all"
-				onclick={selectNone}
-			>
-				Clear
-			</button>
+			<div class="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
+			<SelectionToolbar count={selectedInFilter.length} onClear={selectNone} />
 			{#if $canAccess('images', 'remove')}
 			<button
 				type="button"
@@ -1213,7 +1244,6 @@
 			</div>
 		{/if}
 	</div>
-	{/if}
 
 	{#if !loading && ($environments.length === 0 || !$currentEnvironment)}
 		<NoEnvironment />
@@ -1224,6 +1254,125 @@
 			description="Pull an image from a registry to get started"
 		/>
 	{:else}
+		<!-- Mobile card list: sticky search/filter, tap to expand -->
+		<div class="min-h-0 min-w-0 flex-1 overflow-y-auto md:hidden">
+			<div class="sticky top-0 z-20 flex w-full min-w-0 gap-2 bg-background pb-3">
+				<div class="relative min-w-0 flex-1 basis-0">
+					<Search class="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+					<Input
+						type="search"
+						aria-label="Search images"
+						placeholder="Search images..."
+						bind:value={searchQuery}
+						onkeydown={(e) => e.key === 'Escape' && (searchQuery = '')}
+						class="h-11 rounded-lg pl-10"
+					/>
+				</div>
+				<div class="min-w-0 flex-1 basis-0">
+					<Select.Root type="single" bind:value={usageFilter}>
+						<Select.Trigger size="sm" class="w-full text-sm data-[size=sm]:h-11">
+							{#if usageFilter === 'all'}
+								<Filter class="size-4 text-muted-foreground" />
+								<span class="truncate text-muted-foreground">All images</span>
+							{:else if usageFilter === 'in-use'}
+								<CircleDot class="size-4 text-emerald-500" />
+								<span class="truncate">In use</span>
+							{:else if usageFilter === 'some-unused'}
+								<CircleDot class="size-4 text-amber-500" />
+								<span class="truncate">Some unused</span>
+							{:else}
+								<Circle class="size-4 text-muted-foreground" />
+								<span class="truncate">Unused</span>
+							{/if}
+						</Select.Trigger>
+						<Select.Content>
+							<Select.Item value="all"><Filter class="w-4 h-4 mr-2 text-muted-foreground" />All</Select.Item>
+							<Select.Item value="in-use"><CircleDot class="w-4 h-4 mr-2 text-emerald-500" />In use</Select.Item>
+							<Select.Item value="some-unused"><CircleDot class="w-4 h-4 mr-2 text-amber-500" />Some unused</Select.Item>
+							<Select.Item value="unused"><Circle class="w-4 h-4 mr-2 text-muted-foreground" />Unused</Select.Item>
+						</Select.Content>
+					</Select.Root>
+				</div>
+			</div>
+
+			<div class="space-y-2 pb-24">
+				{#each sortedGroups as group (group.repoName)}
+					<div class="overflow-hidden rounded-xl border bg-card/60 shadow-sm">
+						<button
+							type="button"
+							class="flex min-h-11 w-full touch-pan-y items-center gap-2 px-3 py-2.5 text-left"
+							onclick={() => toggleRepo(group.repoName)}
+							aria-expanded={expandedRepos.has(group.repoName)}
+						>
+							<span class="min-w-0 flex-1 truncate text-sm font-semibold" title={group.repoName}>{group.repoName === '<none>' ? '<untagged>' : group.repoName}</span>
+							{#if group.tags.length === 1}
+								<span class="shrink-0 rounded-full bg-muted px-2 py-0.5 font-mono text-xs text-muted-foreground">{group.tags[0].tag}</span>
+							{:else}
+								<span class="shrink-0 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">{group.tags.length} tags</span>
+							{/if}
+							{#if group.containers === 0}
+								<span class="shrink-0 rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-600 dark:text-amber-400">Unused</span>
+							{/if}
+							<span class="hidden shrink-0 font-mono text-xs text-muted-foreground sm:inline">{formatSize(group.totalSize)}</span>
+							<ChevronDown class="size-4 shrink-0 text-muted-foreground transition-transform {expandedRepos.has(group.repoName) ? 'rotate-180' : ''}" />
+						</button>
+
+						{#if expandedRepos.has(group.repoName)}
+							<div class="space-y-3 border-t bg-muted/20 p-3">
+								{#each group.tags as tag (tag.fullRef)}
+									<div class="space-y-2 rounded-lg bg-background/80 p-2.5">
+										<div class="flex items-center justify-between gap-2">
+											<span class="min-w-0 truncate font-mono text-xs font-semibold {tag.tag === 'latest' ? 'text-blue-600 dark:text-blue-400' : ''}">{tag.tag === '<none>' ? '<untagged>' : tag.tag}</span>
+											<span class="shrink-0 font-mono text-xs text-muted-foreground">{formatSize(tag.size)}</span>
+										</div>
+										<div class="flex items-center justify-between text-[10px] text-muted-foreground">
+											<span>{formatImageDate(tag.created)}</span>
+											<span>{tag.containers > 0 ? `${tag.containers} container${tag.containers === 1 ? '' : 's'}` : 'Unused'}</span>
+										</div>
+										<div class="grid grid-cols-2 gap-2">
+											{#if $canAccess('containers', 'create')}
+												<button type="button" onclick={() => openRunModal(tag.fullRef)} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><Play class="size-4" />Run</button>
+											{/if}
+											{#if $canAccess('images', 'inspect')}
+												<button type="button" onclick={() => openHistoryModal(tag.imageId, tag.fullRef)} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><Layers class="size-4" />Layers</button>
+												<button type="button" onclick={() => exportImage(tag.fullRef, tag.fullRef)} disabled={exportingId === tag.fullRef} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted disabled:opacity-50"><Download class="size-4" />Export</button>
+											{/if}
+											{#if scannerEnabled && $canAccess('images', 'inspect')}
+												<button type="button" onclick={() => openScanModal(tag.fullRef)} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><ShieldCheck class="size-4" />Scan</button>
+											{/if}
+											{#if $canAccess('images', 'push')}
+												<button type="button" onclick={() => openPushModal(tag.imageId, tag.fullRef)} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><Upload class="size-4" />Push</button>
+											{/if}
+											{#if $canAccess('images', 'build')}
+												<button type="button" onclick={() => openTagModal(tag.imageId, tag.fullRef)} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><Tag class="size-4" />Tag</button>
+											{/if}
+											{#if $canAccess('images', 'remove') && tag.containers === 0}
+												<ConfirmPopover
+													open={confirmDeleteId === tag.fullRef}
+													action="Delete"
+													itemType="image"
+													itemName={tag.fullRef}
+													title="Remove"
+													unstyled
+													onConfirm={() => removeImage(tag.imageId, tag.fullRef)}
+													onOpenChange={(open) => confirmDeleteId = open ? tag.fullRef : null}
+												>
+													{#snippet children({ open })}
+														<span class="flex min-h-11 w-full items-center justify-center gap-2 rounded-lg border border-red-500/50 px-2 text-xs font-medium text-red-400"><Trash2 class="size-4" />Remove</span>
+													{/snippet}
+												</ConfirmPopover>
+											{/if}
+										</div>
+									</div>
+								{/each}
+							</div>
+						{/if}
+					</div>
+				{/each}
+			</div>
+		</div>
+
+		<div class="hidden min-h-0 flex-1 md:flex md:flex-col">
 		<DataGrid
 			data={sortedGroups}
 			keyField="repoName"
@@ -1543,6 +1692,7 @@
 				</div>
 			{/snippet}
 		</DataGrid>
+		</div>
 	{/if}
 	{/if}
 	</Tabs.Content>
@@ -1567,6 +1717,40 @@
 	</Tabs.Content>
 	</Tabs.Root>
 </div>
+
+{#if activeTab === 'images' && $currentEnvironment && ($canAccess('images', 'pull') || $canAccess('images', 'load'))}
+	<div class="fixed bottom-[max(1rem,env(safe-area-inset-bottom))] right-4 z-40 md:hidden">
+		<DropdownMenu.Root>
+			<DropdownMenu.Trigger>
+				{#snippet child({ props })}
+					<button
+						{...props}
+						type="button"
+						class="flex size-14 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg transition-transform hover:scale-105 active:scale-95"
+						aria-label="Add image"
+						title="Pull or load an image"
+					>
+						<Plus class="size-6" />
+					</button>
+				{/snippet}
+			</DropdownMenu.Trigger>
+			<DropdownMenu.Content align="end" side="top" sideOffset={8} class="w-48 p-1">
+				{#if $canAccess('images', 'pull')}
+					<DropdownMenu.Item onclick={() => showPullModal = true} class="min-h-11">
+						<Download />
+						Pull image
+					</DropdownMenu.Item>
+				{/if}
+				{#if $canAccess('images', 'load')}
+					<DropdownMenu.Item onclick={() => loadFileInput?.click()} disabled={loadingImage} class="min-h-11">
+						<Upload />
+						Load from tar
+					</DropdownMenu.Item>
+				{/if}
+			</DropdownMenu.Content>
+		</DropdownMenu.Root>
+	</div>
+{/if}
 
 <!-- Vulnerability Scan-all Modal -->
 <VulnerabilityScanModal bind:open={showVulnScanModal} {envId} envName={$currentEnvironment?.name} onComplete={refreshVulnerabilities} />

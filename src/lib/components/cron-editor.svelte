@@ -230,10 +230,10 @@
 	{/if}
 </div>
 {:else}
-<div class="flex items-center gap-2">
+<div class="flex flex-wrap items-center gap-2 min-w-0">
 	<!-- Schedule Type Selector -->
 	<Select.Root type="single" value={scheduleType} onValueChange={handleScheduleTypeChange} {disabled}>
-		<Select.Trigger class="w-[120px] h-9 flex-shrink-0">
+		<Select.Trigger class="w-full sm:w-[120px] h-9 flex-shrink-0">
 			<div class="flex items-center gap-2">
 				{#if scheduleType === 'daily'}
 					<Calendar class="w-4 h-4" />
@@ -315,7 +315,7 @@
 			value={value}
 			oninput={handleCustomCronInput}
 			placeholder="0 3 * * *"
-			class="h-9 font-mono flex-1 min-w-[200px] {isInvalid ? 'border-destructive focus-visible:ring-destructive' : ''}"
+				class="h-9 font-mono w-full sm:flex-1 sm:min-w-[200px] {isInvalid ? 'border-destructive focus-visible:ring-destructive' : ''}"
 			{disabled}
 		/>
 	{/if}

@@ -164,13 +164,13 @@
 
 <div class="space-y-4">
 	<!-- Light Theme -->
-	<div class="flex items-center justify-between">
+	<div class="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-between">
 		<div class="flex items-center gap-2">
 			<Sun class="w-4 h-4 text-muted-foreground" />
 			<Label>Light theme</Label>
 		</div>
 		<Select.Root type="single" value={selectedLightTheme} onValueChange={handleLightThemeChange}>
-			<Select.Trigger class="w-56">
+			<Select.Trigger class="w-full sm:w-56">
 				<div class="flex items-center gap-2">
 					{#each lightThemes as theme}
 						{#if theme.id === selectedLightTheme}
@@ -200,13 +200,13 @@
 	</div>
 
 	<!-- Dark Theme -->
-	<div class="flex items-center justify-between">
+	<div class="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-between">
 		<div class="flex items-center gap-2">
 			<Moon class="w-4 h-4 text-muted-foreground" />
 			<Label>Dark theme</Label>
 		</div>
 		<Select.Root type="single" value={selectedDarkTheme} onValueChange={handleDarkThemeChange}>
-			<Select.Trigger class="w-56">
+			<Select.Trigger class="w-full sm:w-56">
 				<div class="flex items-center gap-2">
 					{#each darkThemes as theme}
 						{#if theme.id === selectedDarkTheme}
@@ -236,13 +236,13 @@
 	</div>
 
 	<!-- Font -->
-	<div class="flex items-center justify-between">
+	<div class="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-between">
 		<div class="flex items-center gap-2">
 			<Type class="w-4 h-4 text-muted-foreground" />
 			<Label>Font</Label>
 		</div>
 		<Select.Root type="single" value={selectedFont} onValueChange={handleFontChange}>
-			<Select.Trigger class="w-56">
+			<Select.Trigger class="w-full sm:w-56">
 				{#each fonts as font}
 					{#if font.id === selectedFont}
 						<span>{font.name}</span>
@@ -260,13 +260,13 @@
 	</div>
 
 	<!-- Font Size -->
-	<div class="flex items-center justify-between">
+	<div class="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-between">
 		<div class="flex items-center gap-2">
 			<AArrowUp class="w-4 h-4 text-muted-foreground" />
 			<Label>Font size</Label>
 		</div>
 		<Select.Root type="single" value={selectedFontSize} onValueChange={handleFontSizeChange}>
-			<Select.Trigger class="w-56">
+			<Select.Trigger class="w-full sm:w-56">
 				{#each fontSizes as size}
 					{#if size.id === selectedFontSize}
 						<span>{size.name}</span>
@@ -284,13 +284,13 @@
 	</div>
 
 	<!-- Grid Font Size -->
-	<div class="flex items-center justify-between">
+	<div class="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-between">
 		<div class="flex items-center gap-2">
 			<Table class="w-4 h-4 text-muted-foreground" />
 			<Label>Grid font size</Label>
 		</div>
 		<Select.Root type="single" value={selectedGridFontSize} onValueChange={handleGridFontSizeChange}>
-			<Select.Trigger class="w-56">
+			<Select.Trigger class="w-full sm:w-56">
 				{#each fontSizes as size}
 					{#if size.id === selectedGridFontSize}
 						<span>{size.name}</span>
@@ -308,13 +308,13 @@
 	</div>
 
 	<!-- Grid Buttons Size (#1072) -->
-	<div class="flex items-center justify-between">
+	<div class="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-between">
 		<div class="flex items-center gap-2">
 			<MousePointerClick class="w-4 h-4 text-muted-foreground" />
 			<Label>Grid buttons</Label>
 		</div>
 		<Select.Root type="single" value={selectedActionIconSize} onValueChange={handleActionIconSizeChange}>
-			<Select.Trigger class="w-56">
+			<Select.Trigger class="w-full sm:w-56">
 				{#each actionIconSizes as size}
 					{#if size.id === selectedActionIconSize}
 						<span>{size.name}</span>
@@ -332,13 +332,13 @@
 	</div>
 
 	<!-- Terminal Font -->
-	<div class="flex items-center justify-between">
+	<div class="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-between">
 		<div class="flex items-center gap-2">
 			<Terminal class="w-4 h-4 text-muted-foreground" />
 			<Label>Terminal font</Label>
 		</div>
 		<Select.Root type="single" value={selectedTerminalFont} onValueChange={handleTerminalFontChange}>
-			<Select.Trigger class="w-56">
+			<Select.Trigger class="w-full sm:w-56">
 				{#each monospaceFonts as font}
 					{#if font.id === selectedTerminalFont}
 						<span style="font-family: {font.family}">{font.name}</span>
@@ -356,13 +356,13 @@
 	</div>
 
 	<!-- Editor Font -->
-	<div class="flex items-center justify-between">
+	<div class="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-between">
 		<div class="flex items-center gap-2">
 			<CodeXml class="w-4 h-4 text-muted-foreground" />
 			<Label>Editor font</Label>
 		</div>
 		<Select.Root type="single" value={selectedEditorFont} onValueChange={handleEditorFontChange}>
-			<Select.Trigger class="w-56">
+			<Select.Trigger class="w-full sm:w-56">
 				{#each monospaceFonts as font}
 					{#if font.id === selectedEditorFont}
 						<span style="font-family: {font.family}">{font.name}</span>

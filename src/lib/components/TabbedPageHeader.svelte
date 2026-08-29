@@ -37,23 +37,23 @@
 
 	const headerTextClass = $derived.by(() => {
 		switch (fontSize) {
-			case 'small': return 'text-lg';
-			case 'normal': return 'text-xl';
-			case 'medium': return 'text-2xl';
-			case 'large': return 'text-2xl';
-			case 'xlarge': return 'text-3xl';
-			default: return 'text-xl';
+			case 'small': return 'text-sm md:text-lg';
+			case 'normal': return 'text-sm md:text-xl';
+			case 'medium': return 'text-sm md:text-2xl';
+			case 'large': return 'text-sm md:text-2xl';
+			case 'xlarge': return 'text-sm md:text-3xl';
+			default: return 'text-sm md:text-xl';
 		}
 	});
 
 	const headerIconClass = $derived.by(() => {
 		switch (fontSize) {
-			case 'small': return 'w-4 h-4';
-			case 'normal': return 'w-5 h-5';
-			case 'medium': return 'w-6 h-6';
-			case 'large': return 'w-6 h-6';
-			case 'xlarge': return 'w-7 h-7';
-			default: return 'w-5 h-5';
+			case 'small': return 'size-4';
+			case 'normal': return 'size-4 md:w-5 md:h-5';
+			case 'medium': return 'size-4 md:w-6 md:h-6';
+			case 'large': return 'size-4 md:w-6 md:h-6';
+			case 'xlarge': return 'size-4 md:w-7 md:h-7';
+			default: return 'size-4 md:w-5 md:h-5';
 		}
 	});
 
@@ -72,8 +72,8 @@
 <!-- A header that IS the switcher: all tabs live in one left-aligned segmented
      control, the active segment filled and scaled to page-title size. Replaces
      the plain PageHeader on pages that have sub-views. -->
-<div class="flex items-center gap-3 {className}">
-	<div class="inline-flex items-center gap-1 rounded-lg bg-muted/60 p-1">
+<div class="flex min-w-0 flex-1 items-center gap-3 md:flex-none {className}">
+	<div class="flex w-full max-w-full flex-nowrap items-center gap-1 rounded-lg bg-muted/60 p-1 md:w-auto md:flex-wrap">
 		{#each tabs as tab (tab.id)}
 			{@const TabIcon = tab.icon}
 			{@const isActive = tab.id === active?.id}
@@ -81,14 +81,14 @@
 				type="button"
 				aria-pressed={isActive}
 				onclick={() => onTabChange(tab.id)}
-				class="flex items-center gap-2 rounded-md font-bold leading-none transition-colors {headerTextClass} px-3 py-1.5 {isActive
+				class="flex min-w-0 flex-1 shrink-0 items-center justify-center gap-1 rounded-md px-2 py-2 font-bold leading-none transition-colors md:flex-none md:gap-2 md:px-3 {headerTextClass} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring {isActive
 					? 'bg-background text-foreground shadow-sm'
 					: 'text-muted-foreground hover:text-foreground hover:bg-background/40'}"
 			>
 				<TabIcon class={headerIconClass} />
 				<span>{tab.label}</span>
 				{#if countDisplay(tab)}
-					<Badge variant="secondary" class="text-xs tabular-nums min-w-8 justify-center">
+					<Badge variant="secondary" class="min-w-6 justify-center px-1.5 text-2xs tabular-nums md:min-w-8 md:text-xs">
 						{countDisplay(tab)}
 					</Badge>
 				{/if}

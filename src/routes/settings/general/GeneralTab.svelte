@@ -350,7 +350,7 @@ services:
 	});
 </script>
 
-<div class="flex-1 min-h-0 overflow-y-auto">
+	<div class="flex-1 min-h-0">
 	<div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
 		<!-- Left column -->
 		<div class="space-y-4">
@@ -577,7 +577,7 @@ services:
 										}}
 										disabled={!$canAccess('settings', 'edit')}
 									>
-										<Select.Trigger class="w-[180px]">
+										<Select.Trigger class="w-full sm:w-[180px]">
 											<Calendar class="w-4 h-4 mr-2" />
 											<span>{dateFormat}</span>
 										</Select.Trigger>
@@ -643,7 +643,7 @@ services:
 								appSettings.setDefaultTimezone(value);
 								toast.success(`Default timezone set to ${value}`);
 							}}
-							class="w-[320px]"
+											class="w-full sm:w-[320px]"
 						/>
 						<p class="text-xs text-muted-foreground">Default timezone for new environments. Used for scheduled tasks like auto-updates.</p>
 					</div>
@@ -693,7 +693,7 @@ services:
 									onValueChange={handleLogMaxLinesChange}
 									disabled={!$canAccess('settings', 'edit')}
 								>
-									<Select.Trigger id="log-max-lines" class="w-48">
+									<Select.Trigger id="log-max-lines" class="w-full sm:w-48">
 										{logMaxLines.toLocaleString()} lines
 									</Select.Trigger>
 									<Select.Content>
@@ -718,7 +718,7 @@ services:
 										}}
 										disabled={!$canAccess('settings', 'edit')}
 									>
-										<Select.Trigger class="w-[180px]">
+										<Select.Trigger class="w-full sm:w-[180px]">
 											<FileText class="w-4 h-4 mr-2" />
 											<span>{downloadFormatLabel[downloadFormat]}</span>
 										</Select.Trigger>

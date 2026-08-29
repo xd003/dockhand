@@ -565,11 +565,17 @@
 			// The native title shows the actual finding(s) on hover (click for full details).
 			el.title = this.tooltip;
 			el.setAttribute('role', 'button');
+			el.setAttribute('tabindex', '0');
+			el.setAttribute('aria-label', this.tooltip);
 			el.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round">${LINT_ICON_SVG[this.severity]}</svg>`;
-			el.addEventListener('mousedown', (e) => {
+			const activate = (e: Event) => {
 				e.preventDefault();
 				e.stopPropagation();
 				onLintClickRef?.(this.line);
+			};
+			el.addEventListener('mousedown', activate);
+			el.addEventListener('keydown', (e) => {
+				if (e instanceof KeyboardEvent && (e.key === 'Enter' || e.key === ' ')) activate(e);
 			});
 			return el;
 		}

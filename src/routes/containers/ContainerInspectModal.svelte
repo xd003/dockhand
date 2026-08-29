@@ -5,7 +5,7 @@
 	import * as Tabs from '$lib/components/ui/tabs';
 	import { Button } from '$lib/components/ui/button';
 	import { Badge } from '$lib/components/ui/badge';
-	import { Loader2, Box, Info, Layers, Cpu, MemoryStick, HardDrive, Network, Shield, Settings2, Code, Copy, Check, XCircle, Activity, Wifi, Pencil, RefreshCw, X, Folder, FolderOpen, Moon, Tags, ExternalLink, Gpu, Globe, Link, Unlink, Play, Square as SquareIcon, RotateCw, Trash2 } from 'lucide-svelte';
+	import { Loader2, Box, Info, Layers, Cpu, MemoryStick, HardDrive, Network, Shield, Settings2, Code, Copy, Check, XCircle, Activity, Wifi, Pencil, RefreshCw, X, Folder, FolderOpen, Moon, Tags, ExternalLink, Gpu, Globe, Link, Unlink, Play, Square as SquareIcon, RotateCw, Trash2, Rows3, Terminal, Image as ImageIcon } from 'lucide-svelte';
 	import ConfirmPopover from '$lib/components/ConfirmPopover.svelte';
 	import ContainerIcon from '$lib/components/ContainerIcon.svelte';
 	import * as Select from '$lib/components/ui/select';
@@ -127,6 +127,23 @@
 	// Active tab state for layers visibility
 	let activeTab = $state('overview');
 
+	// Mobile tab-bar scroll fades (tabs overflow horizontally on small screens)
+	let tabsListEl = $state<HTMLDivElement | null>(null);
+	let tabFades = $state({ left: false, right: false });
+	function updateTabFades() {
+		const el = tabsListEl;
+		if (!el) return;
+		tabFades.left = el.scrollLeft > 4;
+		tabFades.right = el.scrollLeft + el.clientWidth < el.scrollWidth - 4;
+	}
+	$effect(() => {
+		// Recompute fades when tabs render/resize (tabsListEl is reactive)
+		updateTabFades();
+		const onResize = () => updateTabFades();
+		window.addEventListener('resize', onResize);
+		return () => window.removeEventListener('resize', onResize);
+	});
+
 	// Logs panel state
 	let showLogs = $state(false);
 
@@ -139,6 +156,23 @@
 	let copyLabelFailed = $state(false);
 	let labelFilter = $state('');
 	let copiedAllLabels = $state(false);
+
+	// Copy state for the code blocks (ID / image / command)
+	let copiedField = $state<string | null>(null);
+
+	async function copyField(field: string, value: string) {
+		const ok = await copyToClipboard(value);
+		if (ok) {
+			copiedField = field;
+			setTimeout(() => (copiedField = null), 2000);
+		}
+	}
+
+	// Mobile action tiles: equal width, icon over label, 44px target
+	const actionTile = 'max-sm:flex-1 max-sm:min-h-11 max-sm:flex-col max-sm:gap-1 max-sm:rounded-xl max-sm:border max-sm:border-border max-sm:bg-card max-sm:opacity-100';
+	const actionTilePrimary = 'max-sm:bg-emerald-500/15 max-sm:border-emerald-500/30 max-sm:text-emerald-400';
+	const actionTileDanger = 'max-sm:bg-red-500/10 max-sm:border-red-500/30';
+	const actionLabel = 'hidden max-sm:inline text-xs font-medium leading-none';
 
 	async function copyLabel(key: string, value: string) {
 		const ok = await copyToClipboard(`${key}=${value}`);
@@ -638,12 +672,30 @@
 	const jsonLines = $derived(formattedJson.split('\n'));
 </script>
 
+{#snippet codeBlock(field: string, value: string)}
+	<div class="flex items-center justify-between gap-2 bg-muted/60 max-sm:bg-black/25 rounded-lg px-3 py-1.5 max-sm:py-2">
+		<code class="text-xs font-mono break-all min-w-0">{value}</code>
+		<button
+			type="button"
+			onclick={() => copyField(field, value)}
+			title={copiedField === field ? 'Copied!' : 'Copy'}
+			class="shrink-0 size-8 max-sm:size-11 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/70 cursor-pointer"
+		>
+			{#if copiedField === field}
+				<Check class="w-4 h-4 text-green-500" />
+			{:else}
+				<Copy class="w-4 h-4" />
+			{/if}
+		</button>
+	</div>
+{/snippet}
+
 <Dialog.Root bind:open>
-	<Dialog.Content class="max-w-6xl w-[calc(100%-2rem)] h-[calc(100vh-2rem)] flex flex-col">
-		<Dialog.Header class="shrink-0">
-			<Dialog.Title class="flex items-center gap-2">
+	<Dialog.Content class="max-w-6xl w-[calc(100%-1rem)] h-[calc(100dvh-1rem)] sm:h-[calc(100dvh-2rem)] flex flex-col max-sm:rounded-2xl">
+		<Dialog.Header class="shrink-0 max-sm:pr-12">
+			<Dialog.Title class="flex flex-wrap items-center gap-x-2 gap-y-1">
 				<ContainerIcon image={containerData?.Config?.Image ?? ''} name={displayName} class="w-5 h-5" fallbackIcon={Box} showFallbackWhenOff />
-				Container details:
+				<span class="max-sm:hidden">Container details:</span>
 				{#if isEditing}
 					<input
 						type="text"
@@ -661,7 +713,7 @@
 						onclick={saveRename}
 						title="Save"
 						disabled={renaming}
-						class="p-1 rounded hover:bg-muted transition-colors"
+						class="p-1 max-sm:p-2.5 rounded hover:bg-muted transition-colors"
 					>
 						{#if renaming}
 							<RefreshCw class="w-3.5 h-3.5 text-muted-foreground animate-spin" />
@@ -674,17 +726,17 @@
 						onclick={cancelEditing}
 						title="Cancel"
 						disabled={renaming}
-						class="p-1 rounded hover:bg-muted transition-colors"
+						class="p-1 max-sm:p-2.5 rounded hover:bg-muted transition-colors"
 					>
 						<X class="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
 					</button>
 				{:else}
-					<span class="font-semibold">{displayName || containerId.slice(0, 12)}</span>
+					<span class="font-semibold max-sm:break-all">{displayName || containerId.slice(0, 12)}</span>
 					<button
 						type="button"
 						onclick={startEditing}
 						title="Rename container"
-						class="p-0.5 rounded hover:bg-muted transition-colors ml-0.5"
+						class="p-0.5 max-sm:p-2.5 rounded hover:bg-muted transition-colors ml-0.5"
 					>
 						<Pencil class="w-3 h-3 text-muted-foreground hover:text-foreground" />
 					</button>
@@ -722,7 +774,7 @@
 					</span>
 				{/if}
 				{#if containerData && !loading}
-					<div class="ml-auto mr-6 flex items-center gap-1">
+					<div class="ml-auto mr-6 flex items-center gap-1 max-sm:ml-0 max-sm:mr-0 max-sm:w-full max-sm:basis-full max-sm:grid max-sm:grid-flow-col max-sm:auto-cols-fr max-sm:gap-2">
 						<!-- Lifecycle actions (#461). Mirrors the per-row action set on the containers page;
 						     non-destructive actions refresh the inspect data in place, Delete closes the modal. -->
 						{#if containerData.State?.Running}
@@ -735,9 +787,11 @@
 									title="Stop"
 									onConfirm={doStop}
 									onOpenChange={(o) => confirmStopOpen = o}
+									class={actionTile}
 								>
 									{#snippet children({ open })}
-										<SquareIcon class="w-4 h-4 {open ? 'text-destructive' : 'text-muted-foreground hover:text-destructive'} {stopping ? 'animate-pulse text-destructive' : ''}" />
+										<SquareIcon class="w-4 h-4 {open ? 'text-destructive' : 'text-muted-foreground hover:text-destructive'} {stopping ? 'animate-pulse text-destructive' : ''} max-sm:text-red-400" />
+										<span class={actionLabel}>Stop</span>
 									{/snippet}
 								</ConfirmPopover>
 							{/if}
@@ -751,9 +805,11 @@
 									variant="secondary"
 									onConfirm={doRestart}
 									onOpenChange={(o) => confirmRestartOpen = o}
+									class={actionTile}
 								>
 									{#snippet children({ open })}
 										<RotateCw class="w-4 h-4 {open ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'} {restarting ? 'animate-spin text-foreground' : ''}" />
+										<span class={actionLabel}>Restart</span>
 									{/snippet}
 								</ConfirmPopover>
 							{/if}
@@ -764,9 +820,10 @@
 									onclick={doStart}
 									title="Start"
 									disabled={starting}
-									class="p-1 rounded hover:bg-muted transition-colors cursor-pointer disabled:opacity-50"
+									class="p-1 rounded hover:bg-muted transition-colors cursor-pointer disabled:opacity-50 {actionTile} {actionTilePrimary}"
 								>
-									<Play class="w-4 h-4 {starting ? 'animate-pulse text-emerald-500' : 'text-muted-foreground hover:text-emerald-500'}" />
+									<Play class="w-4 h-4 max-sm:text-emerald-400 {starting ? 'animate-pulse text-emerald-500' : 'text-muted-foreground hover:text-emerald-500'}" />
+									<span class={actionLabel}>Start</span>
 								</button>
 							{/if}
 						{/if}
@@ -775,11 +832,23 @@
 								type="button"
 								onclick={doEdit}
 								title="Edit"
-								class="p-1 rounded hover:bg-muted transition-colors cursor-pointer"
+								class="p-1 rounded hover:bg-muted transition-colors cursor-pointer {actionTile}"
 							>
 								<Pencil class="w-4 h-4 text-muted-foreground hover:text-foreground" />
+								<span class={actionLabel}>Edit</span>
 							</button>
 						{/if}
+						<Button
+							variant="outline"
+							size="sm"
+							onclick={() => showRawJson = true}
+							title="View raw inspect data"
+							class="ml-1 max-sm:ml-0 {actionTile} max-sm:gap-1"
+						>
+							<Code class="w-4 h-4 mr-1.5 max-sm:mr-0" />
+							<span class="max-sm:text-xs max-sm:hidden">Inspect</span>
+							<span class="hidden max-sm:inline text-xs font-medium leading-none">JSON</span>
+						</Button>
 						{#if onRemove}
 							<ConfirmPopover
 								open={confirmRemoveOpen}
@@ -790,28 +859,20 @@
 								variant="destructive"
 								onConfirm={doRemove}
 								onOpenChange={(o) => confirmRemoveOpen = o}
+								class="{actionTile} {actionTileDanger}"
 							>
 								{#snippet children({ open })}
-									<Trash2 class="w-4 h-4 {open ? 'text-destructive' : 'text-muted-foreground hover:text-destructive'}" />
+									<Trash2 class="w-4 h-4 {open ? 'text-destructive' : 'text-muted-foreground hover:text-destructive'} max-sm:text-red-400" />
+									<span class={actionLabel}>Delete</span>
 								{/snippet}
 							</ConfirmPopover>
 						{/if}
-						<Button
-							variant="outline"
-							size="sm"
-							onclick={() => showRawJson = true}
-							title="View raw inspect data"
-							class="ml-1"
-						>
-							<Code class="w-4 h-4 mr-1.5" />
-							Inspect
-						</Button>
 					</div>
 				{/if}
 			</Dialog.Title>
 		</Dialog.Header>
 
-		<div class="flex-1 flex flex-col min-h-[400px]">
+		<div class="flex-1 flex flex-col min-h-0">
 			{#if loading}
 				<div class="flex items-center justify-center py-8">
 					<Loader2 class="w-6 h-6 animate-spin text-muted-foreground" />
@@ -822,7 +883,12 @@
 				</div>
 			{:else if containerData}
 				<Tabs.Root bind:value={activeTab} class="w-full h-full flex flex-col">
-					<Tabs.List class="w-full justify-start shrink-0 flex-wrap h-auto min-h-10 bg-muted rounded-lg">
+				<div class="relative shrink-0">
+					<Tabs.List
+						bind:ref={tabsListEl}
+						onscroll={updateTabFades}
+						class="w-full justify-start shrink-0 flex-nowrap overflow-x-auto h-auto min-h-10 bg-muted rounded-lg [scrollbar-width:none] [&::-webkit-scrollbar]:hidden [&>[data-slot='tabs-trigger']]:shrink-0 [&>[data-slot='tabs-trigger']]:max-sm:h-11 [&>[data-slot='tabs-trigger']]:max-sm:rounded-full"
+					>
 						<Tabs.Trigger value="overview" onclick={() => showLogs = false}>Overview</Tabs.Trigger>
 						<Tabs.Trigger value="logs" onclick={() => showLogs = true}>Logs</Tabs.Trigger>
 						<Tabs.Trigger value="layers" onclick={() => showLogs = false}>Layers</Tabs.Trigger>
@@ -837,9 +903,12 @@
 						<Tabs.Trigger value="health" onclick={() => showLogs = false}>Health</Tabs.Trigger>
 						<Tabs.Trigger value="compose" onclick={() => showLogs = false}>Compose</Tabs.Trigger>
 					</Tabs.List>
+					<div aria-hidden="true" class="hidden max-sm:block pointer-events-none absolute inset-y-0 left-0 w-10 rounded-l-lg bg-gradient-to-r from-background to-transparent transition-opacity {tabFades.left ? 'opacity-100' : 'opacity-0'}"></div>
+					<div aria-hidden="true" class="hidden max-sm:block pointer-events-none absolute inset-y-0 right-0 w-10 rounded-r-lg bg-gradient-to-l from-background to-transparent transition-opacity {tabFades.right ? 'opacity-100' : 'opacity-0'}"></div>
+				</div>
 
 					<!-- Overview Tab -->
-					<Tabs.Content value="overview" class="space-y-4 overflow-auto">
+					<Tabs.Content value="overview" class="flex-1 min-h-0 pb-4 space-y-4 overflow-auto">
 						<!-- Real-time Stats (only for running containers) -->
 						{#if containerData.State?.Running}
 							<div class="grid grid-cols-2 lg:grid-cols-5 gap-3">
@@ -848,7 +917,7 @@
 									<div class="flex items-center gap-2 mb-2">
 										<Cpu class="w-4 h-4 text-blue-500" />
 										<span class="text-xs font-medium">CPU</span>
-										<span class="ml-auto text-sm font-bold">{currentStats?.cpuPercent?.toFixed(1) ?? '—'}%</span>
+										<span class="ml-auto text-sm font-bold whitespace-nowrap">{currentStats?.cpuPercent?.toFixed(1) ?? '—'}%</span>
 									</div>
 									{#if cpuHistory.length >= 2}
 										<svg class="w-full h-8" viewBox="0 0 120 32" preserveAspectRatio="none">
@@ -872,7 +941,7 @@
 									<div class="flex items-center gap-2 mb-2">
 										<MemoryStick class="w-4 h-4 text-green-500" />
 										<span class="text-xs font-medium">Memory</span>
-										<span class="ml-auto text-sm font-bold">{currentStats?.memoryPercent?.toFixed(1) ?? '—'}%</span>
+										<span class="ml-auto text-sm font-bold whitespace-nowrap">{currentStats?.memoryPercent?.toFixed(1) ?? '—'}%</span>
 									</div>
 									{#if memoryHistory.length >= 2}
 										<svg class="w-full h-8" viewBox="0 0 120 32" preserveAspectRatio="none">
@@ -958,52 +1027,73 @@
 						<!-- Status & Basic Info combined -->
 						<div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
 							<!-- Status -->
-							<div class="space-y-3">
+							<div class="space-y-2">
 								<h3 class="text-sm font-semibold flex items-center gap-2">
-									<Info class="w-4 h-4" />
+									<Info class="w-4 h-4 text-muted-foreground" />
 									Status
 								</h3>
-								<div class="grid grid-cols-2 gap-2 text-sm">
+								<div class="max-sm:bg-card max-sm:border max-sm:border-border max-sm:rounded-xl max-sm:p-4 grid grid-cols-2 gap-2 text-sm">
 									<div>
 										<p class="text-muted-foreground text-xs">State</p>
-										<Badge variant={getStateColor(containerData.State?.Status || 'unknown')}>
+										<Badge
+											variant={getStateColor(containerData.State?.Status || 'unknown')}
+											class="mt-0.5 gap-1.5 {containerData.State?.Running ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30' : ''}"
+										>
+											<span class="w-1.5 h-1.5 rounded-full bg-current"></span>
 											{containerData.State?.Status || 'unknown'}
 										</Badge>
 									</div>
 									<div>
 										<p class="text-muted-foreground text-xs">Restart Policy</p>
-										<Badge variant="outline">{containerData.HostConfig?.RestartPolicy?.Name || 'no'}</Badge>
+										<p class="mt-0.5">{containerData.HostConfig?.RestartPolicy?.Name || 'no'}</p>
 									</div>
 									<div>
 										<p class="text-muted-foreground text-xs">Exit Code</p>
-										<code class="text-xs">{containerData.State?.ExitCode ?? 'N/A'}</code>
+										<code class="text-xs font-mono">{containerData.State?.ExitCode ?? 'N/A'}</code>
 									</div>
 									<div>
 										<p class="text-muted-foreground text-xs">Restart Count</p>
-										<code class="text-xs">{containerData.RestartCount ?? 0}</code>
+										<code class="text-xs font-mono">{containerData.RestartCount ?? 0}</code>
 									</div>
 								</div>
 							</div>
 
 							<!-- Basic Info -->
-							<div class="space-y-3">
-								<h3 class="text-sm font-semibold">Basic information</h3>
-								<div class="grid grid-cols-2 gap-2 text-sm">
-									<div>
-										<p class="text-muted-foreground text-xs">ID</p>
-										<code class="text-xs">{containerData.Id?.slice(0, 12)}</code>
+							<div class="space-y-2">
+								<h3 class="text-sm font-semibold flex items-center gap-2">
+									<Rows3 class="w-4 h-4 text-muted-foreground" />
+									Basic information
+								</h3>
+								<div class="max-sm:bg-card max-sm:border max-sm:border-border max-sm:rounded-xl max-sm:px-4 max-sm:py-1 grid grid-cols-2 gap-2 text-sm max-sm:grid-cols-1 max-sm:gap-0 max-sm:divide-y max-sm:divide-border/60">
+									<div class="max-sm:flex max-sm:items-center max-sm:justify-between max-sm:gap-3 max-sm:py-2.5">
+										<p class="text-muted-foreground text-xs max-sm:text-sm">ID</p>
+										<div class="flex items-center gap-1 min-w-0">
+											<code class="text-xs font-mono max-sm:text-sm">{containerData.Id?.slice(0, 12)}</code>
+											<button
+												type="button"
+												onclick={() => copyField('id', containerData.Id || '')}
+												title={copiedField === 'id' ? 'Copied!' : 'Copy ID'}
+												class="shrink-0 p-2 -m-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground cursor-pointer"
+											>
+												{#if copiedField === 'id'}
+													<Check class="w-3.5 h-3.5 text-green-500" />
+												{:else}
+													<Copy class="w-3.5 h-3.5" />
+												{/if}
+											</button>
+										</div>
 									</div>
-									<div>
-										<p class="text-muted-foreground text-xs">Platform</p>
-										<p class="text-xs">{containerData.Platform || 'N/A'}</p>
+									<div class="max-sm:flex max-sm:items-center max-sm:justify-between max-sm:gap-3 max-sm:py-2.5">
+										<p class="text-muted-foreground text-xs max-sm:text-sm">Platform</p>
+										<p class="text-xs max-sm:text-sm">{containerData.Platform || 'N/A'}</p>
 									</div>
-									<div>
-										<p class="text-muted-foreground text-xs">Created</p>
-										<p class="text-xs">{formatDate(containerData.Created)}</p>
+									<div class="max-sm:flex max-sm:items-center max-sm:justify-between max-sm:gap-3 max-sm:py-2.5">
+										<p class="text-muted-foreground text-xs max-sm:text-sm">Created</p>
+										<p class="text-xs max-sm:text-sm">{formatDate(containerData.Created)}</p>
 									</div>
-									<div>
-										<p class="text-muted-foreground text-xs">Started</p>
-										<p class="text-xs">{formatDate(containerData.State?.StartedAt)}</p>
+									<div class="max-sm:flex max-sm:items-center max-sm:justify-between max-sm:gap-3 max-sm:py-2.5">
+										<p class="text-muted-foreground text-xs max-sm:text-sm">Started</p>
+										<p class="text-xs max-sm:text-sm">{formatDate(containerData.State?.StartedAt)}</p>
 									</div>
 								</div>
 							</div>
@@ -1011,28 +1101,28 @@
 
 						<!-- Image -->
 						<div class="space-y-2">
-							<h3 class="text-sm font-semibold">Image</h3>
-							<div class="flex items-center gap-2 p-2 bg-muted rounded">
-								<code class="text-xs break-all flex-1">{containerData.Config?.Image || 'N/A'}</code>
-							</div>
+							<h3 class="text-sm font-semibold flex items-center gap-2">
+								<ImageIcon class="w-4 h-4 text-muted-foreground" />
+								Image
+							</h3>
+							{@render codeBlock('image', containerData.Config?.Image || 'N/A')}
 						</div>
 
 						<!-- Command -->
 						{#if containerData.Path || containerData.Args}
 							<div class="space-y-2">
-								<h3 class="text-sm font-semibold">Command</h3>
-								<div class="p-2 bg-muted rounded">
-									<code class="text-xs break-all">
-										{containerData.Path || ''} {containerData.Args?.join(' ') || ''}
-									</code>
-								</div>
+								<h3 class="text-sm font-semibold flex items-center gap-2">
+									<Terminal class="w-4 h-4 text-muted-foreground" />
+									Command
+								</h3>
+								{@render codeBlock('command', `${containerData.Path || ''} ${containerData.Args?.join(' ') || ''}`.trim())}
 							</div>
 						{/if}
 
 					</Tabs.Content>
 
 					<!-- Processes Tab -->
-					<Tabs.Content value="processes" class="overflow-auto data-[state=inactive]:hidden">
+					<Tabs.Content value="processes" class="flex-1 min-h-0 pb-4 overflow-auto data-[state=inactive]:hidden">
 						{#if !containerData.State?.Running}
 							<div class="flex items-center gap-2 text-sm text-muted-foreground py-8 justify-center">
 								<Moon class="w-5 h-5" />
@@ -1091,7 +1181,7 @@
 					</Tabs.Content>
 
 					<!-- Layers Tab -->
-					<Tabs.Content value="layers" class="overflow-auto">
+					<Tabs.Content value="layers" class="flex-1 min-h-0 pb-4 overflow-auto">
 						{#if containerData?.Image}
 							<ImageLayersView
 								imageId={containerData.Image}
@@ -1104,7 +1194,7 @@
 					</Tabs.Content>
 
 					<!-- Network Tab -->
-					<Tabs.Content value="network" class="space-y-4 overflow-auto">
+					<Tabs.Content value="network" class="flex-1 min-h-0 pb-4 space-y-4 overflow-auto">
 						<!-- Network Mode -->
 						<div class="space-y-2">
 							<h3 class="text-sm font-semibold">Network mode</h3>
@@ -1179,7 +1269,7 @@
 													<Button
 														variant="ghost"
 														size="sm"
-														class="h-6 px-2 text-xs text-destructive hover:text-destructive hover:bg-destructive/10"
+														class="h-6 px-2 max-sm:min-h-11 max-sm:px-4 text-xs text-destructive hover:text-destructive hover:bg-destructive/10"
 														disabled={networkDisconnecting === networkName}
 														onclick={() => disconnectFromNetwork(netData.NetworkID, networkName)}
 													>
@@ -1194,33 +1284,33 @@
 											</div>
 											<div class="grid grid-cols-2 lg:grid-cols-4 gap-2 text-xs">
 												{#if networkData.IPAddress}
-													<div>
+													<div class="min-w-0">
 														<p class="text-muted-foreground">IPv4</p>
-														<code>{networkData.IPAddress}</code>
+														<code class="break-all">{networkData.IPAddress}</code>
 													</div>
 												{/if}
 												{#if networkData.GlobalIPv6Address}
-													<div>
+													<div class="min-w-0 max-sm:col-span-2">
 														<p class="text-muted-foreground">IPv6</p>
-														<code>{networkData.GlobalIPv6Address}</code>
+														<code class="break-all">{networkData.GlobalIPv6Address}</code>
 													</div>
 												{/if}
 												{#if networkData.MacAddress}
-													<div>
+													<div class="min-w-0">
 														<p class="text-muted-foreground">MAC</p>
-														<code>{networkData.MacAddress}</code>
+														<code class="break-all">{networkData.MacAddress}</code>
 													</div>
 												{/if}
 												{#if networkData.Gateway}
-													<div>
+													<div class="min-w-0">
 														<p class="text-muted-foreground">Gateway</p>
-														<code>{networkData.Gateway}</code>
+														<code class="break-all">{networkData.Gateway}</code>
 													</div>
 												{/if}
 												{#if networkData.Aliases?.length > 0}
-													<div class="col-span-2">
+													<div class="col-span-2 min-w-0">
 														<p class="text-muted-foreground">Aliases</p>
-														<code>{networkData.Aliases.join(', ')}</code>
+														<code class="break-all">{networkData.Aliases.join(', ')}</code>
 													</div>
 												{/if}
 											</div>
@@ -1233,9 +1323,9 @@
 
 							<!-- Join network dropdown -->
 							{#if containerData.State?.Running && !isSharedNetworkMode}
-								<div class="flex items-center gap-2 pt-1">
+								<div class="flex items-center gap-2 pt-1 max-sm:pt-2">
 									<Select.Root type="single" bind:value={selectedNetwork}>
-										<Select.Trigger class="flex-1 h-8 text-xs">
+										<Select.Trigger class="flex-1 h-8 max-sm:h-11 text-xs min-w-0">
 											{#if selectedNetwork}
 												{@const net = unconnectedNetworks.find(n => n.id === selectedNetwork)}
 												<span class="flex items-center gap-2">
@@ -1263,7 +1353,7 @@
 									</Select.Root>
 									<Button
 										size="sm"
-										class="h-8"
+										class="h-8 max-sm:h-11 max-sm:px-4 shrink-0"
 										disabled={!selectedNetwork || networkConnecting}
 										onclick={connectToNetwork}
 									>
@@ -1336,7 +1426,7 @@
 					</Tabs.Content>
 
 					<!-- Mounts Tab -->
-					<Tabs.Content value="mounts" class="space-y-4 overflow-auto">
+					<Tabs.Content value="mounts" class="flex-1 min-h-0 pb-4 space-y-4 overflow-auto">
 						{#if containerData.Mounts && containerData.Mounts.length > 0}
 							<div class="space-y-2">
 								{#each containerData.Mounts as mount}
@@ -1406,7 +1496,7 @@
 					</Tabs.Content>
 
 					<!-- Environment Tab -->
-					<Tabs.Content value="env" class="space-y-4 overflow-auto">
+					<Tabs.Content value="env" class="flex-1 min-h-0 pb-4 space-y-4 overflow-auto">
 						{#if containerData.divergence?.env?.length > 0}
 							<div class="flex items-start gap-2 text-xs p-2.5 rounded border border-amber-500/30 bg-amber-500/5 text-amber-700 dark:text-amber-300">
 								<Info class="w-3.5 h-3.5 shrink-0 mt-0.5" />
@@ -1436,7 +1526,7 @@
 					</Tabs.Content>
 
 					<!-- Labels Tab -->
-					<Tabs.Content value="labels" class="space-y-3 overflow-auto">
+					<Tabs.Content value="labels" class="flex-1 min-h-0 pb-4 space-y-3 overflow-auto">
 						{#if containerData.divergence?.labels?.length > 0}
 							<div class="flex items-start gap-2 text-xs p-2.5 rounded border border-amber-500/30 bg-amber-500/5 text-amber-700 dark:text-amber-300">
 								<Info class="w-3.5 h-3.5 shrink-0 mt-0.5" />
@@ -1458,7 +1548,7 @@
 									type="search"
 									placeholder="Filter labels..."
 									bind:value={labelFilter}
-									class="h-8 text-xs flex-1"
+									class="h-8 max-sm:h-11 max-sm:flex-1 text-xs flex-1 min-w-0"
 								/>
 								<span class="text-xs text-muted-foreground shrink-0">
 									{visibleLabels.length === allLabels.length
@@ -1471,6 +1561,7 @@
 									onclick={() => copyAllLabels(visibleLabels)}
 									disabled={visibleLabels.length === 0}
 									title={copiedAllLabels ? 'Copied!' : 'Copy visible labels as key=value lines'}
+									class="max-sm:min-h-11 max-sm:px-4 shrink-0"
 								>
 									{#if copiedAllLabels}
 										<Check class="w-3 h-3 mr-1.5 text-green-500" />
@@ -1494,7 +1585,7 @@
 											<button
 												type="button"
 												onclick={() => copyLabel(key, value)}
-												class="shrink-0 p-1 rounded hover:bg-background/50 transition-colors opacity-0 group-hover:opacity-100 {copiedLabel === key ? '!opacity-100' : ''}"
+												class="shrink-0 p-1 rounded hover:bg-background/50 transition-colors opacity-0 group-hover:opacity-100 max-sm:opacity-100 max-sm:size-11 max-sm:self-center max-sm:rounded-lg {copiedLabel === key ? '!opacity-100' : ''}"
 												title={copiedLabel === key ? 'Copied!' : 'Copy label'}
 											>
 												{#if copiedLabel === key}
@@ -1515,7 +1606,7 @@
 					</Tabs.Content>
 
 					<!-- Security Tab -->
-					<Tabs.Content value="security" class="space-y-4 overflow-auto">
+					<Tabs.Content value="security" class="flex-1 min-h-0 pb-4 space-y-4 overflow-auto">
 						<!-- Privileged & User -->
 						<div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
 							<div class="p-3 border border-border rounded-lg">
@@ -1532,11 +1623,11 @@
 							</div>
 							<div class="p-3 border border-border rounded-lg">
 								<p class="text-xs text-muted-foreground mb-1">User</p>
-								<code class="text-xs">{containerData.Config?.User || 'root'}</code>
+								<code class="text-xs break-all">{containerData.Config?.User || 'root'}</code>
 							</div>
 							<div class="p-3 border border-border rounded-lg">
 								<p class="text-xs text-muted-foreground mb-1">User Namespace</p>
-								<code class="text-xs">{containerData.HostConfig?.UsernsMode || 'host'}</code>
+								<code class="text-xs break-all">{containerData.HostConfig?.UsernsMode || 'host'}</code>
 							</div>
 						</div>
 
@@ -1602,7 +1693,7 @@
 					</Tabs.Content>
 
 					<!-- Resources Tab -->
-					<Tabs.Content value="resources" class="space-y-4 overflow-auto">
+					<Tabs.Content value="resources" class="flex-1 min-h-0 pb-4 space-y-4 overflow-auto">
 						<!-- CPU & Memory Limits -->
 						<div class="space-y-2">
 							<h3 class="text-sm font-semibold flex items-center gap-2">
@@ -1670,10 +1761,10 @@
 								<h3 class="text-sm font-semibold">Devices</h3>
 								<div class="space-y-1">
 									{#each containerData.HostConfig.Devices as device}
-										<div class="text-xs p-2 bg-muted rounded flex gap-2">
-											<code class="text-muted-foreground">{device.PathOnHost}</code>
-											<span class="text-muted-foreground">→</span>
-											<code>{device.PathInContainer}</code>
+										<div class="text-xs p-2 bg-muted rounded flex gap-2 max-sm:flex-wrap">
+											<code class="text-muted-foreground break-all min-w-0">{device.PathOnHost}</code>
+											<span class="text-muted-foreground shrink-0">→</span>
+											<code class="break-all min-w-0">{device.PathInContainer}</code>
 											{#if device.CgroupPermissions}
 												<Badge variant="outline" class="text-2xs">{device.CgroupPermissions}</Badge>
 											{/if}
@@ -1755,7 +1846,7 @@
 					</Tabs.Content>
 
 					<!-- Health Tab -->
-					<Tabs.Content value="health" class="flex flex-col overflow-hidden">
+					<Tabs.Content value="health" class="flex-1 min-h-0 flex flex-col overflow-hidden">
 						{@const healthConfig = containerData.Config?.Healthcheck}
 						{@const healthState = containerData.State?.Health}
 						{@const formatNs = (ns: number) => ns ? `${ns / 1e9}s` : '-'}
@@ -1851,7 +1942,7 @@
 			{/if}
 		</div>
 
-		<Dialog.Footer class="shrink-0">
+		<Dialog.Footer class="shrink-0 max-sm:hidden">
 			<Button variant="outline" onclick={() => (open = false)}>Close</Button>
 		</Dialog.Footer>
 	</Dialog.Content>
@@ -1859,7 +1950,7 @@
 
 <!-- Inspect (raw) modal -->
 <Dialog.Root bind:open={showRawJson}>
-	<Dialog.Content class="max-w-4xl max-h-[90vh] sm:max-h-[80vh] flex flex-col">
+	<Dialog.Content class="max-w-4xl max-h-[calc(100dvh-1rem)] sm:max-h-[80vh] flex flex-col max-sm:rounded-2xl">
 		<Dialog.Header class="shrink-0">
 			<Dialog.Title class="flex items-center gap-2">
 				<Code class="w-5 h-5" />
@@ -1869,6 +1960,7 @@
 					size="sm"
 					onclick={copyJson}
 					title={jsonCopied === 'ok' ? 'Copied!' : 'Copy to clipboard'}
+					class="max-sm:min-h-11 max-sm:px-4"
 				>
 					{#if jsonCopied === 'error'}
 						<Tooltip.Root open>
@@ -1902,7 +1994,7 @@
 				</table>
 			</div>
 		</div>
-		<Dialog.Footer class="shrink-0">
+		<Dialog.Footer class="shrink-0 max-sm:hidden">
 			<Button variant="outline" onclick={() => showRawJson = false}>Close</Button>
 		</Dialog.Footer>
 	</Dialog.Content>

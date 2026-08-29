@@ -52,7 +52,7 @@
 </script>
 
 <Card.Root
-	class="hover:shadow-[inset_0_0_0_2px_hsl(var(--primary)/0.2)] transition-all duration-200 h-full overflow-hidden {showOffline ? 'opacity-60' : ''}"
+	class="@container/tile hover:shadow-[inset_0_0_0_2px_hsl(var(--primary)/0.2)] transition-all duration-200 h-full overflow-hidden gap-3 py-3 sm:gap-3 sm:py-4 {showOffline ? 'opacity-60' : ''}"
 >
 	<!-- ==================== 1x1 TILE ==================== -->
 	{#if is1x1}
@@ -338,16 +338,14 @@
 			</div>
 		</Card.Header>
 		<DashboardLabels labels={stats.labels} />
-		<Card.Content class="overflow-hidden" style="max-height: calc(100% - 60px);">
+		<Card.Content class="min-w-0 overflow-hidden md:overflow-auto">
 			{#if showOffline}
 				<DashboardOfflineState error={stats.error} compact={isMini} />
 			{:else}
 				<div class="space-y-3">
 					<DashboardContainerStats containers={stats.containers} loading={stats.loading?.containers || showConnecting} />
 					<DashboardHealthBanner unhealthy={stats.containers.unhealthy} restarting={stats.containers.restarting} />
-					{#if stats.collectMetrics && stats.metrics}
-						<DashboardCpuMemoryBars metrics={stats.metrics} collectMetrics={stats.collectMetrics} />
-					{/if}
+					<DashboardCpuMemoryBars metrics={stats.metrics} collectMetrics={stats.collectMetrics} loading={showConnecting} />
 					<DashboardResourceStats images={stats.images} volumes={stats.volumes} networks={stats.networks} stacks={stats.stacks} loading={stats.loading} showStacksBreakdown={showStacksBreakdown} />
 					<DashboardEventsSummary today={stats.events.today} total={stats.events.total} />
 				</div>
@@ -439,16 +437,14 @@
 			</div>
 		</Card.Header>
 		<DashboardLabels labels={stats.labels} />
-		<Card.Content class="overflow-hidden" style="max-height: calc(100% - 60px);">
+		<Card.Content class="min-w-0 overflow-hidden md:overflow-auto">
 			{#if showOffline}
 				<DashboardOfflineState error={stats.error} compact={isMini} />
 			{:else}
 				<div class="space-y-3">
 					<DashboardContainerStats containers={stats.containers} loading={stats.loading?.containers || showConnecting} />
 					<DashboardHealthBanner unhealthy={stats.containers.unhealthy} restarting={stats.containers.restarting} />
-					{#if stats.collectMetrics && stats.metrics}
-						<DashboardCpuMemoryBars metrics={stats.metrics} collectMetrics={stats.collectMetrics} />
-					{/if}
+					<DashboardCpuMemoryBars metrics={stats.metrics} collectMetrics={stats.collectMetrics} loading={showConnecting} />
 					<DashboardResourceStats images={stats.images} volumes={stats.volumes} networks={stats.networks} stacks={stats.stacks} loading={stats.loading} showStacksBreakdown={showStacksBreakdown} />
 					<DashboardEventsSummary today={stats.events.today} total={stats.events.total} />
 					{#if stats.recentEvents}
@@ -543,16 +539,14 @@
 			</div>
 		</Card.Header>
 		<DashboardLabels labels={stats.labels} />
-		<Card.Content class="overflow-hidden" style="max-height: calc(100% - 60px);">
+		<Card.Content class="min-w-0 overflow-hidden md:overflow-auto">
 			{#if showOffline}
 				<DashboardOfflineState error={stats.error} compact={isMini} />
 			{:else}
 				<div class="space-y-3">
 					<DashboardContainerStats containers={stats.containers} loading={stats.loading?.containers || showConnecting} />
 					<DashboardHealthBanner unhealthy={stats.containers.unhealthy} restarting={stats.containers.restarting} />
-					{#if stats.collectMetrics && stats.metrics}
-						<DashboardCpuMemoryBars metrics={stats.metrics} collectMetrics={stats.collectMetrics} />
-					{/if}
+					<DashboardCpuMemoryBars metrics={stats.metrics} collectMetrics={stats.collectMetrics} loading={showConnecting} />
 					<DashboardResourceStats images={stats.images} volumes={stats.volumes} networks={stats.networks} stacks={stats.stacks} loading={stats.loading} showStacksBreakdown={showStacksBreakdown} />
 					<DashboardEventsSummary today={stats.events.today} total={stats.events.total} />
 					{#if stats.recentEvents}
@@ -586,11 +580,11 @@
 			/>
 		</Card.Header>
 		<DashboardLabels labels={stats.labels} />
-		<Card.Content class="overflow-hidden" style="max-height: calc(100% - 60px);">
+		<Card.Content class="min-h-0 overflow-hidden md:overflow-auto">
 			{#if showOffline}
 				<DashboardOfflineState error={stats.error} compact={isMini} />
 			{:else}
-				<div class="grid grid-cols-2 gap-4">
+				<div class="dashboard-card-grid grid grid-cols-2 gap-4">
 					<!-- Left column -->
 					<div class="space-y-3">
 						<DashboardContainerStats containers={stats.containers} loading={stats.loading?.containers || showConnecting} />
@@ -632,11 +626,11 @@
 			/>
 		</Card.Header>
 		<DashboardLabels labels={stats.labels} />
-		<Card.Content class="overflow-hidden" style="max-height: calc(100% - 60px);">
+		<Card.Content class="min-h-0 overflow-hidden md:overflow-auto">
 			{#if showOffline}
 				<DashboardOfflineState error={stats.error} compact={isMini} />
 			{:else}
-				<div class="grid grid-cols-2 gap-4">
+				<div class="dashboard-card-grid grid grid-cols-2 gap-4">
 					<!-- Left column -->
 					<div class="space-y-3">
 						<DashboardContainerStats containers={stats.containers} loading={stats.loading?.containers || showConnecting} />
@@ -684,11 +678,11 @@
 			/>
 		</Card.Header>
 		<DashboardLabels labels={stats.labels} />
-		<Card.Content class="overflow-hidden" style="max-height: calc(100% - 60px);">
+		<Card.Content class="min-h-0 overflow-hidden md:overflow-auto">
 			{#if showOffline}
 				<DashboardOfflineState error={stats.error} compact={isMini} />
 			{:else}
-				<div class="grid grid-cols-2 gap-4">
+				<div class="dashboard-card-grid grid grid-cols-2 gap-4">
 					<!-- Left column -->
 					<div class="space-y-3">
 						<DashboardContainerStats containers={stats.containers} loading={stats.loading?.containers || showConnecting} />
@@ -715,3 +709,16 @@
 		</Card.Content>
 	{/if}
 </Card.Root>
+
+<style>
+	@container tile (max-width: 28rem) {
+		.dashboard-card-grid {
+			grid-template-columns: minmax(0, 1fr);
+		}
+
+		.dashboard-card-grid > div:last-child {
+			border-left: 0;
+			padding-left: 0;
+		}
+	}
+</style>

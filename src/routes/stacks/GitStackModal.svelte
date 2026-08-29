@@ -442,6 +442,8 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 
 	// Resizable split panel state
 	let splitRatio = $state(60); // percentage for form panel
+	// Mobile-only: which pane is shown (desktop uses the resizable split instead).
+	let mobilePane: 'form' | 'vars' = $state('form');
 	let isDraggingSplit = $state(false);
 	let containerRef: HTMLDivElement | null = $state(null);
 
@@ -1298,15 +1300,16 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 
 <Dialog.Root bind:open onOpenChange={(isOpen) => { if (isOpen) focusFirstInput(); }}>
 	<Dialog.Content
-		class="max-w-none w-[calc(100vw-4rem)] h-[95vh] flex flex-col p-0 gap-0 shadow-xl border-zinc-200 dark:border-zinc-700"
+		class="max-w-none w-[calc(100vw-4rem)] h-[95vh] flex flex-col p-0 gap-0 shadow-xl border-zinc-200 dark:border-zinc-700 max-md:w-[calc(100vw-1rem)]! max-md:h-[calc(100dvh-1rem)]! max-md:max-w-none! max-md:max-h-[calc(100dvh-1rem)]! max-md:rounded-2xl! max-md:border! max-md:border-border!"
 		showCloseButton={false}
 	>
-		<Dialog.Header class="px-5 py-3 border-b border-zinc-200 dark:border-zinc-700 flex-shrink-0">
+		<Dialog.Header class="px-4 py-3 text-left sm:px-5 border-b border-zinc-200 dark:border-zinc-700 flex-shrink-0">
 			<div class="flex items-center justify-between">
 				<div class="flex items-center gap-3">
 					{#if gitStack}
 						<button
 							type="button"
+							aria-label="Change stack icon"
 							title="Change stack icon"
 							onclick={() => (showIconPicker = true)}
 							class="p-1.5 rounded-md bg-zinc-200 dark:bg-zinc-700 hover:ring-2 hover:ring-primary transition-shadow"
@@ -1347,6 +1350,8 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 
 				<!-- Close button -->
 				<button
+					type="button"
+					aria-label="Close stack editor"
 					onclick={onClose}
 					class="p-1.5 rounded-md text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors"
 				>
@@ -1362,14 +1367,14 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 			<div class="flex items-center gap-1 border-b border-zinc-200 px-5 dark:border-zinc-700 flex-shrink-0">
 				<button
 					type="button"
-					class="relative -mb-px flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm transition-colors {activeTab === 'settings' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
+					class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 px-3 max-md:px-2 py-2 text-sm transition-colors {activeTab === 'settings' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
 					onclick={() => (activeTab = 'settings')}
 				>
 					<Settings2 class="h-3.5 w-3.5" /> Settings
 				</button>
 				<button
 					type="button"
-					class="relative -mb-px flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm transition-colors {activeTab === 'backups' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
+					class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 px-3 max-md:px-2 py-2 text-sm transition-colors {activeTab === 'backups' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
 					onclick={() => (activeTab = 'backups')}
 				>
 					<Archive class="h-3.5 w-3.5" /> Backups
@@ -1390,10 +1395,28 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 				/>
 			</div>
 		{:else}
-		<div bind:this={containerRef} class="flex-1 min-h-0 flex {isDraggingSplit ? 'select-none' : ''}">
+		<!-- Mobile: one pane at a time; desktop keeps the resizable split below. -->
+		<div class="flex items-center gap-1 border-b border-zinc-200 px-4 dark:border-zinc-700 flex-shrink-0 md:hidden">
+			<button
+				type="button"
+				class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 px-2 py-2.5 text-sm transition-colors {mobilePane === 'form' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
+				onclick={() => mobilePane = 'form'}
+			>
+				<Settings2 class="h-3.5 w-3.5" /> Settings
+			</button>
+			<button
+				type="button"
+				class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 px-2 py-2.5 text-sm transition-colors {mobilePane === 'vars' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
+				onclick={() => mobilePane = 'vars'}
+			>
+				<FileText class="h-3.5 w-3.5" /><span class="max-md:hidden">Environment variables</span><span class="md:hidden">Variables</span>
+			</button>
+		</div>
+
+		<div bind:this={containerRef} class="flex-1 min-h-0 flex max-md:flex-col {isDraggingSplit ? 'select-none' : ''}">
 			<!-- Left column: Form fields -->
-			<div class="flex-shrink-0 flex flex-col min-w-0 overflow-y-auto" style="width: {splitRatio}%">
-				<div class="space-y-4 py-4 px-6">
+			<div class="flex-shrink-0 flex flex-col min-w-0 overflow-y-auto max-md:w-full! {mobilePane === 'form' ? 'max-md:flex-1' : 'max-md:hidden'}" style="width: {splitRatio}%">
+				<div class="space-y-4 py-4 px-4 sm:px-6">
 			<!-- Repository selection -->
 			{#if !gitStack}
 				<div class="space-y-3">
@@ -1472,6 +1495,7 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 								<Label for="existing-repo-branch">Branch</Label>
 								<BranchCombobox
 									id="existing-repo-branch"
+									class="max-md:min-h-11"
 									value={formBranch ?? ''}
 									branches={branches}
 									defaultBranch={selectedRepo.branch}
@@ -1512,7 +1536,7 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 									<p class="text-xs text-destructive">{errors.repoUrl}</p>
 								{/if}
 							</div>
-							<div class="grid grid-cols-2 items-start gap-3">
+						<div class="grid grid-cols-1 sm:grid-cols-2 items-start gap-3">
 								<div class="space-y-2">
 									<Label for="new-repo-branch">Branch</Label>
 									<!-- Free-text, searchable branch picker. Supports both discovered
@@ -1524,7 +1548,7 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 									     remains authoritative. -->
 									<BranchCombobox
 										id="new-repo-branch"
-										class="w-full"
+										class="w-full max-md:min-h-11"
 										value={formNewRepoBranch}
 										branches={branches}
 										loading={branchesLoading}
@@ -1636,7 +1660,7 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 					id="stack-name"
 					bind:value={formStackName}
 					placeholder="e.g., my-app"
-					class={errors.stackName ? 'border-destructive focus-visible:ring-destructive' : ''}
+					class="max-md:h-11 {errors.stackName ? 'border-destructive focus-visible:ring-destructive' : ''}"
 					oninput={() => { errors.stackName = undefined; formStackNameUserModified = true; }}
 				/>
 				{#if errors.stackName}
@@ -1649,7 +1673,7 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 			{#if gitStack && selectedRepo}
 				<div class="space-y-2">
 					<Label>Repository</Label>
-					<div class="flex h-9 items-center gap-2 rounded-md border border-input bg-muted/50 px-3 py-1 text-sm text-muted-foreground">
+					<div class="flex h-9 max-md:h-11 items-center gap-2 rounded-md border border-input bg-muted/50 px-3 py-1 text-sm text-muted-foreground">
 						<FolderGit2 class="w-4 h-4 shrink-0" />
 						<span class="truncate" title={selectedRepo.url}>{selectedRepo.url}</span>
 					</div>
@@ -1660,7 +1684,8 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 				<div class="space-y-2">
 					<Label for="stack-branch">Branch</Label>
 					<BranchCombobox
-						id="stack-branch"
+									id="stack-branch"
+									class="max-md:min-h-11"
 						value={formBranch ?? ''}
 						branches={branches}
 						defaultBranch={selectedRepo.branch}
@@ -1785,6 +1810,7 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 					value={formContextDir ?? ''}
 					oninput={(e) => { const v = (e.target as HTMLInputElement).value; formContextDir = v.trim() || null; }}
 					placeholder="Defaults to compose file's directory"
+					class="max-md:h-11"
 				/>
 				<p class="text-xs text-muted-foreground">Relative to repository root, e.g. <code class="text-xs bg-muted px-1 rounded">.</code> for root</p>
 			</div>
@@ -1983,7 +2009,7 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 
 			<!-- Resizable divider -->
 			<div
-				class="w-1 flex-shrink-0 bg-zinc-200 dark:bg-zinc-700 hover:bg-blue-400 dark:hover:bg-blue-500 cursor-col-resize transition-colors flex items-center justify-center group {isDraggingSplit ? 'bg-blue-500 dark:bg-blue-400' : ''}"
+				class="w-1 flex-shrink-0 bg-zinc-200 dark:bg-zinc-700 hover:bg-blue-400 dark:hover:bg-blue-500 cursor-col-resize transition-colors flex items-center justify-center group max-md:hidden {isDraggingSplit ? 'bg-blue-500 dark:bg-blue-400' : ''}"
 				onmousedown={startSplitDrag}
 				role="separator"
 				aria-orientation="vertical"
@@ -1995,7 +2021,7 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 			</div>
 
 			<!-- Right column: Environment Variables -->
-			<div class="flex-1 min-w-0 flex flex-col overflow-hidden bg-zinc-50 dark:bg-zinc-800/50">
+			<div class="flex-1 min-w-0 flex flex-col overflow-hidden bg-zinc-50 dark:bg-zinc-800/50 {mobilePane === 'vars' ? 'max-md:flex-1' : 'max-md:hidden'}">
 				<SecretProviderPicker
 					bind:secretProviderId={formSecretProviderId}
 					bind:envVars
@@ -2051,13 +2077,13 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 		</div>
 		{/if}
 
-		<Dialog.Footer class="px-5 py-2.5 border-t border-zinc-200 dark:border-zinc-700 flex-shrink-0">
-			<Button variant="outline" onclick={onClose}>{activeTab === 'backups' ? 'Close' : 'Cancel'}</Button>
+		<Dialog.Footer class="px-5 py-2.5 border-t border-zinc-200 dark:border-zinc-700 flex-shrink-0 max-md:grid max-md:w-full max-md:grid-cols-2 max-md:gap-2 max-md:pb-[max(0.625rem,env(safe-area-inset-bottom))]">
+			<Button variant="outline" class="max-md:order-3 max-md:min-h-11 max-md:w-full" onclick={onClose}>{activeTab === 'backups' ? 'Close' : 'Cancel'}</Button>
 			<!-- The deploy-form save buttons belong to the Settings tab. On the Backups
 			     tab the backup panel manages its own saving, so only Close is shown. -->
 			{#if activeTab !== 'backups'}
 				{#if gitStack}
-					<Button variant="outline" onclick={() => saveGitStack(true)} disabled={formSaving}>
+					<Button variant="outline" class="max-md:order-1 max-md:col-span-2 max-md:min-h-11 max-md:w-full" onclick={() => saveGitStack(true)} disabled={formSaving}>
 						{#if formSaving}
 							<Loader2 class="w-4 h-4 mr-1 animate-spin" />
 							Deploying...
@@ -2066,7 +2092,7 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 							Save and deploy
 						{/if}
 					</Button>
-					<Button onclick={() => saveGitStack(false)} disabled={formSaving}>
+					<Button class="max-md:order-2 max-md:min-h-11 max-md:w-full" onclick={() => saveGitStack(false)} disabled={formSaving}>
 						{#if formSaving}
 							<Loader2 class="w-4 h-4 mr-1 animate-spin" />
 							Saving...
@@ -2075,7 +2101,7 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 						{/if}
 					</Button>
 				{:else}
-					<Button onclick={() => saveGitStack(formDeployNow)} disabled={formSaving}>
+					<Button class="max-md:order-1 max-md:col-span-2 max-md:min-h-11 max-md:w-full" onclick={() => saveGitStack(formDeployNow)} disabled={formSaving}>
 						{#if formSaving}
 							<Loader2 class="w-4 h-4 mr-1 animate-spin" />
 							{formDeployNow ? 'Deploying...' : 'Creating...'}

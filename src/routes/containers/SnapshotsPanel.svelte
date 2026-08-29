@@ -275,8 +275,8 @@
 			{/each}
 		</div>
 	{/if}
-	<div class="overflow-x-auto">
-		<table class="w-full text-xs">
+	<div class="overflow-hidden">
+		<table class="responsive-table w-full text-xs">
 			<thead>
 				<tr class="border-b text-left text-muted-foreground">
 					<th class="py-1.5 pl-2 font-medium">Snapshot</th>
@@ -292,13 +292,13 @@
 					{@const RepoIcon = getRepoTypeIcon(s._destinationRepository)}
 					{@const st = stats.get(s.id)}
 					<tr class="border-b text-xs last:border-0 hover:bg-muted/30 {isDiffPending ? 'bg-primary/10' : ''}">
-						<td class="py-1.5 pl-2 font-mono text-muted-foreground">{s.shortId}</td>
-						<td class="py-1.5 pl-2">{formatDateTime(s.time)} <span class="text-muted-foreground opacity-60">({formatRelativeTime(s.time)})</span></td>
-						<td class="py-1.5 pl-2 text-muted-foreground" title={st ? `${st.filesNew} new, ${st.filesChanged} changed files` : ''}>{st ? formatBytes(st.dataAdded) : '—'}</td>
-						<td class="py-1.5 pl-2 text-muted-foreground">
+						<td data-label="Snapshot" class="py-1.5 pl-2 font-mono text-muted-foreground">{s.shortId}</td>
+						<td data-label="Taken" class="py-1.5 pl-2">{formatDateTime(s.time)} <span class="text-muted-foreground opacity-60">({formatRelativeTime(s.time)})</span></td>
+						<td data-label="Added" class="py-1.5 pl-2 text-muted-foreground" title={st ? `${st.filesNew} new, ${st.filesChanged} changed files` : ''}>{st ? formatBytes(st.dataAdded) : '—'}</td>
+						<td data-label="Repository" class="py-1.5 pl-2 text-muted-foreground">
 							<span class="flex items-center gap-1.5"><RepoIcon class="h-3.5 w-3.5 text-primary/70" />{s._destinationName}</span>
 						</td>
-						<td class="px-3 py-1.5 text-right">
+						<td data-label="Actions" class="px-3 py-1.5 text-right">
 							<div class="flex items-center justify-end gap-0.5">
 								{#if visibleSnapshots.length >= 2}
 									<button type="button" class="rounded p-1 transition-colors {isDiffPending ? 'bg-primary/20 text-primary' : 'hover:bg-muted'}" onclick={() => toggleDiff(s)} title={isDiffPending ? 'Cancel compare' : diffPending ? 'Compare with selected' : 'Compare'}>

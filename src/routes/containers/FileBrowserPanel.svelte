@@ -934,19 +934,19 @@
 
 <div class="flex flex-col h-full relative">
 	<!-- Header with breadcrumbs and actions -->
-	<div class="flex items-center gap-2 p-2 border-b bg-muted/30">
-		<Button variant="ghost" size="icon" class="h-7 w-7" onclick={goUp} disabled={currentPath === '/'}>
-			<ChevronLeft class="w-3.5 h-3.5" />
+	<div class="flex items-center gap-2 max-sm:flex-wrap max-sm:gap-1 max-sm:gap-y-2 p-2 border-b bg-muted/30">
+		<Button variant="ghost" size="icon" class="h-7 w-7 max-sm:size-9" onclick={goUp} disabled={currentPath === '/'}>
+			<ChevronLeft class="w-3.5 h-3.5 max-sm:w-4 max-sm:h-4" />
 		</Button>
-		<Button variant="ghost" size="icon" class="h-7 w-7" onclick={goHome}>
-			<Home class="w-3.5 h-3.5" />
+		<Button variant="ghost" size="icon" class="h-7 w-7 max-sm:size-9" onclick={goHome}>
+			<Home class="w-3.5 h-3.5 max-sm:w-4 max-sm:h-4" />
 		</Button>
 
 		<!-- Breadcrumbs -->
-		<div class="flex-1 flex items-center gap-1 text-xs overflow-x-auto">
+		<div class="flex flex-1 flex-wrap items-center gap-1 text-xs min-w-0 max-sm:order-last max-sm:basis-full">
 			<button
 				type="button"
-				class="text-muted-foreground hover:text-foreground px-1"
+				class="text-muted-foreground hover:text-foreground px-1 max-sm:px-2 max-sm:py-2"
 				onclick={() => navigateTo('/')}
 			>
 				/
@@ -955,7 +955,7 @@
 				<ChevronRight class="w-3 h-3 text-muted-foreground shrink-0" />
 				<button
 					type="button"
-					class="text-muted-foreground hover:text-foreground px-1 truncate max-w-[150px]"
+					class="text-muted-foreground hover:text-foreground px-1 max-sm:px-2 max-sm:py-2 break-all"
 					title={segment}
 					onclick={() => navigateTo('/' + pathSegments().slice(0, i + 1).join('/'))}
 				>
@@ -969,20 +969,20 @@
 			<Button
 				variant="ghost"
 				size="icon"
-				class="h-7 w-7"
+				class="h-7 w-7 max-sm:size-9"
 				onclick={() => { createType = 'file'; createName = ''; showCreateModal = true; }}
 				title="New file"
 			>
-				<FilePlus class="w-3.5 h-3.5" />
+				<FilePlus class="w-3.5 h-3.5 max-sm:w-4 max-sm:h-4" />
 			</Button>
 			<Button
 				variant="ghost"
 				size="icon"
-				class="h-7 w-7"
+				class="h-7 w-7 max-sm:size-9"
 				onclick={() => { createType = 'directory'; createName = ''; showCreateModal = true; }}
 				title="New directory"
 			>
-				<FolderPlus class="w-3.5 h-3.5" />
+				<FolderPlus class="w-3.5 h-3.5 max-sm:w-4 max-sm:h-4" />
 			</Button>
 			<input
 				bind:this={fileInput}
@@ -994,40 +994,40 @@
 			<Button
 				variant="ghost"
 				size="icon"
-				class="h-7 w-7"
+				class="h-7 w-7 max-sm:size-9"
 				onclick={() => fileInput.click()}
 				disabled={uploading || loading}
 				title="Upload files"
 			>
 				{#if uploading}
-					<Loader2 class="w-3.5 h-3.5 animate-spin" />
+					<Loader2 class="w-3.5 h-3.5 max-sm:w-4 max-sm:h-4 animate-spin" />
 				{:else}
-					<Upload class="w-3.5 h-3.5" />
+					<Upload class="w-3.5 h-3.5 max-sm:w-4 max-sm:h-4" />
 				{/if}
 			</Button>
 		{/if}
 		<Button
 			variant="ghost"
 			size="icon"
-			class="h-7 w-7"
+			class="h-7 w-7 max-sm:size-9"
 			onclick={toggleHiddenFiles}
 			title={showHiddenFiles ? 'Hide hidden files' : 'Show hidden files'}
 		>
 			{#if showHiddenFiles}
-				<Eye class="w-3.5 h-3.5" />
+				<Eye class="w-3.5 h-3.5 max-sm:w-4 max-sm:h-4" />
 			{:else}
-				<EyeOff class="w-3.5 h-3.5" />
+				<EyeOff class="w-3.5 h-3.5 max-sm:w-4 max-sm:h-4" />
 			{/if}
 		</Button>
 		<Button
 			variant="ghost"
 			size="icon"
-			class="h-7 w-7"
+			class="h-7 w-7 max-sm:size-9"
 			onclick={() => loadDirectory(currentPath)}
 			disabled={loading}
 			title="Refresh"
 		>
-			<RefreshCw class="w-3.5 h-3.5 {loading ? 'animate-spin' : ''}" />
+			<RefreshCw class="w-3.5 h-3.5 max-sm:w-4 max-sm:h-4 {loading ? 'animate-spin' : ''}" />
 		</Button>
 	</div>
 
@@ -1059,31 +1059,31 @@
 			<table class="w-full caption-bottom text-sm text-xs">
 				<Table.Header class="sticky top-0 z-10 bg-background">
 					<Table.Row>
-						<Table.Head class="w-[35%] py-1.5 text-xs font-medium">
-							<button type="button" class="flex items-center gap-1 hover:text-foreground" onclick={() => toggleSort('name')}>
-								Name
-								<svelte:component this={getSortIcon('name')} class="w-3 h-3 opacity-50" />
-							</button>
-						</Table.Head>
-						<Table.Head class="w-[8%] py-1.5 text-xs font-medium">
-							<button type="button" class="flex items-center gap-1 hover:text-foreground" onclick={() => toggleSort('size')}>
-								Size
-								<svelte:component this={getSortIcon('size')} class="w-3 h-3 opacity-50" />
-							</button>
-						</Table.Head>
-						<Table.Head class="w-[14%] py-1.5 text-xs font-medium">
-							<span class="text-muted-foreground">Permissions</span>
-						</Table.Head>
-						<Table.Head class="w-[12%] py-1.5 text-xs font-medium">
-							<span class="text-muted-foreground">Owner</span>
-						</Table.Head>
-						<Table.Head class="w-[14%] py-1.5 text-xs font-medium">
-							<button type="button" class="flex items-center gap-1 hover:text-foreground" onclick={() => toggleSort('modified')}>
-								Modified
-								<svelte:component this={getSortIcon('modified')} class="w-3 h-3 opacity-50" />
-							</button>
-						</Table.Head>
-						<Table.Head class="w-[21%] py-1.5 text-xs font-medium text-right">Actions</Table.Head>
+					<Table.Head class="w-[35%] max-sm:w-auto py-1.5 text-xs font-medium">
+						<button type="button" class="flex items-center gap-1 hover:text-foreground" onclick={() => toggleSort('name')}>
+							Name
+							<svelte:component this={getSortIcon('name')} class="w-3 h-3 opacity-50" />
+						</button>
+					</Table.Head>
+					<Table.Head class="w-[8%] max-sm:w-[18%] py-1.5 text-xs font-medium">
+						<button type="button" class="flex items-center gap-1 hover:text-foreground" onclick={() => toggleSort('size')}>
+							Size
+							<svelte:component this={getSortIcon('size')} class="w-3 h-3 opacity-50" />
+						</button>
+					</Table.Head>
+					<Table.Head class="w-[14%] max-sm:hidden py-1.5 text-xs font-medium">
+						<span class="text-muted-foreground">Permissions</span>
+					</Table.Head>
+					<Table.Head class="w-[12%] max-sm:hidden py-1.5 text-xs font-medium">
+						<span class="text-muted-foreground">Owner</span>
+					</Table.Head>
+					<Table.Head class="w-[14%] max-sm:hidden py-1.5 text-xs font-medium">
+						<button type="button" class="flex items-center gap-1 hover:text-foreground" onclick={() => toggleSort('modified')}>
+							Modified
+							<svelte:component this={getSortIcon('modified')} class="w-3 h-3 opacity-50" />
+						</button>
+					</Table.Head>
+					<Table.Head class="w-[21%] max-sm:w-[34%] py-1.5 text-xs font-medium text-right">Actions</Table.Head>
 					</Table.Row>
 				</Table.Header>
 				<Table.Body>
@@ -1094,7 +1094,7 @@
 						{@const filePath = currentPath === '/' ? `/${entry.name}` : `${currentPath}/${entry.name}`}
 						{@const isSelected = selectMode && selectedFilePath === filePath}
 						<Table.Row class="{isClickable ? 'cursor-pointer' : ''} hover:bg-muted/50 group {isSelected ? 'bg-primary/10 hover:bg-primary/15' : ''} {isSelectable ? 'border-l-2 border-l-primary' : ''}">
-							<Table.Cell class="py-1">
+							<Table.Cell class="py-1 max-sm:py-2.5">
 								<button
 									type="button"
 									class="flex items-center gap-1.5 w-full text-left {isClickable ? '' : 'cursor-default'}"
@@ -1128,30 +1128,30 @@
 									{/if}
 								</button>
 							</Table.Cell>
-							<Table.Cell class="text-muted-foreground py-1">
+							<Table.Cell class="text-muted-foreground py-1 max-sm:py-2.5">
 								{entry.type === 'directory' ? '-' : formatSize(entry.size)}
 							</Table.Cell>
-							<Table.Cell class="text-muted-foreground py-1 font-mono text-xs">
+							<Table.Cell class="text-muted-foreground py-1 font-mono text-xs max-sm:hidden">
 								<span title={entry.permissions}>{permissionsToOctal(entry.permissions)}</span>
 								<span class="ml-1 opacity-60">{entry.permissions}</span>
 							</Table.Cell>
-							<Table.Cell class="text-muted-foreground py-1 font-mono text-xs">
+							<Table.Cell class="text-muted-foreground py-1 font-mono text-xs max-sm:hidden">
 								{#if entry.owner}
 									<span title={entry.group ? `${entry.owner}:${entry.group}` : entry.owner}>{entry.owner}{#if entry.group && entry.group !== entry.owner}<span class="opacity-60">:{entry.group}</span>{/if}</span>
 								{:else}
 									<span class="opacity-40">-</span>
 								{/if}
 							</Table.Cell>
-							<Table.Cell class="text-muted-foreground py-1">
+							<Table.Cell class="text-muted-foreground py-1 max-sm:hidden">
 								{formatDate(entry.modified)}
 							</Table.Cell>
-							<Table.Cell class="text-right py-1">
-								<div class="flex items-center justify-end gap-0.5">
+							<Table.Cell class="text-right py-1 max-sm:py-2">
+								<div class="flex items-center justify-end gap-0.5 max-sm:justify-end max-sm:flex-wrap">
 									{#if isViewable(entry)}
 										<Button
 											variant="ghost"
 											size="icon"
-											class="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
+											class="h-6 w-6 max-sm:size-9 max-sm:opacity-100 opacity-0 group-hover:opacity-100 transition-opacity"
 											onclick={(e: MouseEvent) => { e.stopPropagation(); openFileForView(entry); }}
 											disabled={loadingFile}
 											title="View file"
@@ -1163,7 +1163,7 @@
 										<Button
 											variant="ghost"
 											size="icon"
-											class="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity {entry.readonly ? 'cursor-not-allowed' : ''}"
+											class="h-6 w-6 max-sm:size-9 max-sm:opacity-100 opacity-0 group-hover:opacity-100 transition-opacity {entry.readonly ? 'cursor-not-allowed' : ''}"
 											onclick={(e: MouseEvent) => { e.stopPropagation(); if (!entry.readonly) openFileForEdit(entry); }}
 											disabled={loadingFile || entry.readonly}
 											title={entry.readonly ? "File is read-only" : "Edit file"}
@@ -1181,7 +1181,7 @@
 										<Button
 											variant="ghost"
 											size="icon"
-											class="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
+											class="h-6 w-6 max-sm:size-9 max-sm:opacity-100 opacity-0 group-hover:opacity-100 transition-opacity"
 											onclick={(e: MouseEvent) => { e.stopPropagation(); openRenameModal(entry); }}
 											title="Rename"
 										>
@@ -1190,7 +1190,7 @@
 										<Button
 											variant="ghost"
 											size="icon"
-											class="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
+											class="h-6 w-6 max-sm:size-9 max-sm:opacity-100 opacity-0 group-hover:opacity-100 transition-opacity"
 											onclick={(e: MouseEvent) => { e.stopPropagation(); openChmodModal(entry); }}
 											title="Change permissions"
 										>
@@ -1219,7 +1219,7 @@
 										<Button
 											variant="ghost"
 											size="icon"
-											class="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
+											class="h-6 w-6 max-sm:size-9 max-sm:opacity-100 opacity-0 group-hover:opacity-100 transition-opacity"
 											onclick={(e: MouseEvent) => { e.stopPropagation(); downloadFile(entry); }}
 											title="Download"
 										>
@@ -1238,21 +1238,21 @@
 	<!-- File Editor Overlay -->
 	{#if editingFile}
 		<div class="absolute inset-0 bg-background flex flex-col z-10">
-			<div class="flex items-center justify-between p-2 border-b bg-muted/30">
-				<div class="flex items-center gap-2 text-xs">
-					<File class="w-3.5 h-3.5 text-muted-foreground" />
-					<span class="font-medium">{editingFile.name}</span>
-					<span class="text-muted-foreground">{editingFile.path}</span>
-				</div>
-				<div class="flex items-center gap-1">
-					<Button variant="ghost" size="icon" class="h-7 w-7" onclick={toggleEditorTheme} title={editorTheme === 'light' ? 'Switch to dark theme' : 'Switch to light theme'}>
+				<div class="flex items-center justify-between gap-2 p-2 border-b bg-muted/30">
+					<div class="flex items-center gap-2 text-xs min-w-0">
+						<File class="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+						<span class="font-medium shrink-0">{editingFile.name}</span>
+						<span class="text-muted-foreground min-w-0 truncate">{editingFile.path}</span>
+					</div>
+					<div class="flex items-center gap-1">
+						<Button variant="ghost" size="icon" class="h-7 w-7 max-sm:size-11" onclick={toggleEditorTheme} title={editorTheme === 'light' ? 'Switch to dark theme' : 'Switch to light theme'}>
 						{#if editorTheme === 'light'}
 							<Moon class="w-3.5 h-3.5" />
 						{:else}
 							<Sun class="w-3.5 h-3.5" />
 						{/if}
 					</Button>
-					<Button variant="outline" size="sm" class="h-7 text-xs" onclick={saveFile} disabled={savingFile}>
+					<Button variant="outline" size="sm" class="h-7 max-sm:min-h-11 text-xs" onclick={saveFile} disabled={savingFile}>
 						{#if savingFile}
 							<Loader2 class="w-3.5 h-3.5 mr-1.5 animate-spin" />
 						{:else}
@@ -1260,7 +1260,7 @@
 						{/if}
 						Save
 					</Button>
-					<Button variant="ghost" size="icon" class="h-7 w-7" onclick={closeEditor} title="Close editor">
+					<Button variant="ghost" size="icon" class="h-7 w-7 max-sm:size-11" onclick={closeEditor} title="Close editor">
 						<X class="w-3.5 h-3.5" />
 					</Button>
 				</div>
@@ -1300,22 +1300,22 @@
 		<LoadingState class="absolute inset-0 z-10 bg-background" label={`Loading preview${previewingName ? ` - ${previewingName}` : ''}...`} />
 	{:else if viewingFile}
 		<div class="absolute inset-0 bg-background flex flex-col z-10">
-			<div class="flex items-center justify-between p-2 border-b bg-muted/30">
-				<div class="flex items-center gap-2 text-xs">
-					<Eye class="w-3.5 h-3.5 text-muted-foreground" />
-					<span class="font-medium">{viewingFile.name}</span>
-					<span class="text-muted-foreground">{viewingFile.path}</span>
-					<span class="text-xs text-muted-foreground bg-muted px-1.5 py-0.5 rounded">read-only</span>
-				</div>
-				<div class="flex items-center gap-1">
-					<Button variant="ghost" size="icon" class="h-7 w-7" onclick={toggleEditorTheme} title={editorTheme === 'light' ? 'Switch to dark theme' : 'Switch to light theme'}>
+				<div class="flex items-center justify-between gap-2 p-2 border-b bg-muted/30">
+					<div class="flex items-center gap-2 text-xs min-w-0">
+						<Eye class="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+						<span class="font-medium shrink-0">{viewingFile.name}</span>
+						<span class="text-muted-foreground min-w-0 truncate">{viewingFile.path}</span>
+						<span class="text-xs text-muted-foreground bg-muted px-1.5 py-0.5 rounded shrink-0">read-only</span>
+					</div>
+					<div class="flex items-center gap-1">
+						<Button variant="ghost" size="icon" class="h-7 w-7 max-sm:size-11" onclick={toggleEditorTheme} title={editorTheme === 'light' ? 'Switch to dark theme' : 'Switch to light theme'}>
 						{#if editorTheme === 'light'}
 							<Moon class="w-3.5 h-3.5" />
 						{:else}
 							<Sun class="w-3.5 h-3.5" />
 						{/if}
 					</Button>
-					<Button variant="ghost" size="icon" class="h-7 w-7" onclick={closeViewer} title="Close viewer">
+					<Button variant="ghost" size="icon" class="h-7 w-7 max-sm:size-11" onclick={closeViewer} title="Close viewer">
 						<X class="w-3.5 h-3.5" />
 					</Button>
 				</div>

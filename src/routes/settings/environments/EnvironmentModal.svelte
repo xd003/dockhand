@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { toast } from 'svelte-sonner';
+	import { tick } from 'svelte';
 	import { readJobResponse } from '$lib/utils/sse-fetch';
 	import { validateEnvName } from '$lib/utils/env-name';
 	import { Button } from '$lib/components/ui/button';
@@ -273,6 +274,12 @@
 
 	// Modal tab state
 	let modalTab = $state<string>('general');
+	let modalTabList = $state<HTMLElement | null>(null);
+	$effect(() => {
+		const tab = modalTab;
+		if (!modalTabList) return;
+		void tick().then(() => modalTabList?.querySelector<HTMLElement>(`[data-value="${tab}"]`)?.scrollIntoView({ block: 'nearest', inline: 'nearest' }));
+	});
 
 	// Form state
 	let formName = $state('');
@@ -1613,16 +1620,16 @@
 </script>
 
 <Dialog.Root bind:open onOpenChange={(o) => { if (o) focusFirstInput(); else onClose(); }}>
-	<Dialog.Content class="max-w-4xl max-h-[90vh] flex flex-col overflow-hidden">
-		<Dialog.Header class="flex-shrink-0 border-b pb-4">
-			<Dialog.Title class="flex items-center gap-2">
+	<Dialog.Content class="max-w-4xl max-h-[calc(100dvh-1rem)] flex flex-col overflow-hidden">
+		<Dialog.Header class="flex-shrink-0 min-w-0 border-b pb-4">
+			<Dialog.Title class="flex min-w-0 items-center gap-2 pr-10">
 				{#if !isEditing}
 					Add environment
 				{:else}
 					Edit environment
 				{/if}
 				{#if environment}
-					<Badge variant="secondary" class="text-xs">{environment.name}</Badge>
+					<Badge variant="secondary" class="text-xs min-w-0 truncate">{environment.name}</Badge>
 				{/if}
 			</Dialog.Title>
 		</Dialog.Header>
@@ -1631,58 +1638,58 @@
 			<div class="text-sm text-red-600 dark:text-red-400 px-1 pt-4">{formError}</div>
 		{/if}
 
-		<Tabs.Root bind:value={modalTab} class="flex-1 flex flex-col overflow-hidden mt-4">
-			<Tabs.List class="flex-shrink-0 mb-0 w-full grid grid-cols-6">
-				<Tabs.Trigger value="general" class="flex items-center justify-center gap-1.5">
+		<Tabs.Root bind:value={modalTab} class="flex-1 min-h-0 flex flex-col overflow-hidden mt-4">
+			<Tabs.List bind:ref={modalTabList} class="mb-0 grid w-full flex-shrink-0 grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
+				<Tabs.Trigger value="general" class="h-11 min-w-0 flex items-center justify-center gap-1.5 sm:h-8">
 					<Globe class="w-3.5 h-3.5" />
 					General
 				</Tabs.Trigger>
-				<Tabs.Trigger value="updates" class="flex items-center justify-center gap-1.5">
+				<Tabs.Trigger value="updates" class="h-11 min-w-0 flex items-center justify-center gap-1.5 sm:h-8">
 					<CircleFadingArrowUp class="w-3.5 h-3.5" />
 					Updates
 				</Tabs.Trigger>
-				<Tabs.Trigger value="activity" class="flex items-center justify-center gap-1.5">
+				<Tabs.Trigger value="activity" class="h-11 min-w-0 flex items-center justify-center gap-1.5 sm:h-8">
 					<Activity class="w-3.5 h-3.5" />
 					Activity
 				</Tabs.Trigger>
-				<Tabs.Trigger value="security" class="flex items-center justify-center gap-1.5">
+				<Tabs.Trigger value="security" class="h-11 min-w-0 flex items-center justify-center gap-1.5 sm:h-8">
 					<ShieldCheck class="w-3.5 h-3.5" />
 					Security
 				</Tabs.Trigger>
 				<!-- BETA GATE: Backups tab hidden unless FEAT_BACKUPS_ENABLED (see features.ts) -->
 				{#if $page.data.backupsEnabled}
-					<Tabs.Trigger value="backup" class="flex items-center justify-center gap-1.5">
+					<Tabs.Trigger value="backup" class="h-11 min-w-0 flex items-center justify-center gap-1.5 sm:h-8">
 						<Archive class="w-3.5 h-3.5" />
 						Backups
 					</Tabs.Trigger>
 				{/if}
-				<Tabs.Trigger value="notifications" class="flex items-center justify-center gap-1.5">
+				<Tabs.Trigger value="notifications" class="h-11 min-w-0 flex items-center justify-center gap-1.5 sm:h-8">
 					<Bell class="w-3.5 h-3.5" />
 					Notifications
 				</Tabs.Trigger>
 			</Tabs.List>
 
-			<div class="overflow-y-auto py-4 h-[520px] [scrollbar-gutter:stable] pr-5">
+			<div class="flex-1 min-h-0 overflow-y-auto py-4 h-auto max-h-[min(520px,calc(100dvh-14rem))] [scrollbar-gutter:stable] pr-0 sm:pr-5">
 				<!-- General Tab (Connection Settings) -->
 					<Tabs.Content value="general" class="space-y-4 mt-0 h-full">
 						<!-- Name field -->
 						<div class="space-y-2">
 							<Label for="edit-env-name">Name</Label>
-							<div class="flex gap-2">
+							<div class="grid grid-cols-[auto_auto_minmax(0,1fr)] items-center gap-2">
 								{#if isCustomIcon(formIcon) || pendingIconData}
-									<Button variant="outline" size="sm" class="h-9 w-9 p-0 relative group" type="button" onclick={() => iconFileInput?.click()}>
+									<Button variant="outline" size="sm" class="h-11 w-11 p-0 relative group" type="button" aria-label="Change environment icon" onclick={() => iconFileInput?.click()}>
 										{#if pendingIconData}
 											<img src={pendingIconData} alt="" class="w-5 h-5 rounded object-cover" />
 										{:else if environment}
 											<EnvironmentIcon icon={formIcon} envId={environment.id} class="w-5 h-5" cacheBust={iconCacheBust} />
 										{/if}
 									</Button>
-									<Button variant="ghost" size="sm" class="h-9 w-9 p-0" type="button" title="Remove custom icon" onclick={removeCustomIcon}>
+									<Button variant="ghost" size="sm" class="h-11 w-11 p-0" type="button" aria-label="Remove custom icon" title="Remove custom icon" onclick={removeCustomIcon}>
 										<X class="w-3.5 h-3.5 text-muted-foreground" />
 									</Button>
 								{:else}
 									<IconPicker value={formIcon} onchange={(icon) => formIcon = icon} />
-									<Button variant="ghost" size="sm" class="h-9 w-9 p-0" type="button" title="Upload custom icon" onclick={() => iconFileInput?.click()}>
+									<Button variant="ghost" size="sm" class="h-11 w-11 p-0" type="button" aria-label="Upload custom icon" title="Upload custom icon" onclick={() => iconFileInput?.click()}>
 										<ImageUp class="w-4 h-4 text-muted-foreground" />
 									</Button>
 								{/if}
@@ -1733,7 +1740,7 @@
 								</div>
 							{/if}
 							{#if formLabels.length < MAX_LABELS}
-								<div class="flex gap-2">
+								<div class="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
 									<div class="relative flex-1">
 										<Input
 											bind:value={newLabelInput}
@@ -1777,9 +1784,10 @@
 											</div>
 										{/if}
 									</div>
-									<Button
+										<Button
 										variant="outline"
 										size="sm"
+										aria-label="Add label"
 										onclick={() => {
 											const trimmed = newLabelInput.trim().toLowerCase();
 											if (trimmed && !formLabels.includes(trimmed)) {
@@ -2041,7 +2049,7 @@
 
 						<!-- Direct connection settings -->
 						{#if formConnectionType === 'direct'}
-							<div class="grid grid-cols-2 gap-4">
+							<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
 								<div class="space-y-2">
 									<Label for="edit-env-host">Host</Label>
 									<Input
@@ -2166,7 +2174,7 @@
 
 						<!-- Hawser standard mode settings -->
 						{#if formConnectionType === 'hawser-standard'}
-							<div class="grid grid-cols-2 gap-4">
+							<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
 								<div class="space-y-2">
 									<Label for="edit-env-host">Agent host</Label>
 									<Input
@@ -3079,13 +3087,13 @@
 		</Tabs.Root>
 
 		<Dialog.Footer class="flex-shrink-0 border-t pt-4">
-			<div class="flex items-center gap-2 w-full">
+			<div class="flex w-full flex-wrap items-center gap-2">
 				<!-- Test connection button (left side) -->
 				<Button
 					variant="outline"
 					onclick={testConnection}
 					disabled={testingConnection || formSaving}
-					class="mr-auto"
+					class="mr-auto max-sm:h-11 max-sm:w-full"
 				>
 					{#if testingConnection}
 						<Loader2 class="w-4 h-4 animate-spin" />
@@ -3104,10 +3112,10 @@
 
 				{#if !isEditing}
 					<!-- Add mode -->
-					<Button variant="outline" onclick={onClose}>
+					<Button variant="outline" class="max-sm:h-11 max-sm:flex-1" onclick={onClose}>
 						Cancel
 					</Button>
-					<Button onclick={createEnvironment} disabled={formSaving}>
+					<Button class="max-sm:h-11 max-sm:flex-1" onclick={createEnvironment} disabled={formSaving}>
 						{#if formSaving}
 							<RefreshCw class="w-4 h-4 animate-spin" />
 						{:else}
@@ -3117,10 +3125,10 @@
 					</Button>
 				{:else}
 					<!-- Edit mode -->
-					<Button variant="outline" onclick={onClose}>
+					<Button variant="outline" class="max-sm:h-11 max-sm:flex-1" onclick={onClose}>
 						Cancel
 					</Button>
-					<Button onclick={updateEnvironment} disabled={formSaving}>
+					<Button class="max-sm:h-11 max-sm:flex-1" onclick={updateEnvironment} disabled={formSaving}>
 						{#if formSaving}
 							<RefreshCw class="w-4 h-4 animate-spin" />
 						{:else}
@@ -3156,8 +3164,8 @@
 				Rename environment?
 			</Dialog.Title>
 			<Dialog.Description class="pt-2 space-y-3 text-sm">
-				<p>The following directories will be moved on the Dockhand host:</p>
-				<div class="space-y-1 text-xs font-mono bg-muted/40 rounded-md p-3 border overflow-x-auto">
+				<p>The following staging directories will be moved on the Dockhand host (local deployed stacks under <code class="text-xs">STACKS_DIR</code>, when configured, are not renamed):</p>
+				<div class="space-y-1 text-xs font-mono bg-muted/40 rounded-md p-3 border break-all">
 					<div class="flex items-center gap-2 whitespace-nowrap">
 						<code class="whitespace-nowrap">$DATA_DIR/stacks/{renameConfirmFrom}/</code>
 						<ArrowRight class="w-3.5 h-3.5 shrink-0 text-muted-foreground" />

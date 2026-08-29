@@ -16,6 +16,7 @@
 		pluralLabel?: string;
 		width?: string;
 		defaultIcon?: Component;
+		iconOnly?: boolean;
 	}
 
 	let {
@@ -24,7 +25,8 @@
 		placeholder,
 		pluralLabel,
 		width = 'w-36',
-		defaultIcon
+		defaultIcon,
+		iconOnly = false
 	}: Props = $props();
 
 	// Control dropdown open state
@@ -59,17 +61,30 @@
 </script>
 
 <Select.Root type="multiple" bind:value bind:open>
-	<Select.Trigger size="sm" class="{width} max-w-full text-sm overflow-hidden">
+	<Select.Trigger
+		size="sm"
+		aria-label={iconOnly ? placeholder : undefined}
+		title={iconOnly ? displayLabel() : undefined}
+		class={iconOnly
+			? 'relative size-11 p-0 justify-center overflow-visible [&>svg:last-child]:hidden'
+			: `${width} max-w-full text-sm overflow-hidden`}
+	>
 		{#if hasIcons || defaultIcon}
 			{@const opt = singleOption()}
 			{@const IconComponent = opt?.icon || defaultIcon}
 			{#if IconComponent}
-				<svelte:component this={IconComponent} class="w-3.5 h-3.5 mr-1.5 {opt?.color || 'text-muted-foreground'} shrink-0" />
+				<svelte:component this={IconComponent} class="w-3.5 h-3.5 {iconOnly ? '' : 'mr-1.5'} {opt?.color || 'text-muted-foreground'} shrink-0" />
 			{/if}
 		{/if}
-		<span class="truncate {value.length === 0 ? 'text-muted-foreground' : ''}" title={value.length === 1 ? displayLabel() : ''}>
-			{displayLabel()}
-		</span>
+		{#if !iconOnly}
+			<span class="truncate {value.length === 0 ? 'text-muted-foreground' : ''}" title={value.length === 1 ? displayLabel() : ''}>
+				{displayLabel()}
+			</span>
+		{:else if value.length > 0}
+			<span class="absolute -right-1 -top-1 flex size-4 items-center justify-center rounded-full bg-primary text-[10px] font-semibold text-primary-foreground">
+				{value.length}
+			</span>
+		{/if}
 	</Select.Trigger>
 	<Select.Content align="start">
 		{#if value.length > 0}

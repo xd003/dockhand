@@ -7,6 +7,8 @@
 	import { page } from '$app/stores';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
+	import * as Popover from '$lib/components/ui/popover';
+	import * as Command from '$lib/components/ui/command';
 	import * as Select from '$lib/components/ui/select';
 	import { Checkbox } from '$lib/components/ui/checkbox';
 	import { ToggleGroup } from '$lib/components/ui/toggle-pill';
@@ -354,7 +356,7 @@ import type { FavoriteGroup } from '../api/preferences/favorite-groups/+server';
 					mergedLogs = []; pendingGroupedEntries = []; groupedCarryover.clear();
 					selectedContainer = container;
 					if (streamingEnabled) {
-						startStreaming(container);
+					startStreaming();
 					}
 					saveState();
 				}
@@ -377,7 +379,12 @@ import type { FavoriteGroup } from '../api/preferences/favorite-groups/+server';
 		darkMode = !darkMode;
 		saveState();
 	}
-	let logsRef: HTMLDivElement | undefined;
+	let logsRef = $state<HTMLDivElement | undefined>(undefined);
+	let workspaceRef = $state<HTMLDivElement | undefined>(undefined);
+	let workspaceWidth = $state(0);
+	let workspaceResizeObserver: ResizeObserver | null = null;
+	const compactWorkspace = $derived(workspaceWidth > 0 && workspaceWidth < 800);
+	let compactContainersOpen = $state(false);
 	let envId = $state<number | null>(null);
 	// Polling interval - module scope for cleanup in onDestroy
 	let containerInterval: ReturnType<typeof setInterval> | null = null;
@@ -405,7 +412,8 @@ import type { FavoriteGroup } from '../api/preferences/favorite-groups/+server';
 	let terminalLayout = $state<'below' | 'right'>('below');
 	let terminalSplitRatio = $state(0.5); // 0-1, ratio of logs panel
 	let isResizingTerminal = $state(false);
-	let terminalSplitRef: HTMLDivElement | undefined;
+	let terminalSplitRef = $state<HTMLDivElement | undefined>(undefined);
+	const effectiveTerminalLayout = $derived(compactWorkspace ? 'below' : terminalLayout);
 
 	const TERMINAL_LAYOUT_KEY = 'dockhand-logs-terminal-layout';
 	const TERMINAL_SPLIT_KEY = 'dockhand-logs-terminal-split';
@@ -451,18 +459,17 @@ import type { FavoriteGroup } from '../api/preferences/favorite-groups/+server';
 		terminalContainerId = null;
 	}
 
-	function startTerminalResize(e: MouseEvent) {
+	function startTerminalResize(e: PointerEvent) {
 		e.preventDefault();
 		isResizingTerminal = true;
-		document.addEventListener('mousemove', handleTerminalResize);
-		document.addEventListener('mouseup', stopTerminalResize);
+		(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
 	}
 
-	function handleTerminalResize(e: MouseEvent) {
+	function handleTerminalResize(e: PointerEvent) {
 		if (!isResizingTerminal || !terminalSplitRef) return;
 		const rect = terminalSplitRef.getBoundingClientRect();
 		let ratio: number;
-		if (terminalLayout === 'below') {
+		if (effectiveTerminalLayout === 'below') {
 			ratio = (e.clientY - rect.top) / rect.height;
 		} else {
 			ratio = (e.clientX - rect.left) / rect.width;
@@ -470,10 +477,14 @@ import type { FavoriteGroup } from '../api/preferences/favorite-groups/+server';
 		terminalSplitRatio = Math.max(0.2, Math.min(0.8, ratio));
 	}
 
-	function stopTerminalResize() {
+	function stopTerminalResize(e?: PointerEvent) {
 		isResizingTerminal = false;
-		document.removeEventListener('mousemove', handleTerminalResize);
-		document.removeEventListener('mouseup', stopTerminalResize);
+		if (e && (e.currentTarget as HTMLElement).hasPointerCapture(e.pointerId)) (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+		saveTerminalSettings();
+	}
+
+	function adjustTerminalSplit(delta: number) {
+		terminalSplitRatio = Math.max(0.2, Math.min(0.8, terminalSplitRatio + delta));
 		saveTerminalSettings();
 	}
 
@@ -1031,7 +1042,7 @@ import type { FavoriteGroup } from '../api/preferences/favorite-groups/+server';
 				return container?.state === 'running';
 			});
 		}
-		return selectedContainer?.state === 'running' ?? false;
+		return selectedContainer?.state === 'running';
 	}
 
 	// Start SSE streaming for grouped/merged logs
@@ -1558,6 +1569,7 @@ import type { FavoriteGroup } from '../api/preferences/favorite-groups/+server';
 
 		if (logSearchQuery && logsRef) {
 			setTimeout(() => {
+				if (!logsRef) return;
 				const matches = logsRef.querySelectorAll('.search-match');
 				matchCount = matches.length;
 				currentMatchIndex = 0;
@@ -1574,6 +1586,19 @@ import type { FavoriteGroup } from '../api/preferences/favorite-groups/+server';
 	});
 
 
+	// Workspace width tracking. $effect (not onMount): the workspace div only exists once the
+	// environments store resolves, which can be after mount on a direct /logs load — onMount
+	// would see a null ref and the observer would never attach.
+	$effect(() => {
+		if (!workspaceRef) return;
+		workspaceResizeObserver = new ResizeObserver(([entry]) => { workspaceWidth = entry.contentRect.width; });
+		workspaceResizeObserver.observe(workspaceRef);
+		return () => {
+			workspaceResizeObserver?.disconnect();
+			workspaceResizeObserver = null;
+		};
+	});
+
 	onMount(() => {
 		loadTerminalSettings();
 		// All initialization is handled in currentEnvironment.subscribe
@@ -1583,8 +1608,6 @@ import type { FavoriteGroup } from '../api/preferences/favorite-groups/+server';
 	});
 
 	onDestroy(() => {
-		document.removeEventListener('mousemove', handleTerminalResize);
-		document.removeEventListener('mouseup', stopTerminalResize);
 		unsubscribeEnv();
 		if (containerInterval) {
 			clearInterval(containerInterval);
@@ -1603,9 +1626,9 @@ import type { FavoriteGroup } from '../api/preferences/favorite-groups/+server';
 		<NoEnvironment />
 	</div>
 {:else}
-<div class="flex flex-col flex-1 min-h-0 h-full gap-3">
+	<div bind:this={workspaceRef} class="logs-workspace @container/logs flex flex-col flex-1 min-h-0 min-w-0 h-full gap-3">
 	<!-- Header with container selector -->
-	<div class="flex items-center gap-4 h-9">
+	<div class="grid grid-cols-[auto_auto_minmax(0,1fr)] items-center gap-2 sm:gap-4 min-w-0">
 		<PageHeader icon={ScrollText} title="Logs" />
 		<!-- Layout toggle - fixed position after title -->
 		<ToggleGroup
@@ -1614,48 +1637,34 @@ import type { FavoriteGroup } from '../api/preferences/favorite-groups/+server';
 			onchange={handleLayoutModeChange}
 		/>
 		{#if layoutMode === 'single'}
-			<div class="relative flex-1 max-w-md">
-				<!-- Search input - always visible, shows selected container name as placeholder -->
-				<div class="relative">
-					<Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-					<Input
-						type="text"
-						placeholder={selectedContainer ? `${selectedContainer.name} (${selectedContainer.image})` : "Search containers..."}
-						bind:value={searchQuery}
-						onfocus={handleInputFocus}
-						onblur={handleInputBlur}
-						onkeydown={handleInputKeydown}
-						class="pl-10 pr-10 h-9 {selectedContainer ? 'placeholder:text-foreground' : ''}"
-					/>
-					<ChevronDown class="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-				</div>
-
-				<!-- Dropdown -->
-				{#if dropdownOpen}
-					<div class="absolute top-full left-0 right-0 mt-1 border rounded-md bg-popover shadow-lg z-50 max-h-64 overflow-auto">
-						{#if filteredContainers().length === 0}
-							<div class="px-3 py-2 text-sm text-muted-foreground">
-								{containers.length === 0 ? 'No containers' : 'No matches found'}
-							</div>
-						{:else}
-							{#each filteredContainers() as container}
-								{@const isCurrentSelection = selectedContainer?.id === container.id}
-								<button
-									type="button"
-									onclick={() => selectContainer(container)}
-									class="w-full px-3 py-2 text-left text-sm hover:bg-muted transition-colors flex items-center gap-2 {isCurrentSelection ? 'bg-muted' : ''}"
-								>
-									<ContainerIcon image={container.image} name={container.name} class="w-3.5 h-3.5" fallbackClass={container.state === 'running' ? 'text-green-500' : 'text-muted-foreground'} showFallbackWhenOff />
-									<span class="font-medium truncate">{container.name}</span>
-									<span class="text-muted-foreground text-xs truncate">({container.image})</span>
-									{#if isCurrentSelection}
-										<span class="ml-auto text-xs text-muted-foreground">current</span>
-									{/if}
-								</button>
-							{/each}
-						{/if}
-					</div>
-				{/if}
+			<!-- Own full-width row on mobile; same grid cell as the toggle on desktop. -->
+			<div class="relative min-w-0 w-full max-w-md max-sm:col-span-full max-sm:max-w-none">
+				<Popover.Root bind:open={dropdownOpen}>
+					<Popover.Trigger class="flex h-9 w-full min-w-0 items-center justify-between rounded-md border bg-background px-3 text-left text-sm">
+						<span class="truncate">{selectedContainer ? `${selectedContainer.name} (${selectedContainer.image})` : 'Select container...'}</span>
+						<ChevronDown class="h-4 w-4 shrink-0 text-muted-foreground" />
+					</Popover.Trigger>
+					<Popover.Content align="start" class="w-[min(32rem,calc(100vw-1rem))] max-sm:w-(--bits-floating-anchor-width) p-0">
+						<Command.Root>
+							<Command.Input placeholder="Search containers..." />
+							<Command.List>
+								<Command.Empty>{containers.length === 0 ? 'No containers' : 'No matches found'}</Command.Empty>
+								<Command.Group>
+									{#each containers as container}
+										<Command.Item
+											value={`${container.name} ${container.image}`}
+											onSelect={() => { selectContainer(container); dropdownOpen = false; }}
+										>
+											<ContainerIcon image={container.image} name={container.name} class="w-3.5 h-3.5" fallbackClass={container.state === 'running' ? 'text-green-500' : 'text-muted-foreground'} showFallbackWhenOff />
+											<span class="truncate">{container.name}</span>
+											<span class="truncate text-xs text-muted-foreground">({container.image})</span>
+										</Command.Item>
+									{/each}
+								</Command.Group>
+							</Command.List>
+						</Command.Root>
+					</Popover.Content>
+				</Popover.Root>
 			</div>
 		{:else if layoutMode === 'multi'}
 			<!-- Multi layout - container name now shown in logs header bar -->
@@ -1667,10 +1676,54 @@ import type { FavoriteGroup } from '../api/preferences/favorite-groups/+server';
 	</div>
 
 	<!-- Logs output - full height -->
-	<div class="flex-1 min-h-0 flex gap-3">
+	<div class="flex-1 min-h-0 min-w-0 flex flex-col gap-2 sm:flex-row sm:gap-3">
 		<!-- Container sidebar for multi/grouped layout -->
+		{#if compactWorkspace && (layoutMode === 'multi' || layoutMode === 'grouped')}
+			<!-- Dropdown below the trigger on mobile (same pattern as the Settings tab select). -->
+			<Popover.Root bind:open={compactContainersOpen}>
+				<Popover.Trigger class="flex min-h-11 w-full shrink-0 items-center justify-between rounded-lg border bg-background px-3 text-sm sm:hidden">
+					<span>Containers</span>
+					<span class="flex items-center gap-1.5 text-muted-foreground">
+						{layoutMode === 'grouped' ? `${selectedContainerIds.size} selected` : `${containers.length} total`}
+						<ChevronDown class="h-4 w-4" />
+					</span>
+				</Popover.Trigger>
+				<Popover.Content align="start" sideOffset={6} class="w-(--bits-floating-anchor-width) p-2 z-[200]">
+					<div class="flex min-h-0 flex-col gap-2">
+						<Input type="text" placeholder="Filter containers..." bind:value={searchQuery} class="h-9" />
+						{#if layoutMode === 'grouped'}
+							<div class="flex items-center gap-2 text-xs text-muted-foreground">
+								<button type="button" onclick={selectAllContainers}>Select all</button>
+								<span>|</span>
+								<button type="button" onclick={clearContainerSelection}>Clear</button>
+							</div>
+						{/if}
+						<div class="max-h-[min(20rem,50dvh)] overflow-auto">
+							{#each filteredContainers() as container}
+								<button
+									type="button"
+									class="flex min-h-11 w-full items-center gap-2 rounded px-2 text-left text-sm hover:bg-muted"
+									onclick={(event) => {
+										if (layoutMode === 'grouped') toggleContainerSelection(container.id);
+										else toggleMultiModeSelection(container.id, event);
+									}}
+								>
+									<ContainerIcon image={container.image} name={container.name} class="h-4 w-4" fallbackClass={container.state === 'running' ? 'text-green-500' : 'text-muted-foreground'} showFallbackWhenOff />
+									<span class="min-w-0 flex-1 truncate">{container.name}</span>
+									{#if layoutMode === 'grouped' && selectedContainerIds.has(container.id)}<Check class="h-4 w-4 text-primary" />{/if}
+									{#if layoutMode === 'multi' && multiModeSelections.has(container.id)}<Check class="h-4 w-4 text-primary" />{/if}
+								</button>
+							{/each}
+						</div>
+						{#if layoutMode === 'multi' && multiModeSelections.size >= 2}
+							<Button size="sm" onclick={mergeSelectedContainers}>Merge {multiModeSelections.size} containers logs</Button>
+						{/if}
+					</div>
+				</Popover.Content>
+			</Popover.Root>
+		{/if}
 		{#if layoutMode === 'multi' || layoutMode === 'grouped'}
-			<div class="w-64 shrink-0 border rounded-lg overflow-hidden flex flex-col bg-background">
+			<div class="hidden w-full sm:flex sm:w-64 shrink-0 min-w-0 border rounded-lg overflow-hidden flex-col bg-background">
 				<div class="px-3 py-2 border-b bg-muted/30">
 					<div class="relative">
 						<Search class="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
@@ -1716,7 +1769,7 @@ import type { FavoriteGroup } from '../api/preferences/favorite-groups/+server';
 									<div
 										class="saved-group-item w-full px-1.5 py-1 text-left text-xs hover:bg-purple-500/10 transition-colors flex items-center gap-1.5 border-b border-purple-500/20 cursor-pointer"
 										onclick={() => loadFavoriteGroup(savedGroup)}
-										onkeydown={(e) => e.key === 'Enter' && loadFavoriteGroup(savedGroup)}
+										onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), loadFavoriteGroup(savedGroup))}
 										role="button"
 										tabindex="0"
 									>
@@ -1755,7 +1808,7 @@ import type { FavoriteGroup } from '../api/preferences/favorite-groups/+server';
 									<div
 										class="group w-full px-1.5 py-1 text-left text-xs hover:bg-amber-500/10 transition-colors flex items-center gap-1.5 border-b border-amber-500/20 cursor-pointer {selectedContainer?.id === container.id ? 'bg-amber-500/15' : ''} {dragOverFavorite === container.name ? 'bg-amber-500/20 border-t-2 border-t-amber-500' : ''} {draggedFavorite === container.name ? 'opacity-50' : ''}"
 										onclick={() => selectContainer(container)}
-										onkeydown={(e) => e.key === 'Enter' && selectContainer(container)}
+										onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), selectContainer(container))}
 										role="button"
 										tabindex="0"
 										draggable="true"
@@ -1811,7 +1864,7 @@ import type { FavoriteGroup } from '../api/preferences/favorite-groups/+server';
 									<div
 										class="group w-full px-1.5 py-1 text-left text-xs hover:bg-amber-500/10 transition-colors flex items-center gap-1.5 border-b border-amber-500/20 cursor-pointer {isSelected ? 'bg-amber-500/15' : ''}"
 										onclick={() => toggleContainerSelection(container.id)}
-										onkeydown={(e) => e.key === 'Enter' && toggleContainerSelection(container.id)}
+									onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), toggleContainerSelection(container.id))}
 										role="button"
 										tabindex="0"
 									>
@@ -1855,7 +1908,7 @@ import type { FavoriteGroup } from '../api/preferences/favorite-groups/+server';
 								<div
 									class="group w-full px-1.5 py-1 text-left text-xs hover:bg-muted transition-colors flex items-center gap-1.5 border-b border-border/50 cursor-pointer {isSelected ? 'bg-muted' : ''}"
 									onclick={() => layoutMode === 'grouped' ? toggleContainerSelection(container.id) : selectContainer(container)}
-									onkeydown={(e) => e.key === 'Enter' && (layoutMode === 'grouped' ? toggleContainerSelection(container.id) : selectContainer(container))}
+									onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), layoutMode === 'grouped' ? toggleContainerSelection(container.id) : selectContainer(container))}
 									role="button"
 									tabindex="0"
 								>
@@ -1980,8 +2033,8 @@ import type { FavoriteGroup } from '../api/preferences/favorite-groups/+server';
 		{/if}
 
 		<!-- Logs + Terminal split -->
-		<div bind:this={terminalSplitRef} class="flex-1 min-h-0 min-w-0 overflow-hidden flex {terminalOpen ? (terminalLayout === 'below' ? 'flex-col' : 'flex-row') : ''} gap-0">
-		<div class="{terminalOpen ? 'min-h-0 min-w-0' : 'flex-1'} border rounded-lg overflow-hidden flex flex-col transition-colors {darkMode ? 'bg-zinc-950 border-zinc-800' : 'bg-gray-50 border-gray-300'}" style="{terminalOpen ? (terminalLayout === 'below' ? `height: ${terminalSplitRatio * 100}%` : `width: ${terminalSplitRatio * 100}%`) : ''}">
+		<div bind:this={terminalSplitRef} class="flex-1 min-h-0 min-w-0 overflow-hidden flex {terminalOpen ? (effectiveTerminalLayout === 'below' ? 'flex-col' : 'flex-row') : ''} gap-0">
+		<div class="{terminalOpen ? 'min-h-0 min-w-0' : 'flex-1'} border rounded-lg overflow-hidden flex flex-col transition-colors {darkMode ? 'bg-zinc-950 border-zinc-800' : 'bg-gray-50 border-gray-300'}" style="{terminalOpen ? (effectiveTerminalLayout === 'below' ? `height: ${terminalSplitRatio * 100}%` : `width: ${terminalSplitRatio * 100}%`) : ''}">
 			{#if layoutMode === 'grouped'}
 				{#if selectedContainerIds.size === 0}
 					<div class="flex items-center justify-center h-full text-muted-foreground">
@@ -2182,7 +2235,7 @@ import type { FavoriteGroup } from '../api/preferences/favorite-groups/+server';
 								<RefreshCw class="w-8 h-8 animate-spin {darkMode ? 'text-zinc-400' : 'text-gray-500'}" />
 							</div>
 						{/if}
-						<pre class="font-mono {wordWrap ? 'whitespace-pre-wrap' : 'whitespace-pre'} {showLineNumbers ? 'show-line-numbers' : ''} {darkMode ? 'text-zinc-50' : 'text-gray-900'}" style="font-size: {fontSize}px;">{#each filteredMerged as e (e.id)}<div class="log-line">{#if showTimestamps && e.timestamp}<span class="log-ts">{renderTimestamp(e.timestamp)}</span>{' '}{/if}{#if showContainerName && e.containerName}<span class="log-cname" style="color:{e.color}">[{e.containerName}]</span>{' '}{/if}<span>{@html renderLineHtml(e, logSearchQuery.trim())}</span></div>{/each}</pre>
+						<pre class="font-mono {wordWrap ? 'whitespace-pre-wrap wrap-anywhere' : 'whitespace-pre'} {showLineNumbers ? 'show-line-numbers' : ''} {darkMode ? 'text-zinc-50' : 'text-gray-900'}" style="font-size: {fontSize}px;">{#each filteredMerged as e (e.id)}<div class="log-line">{#if showTimestamps && e.timestamp}<span class="log-ts">{renderTimestamp(e.timestamp)}</span>{' '}{/if}{#if showContainerName && e.containerName}<span class="log-cname" style="color:{e.color}">[{e.containerName}]</span>{' '}{/if}<span>{@html renderLineHtml(e, logSearchQuery.trim())}</span></div>{/each}</pre>
 					</div>
 				{/if}
 			{:else if !selectedContainer}
@@ -2442,7 +2495,7 @@ import type { FavoriteGroup } from '../api/preferences/favorite-groups/+server';
 				</div>
 			{:else}
 				<div bind:this={logsRef} onscroll={handleLogsScroll} class="flex-1 overflow-auto p-4">
-					<pre class="font-mono {wordWrap ? 'whitespace-pre-wrap' : 'whitespace-pre'} {showLineNumbers ? 'show-line-numbers' : ''} {darkMode ? 'text-zinc-50' : 'text-gray-900'}" style="font-size: {fontSize}px;">{#each filteredLogs as e (e.id)}<div class="log-line">{#if showTimestamps && e.timestamp}<span class="log-ts">{renderTimestamp(e.timestamp)}</span>{' '}{/if}{#if showContainerName && selectedContainer?.name}<span class="log-cname">[{selectedContainer.name}]</span>{' '}{/if}<span>{@html renderLineHtml(e, logSearchQuery.trim())}</span></div>{/each}</pre>
+					<pre class="font-mono {wordWrap ? 'whitespace-pre-wrap wrap-anywhere' : 'whitespace-pre'} {showLineNumbers ? 'show-line-numbers' : ''} {darkMode ? 'text-zinc-50' : 'text-gray-900'}" style="font-size: {fontSize}px;">{#each filteredLogs as e (e.id)}<div class="log-line">{#if showTimestamps && e.timestamp}<span class="log-ts">{renderTimestamp(e.timestamp)}</span>{' '}{/if}{#if showContainerName && selectedContainer?.name}<span class="log-cname">[{selectedContainer.name}]</span>{' '}{/if}<span>{@html renderLineHtml(e, logSearchQuery.trim())}</span></div>{/each}</pre>
 				</div>
 			{/if}
 		{/if}
@@ -2450,15 +2503,29 @@ import type { FavoriteGroup } from '../api/preferences/favorite-groups/+server';
 		<!-- Terminal panel with resize handle -->
 		{#if terminalOpen && terminalContainerId}
 			<!-- Resize handle -->
+			<!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
 			<div
 				role="separator"
-				class="{terminalLayout === 'below' ? 'h-2 cursor-ns-resize w-full' : 'w-2 cursor-ew-resize h-full'} flex items-center justify-center hover:bg-muted/50 transition-colors {isResizingTerminal ? 'bg-muted/50' : ''}"
-				onmousedown={startTerminalResize}
+				aria-orientation={effectiveTerminalLayout === 'below' ? 'horizontal' : 'vertical'}
+				aria-valuemin="20"
+				aria-valuemax="80"
+				aria-valuenow={Math.round(terminalSplitRatio * 100)}
+				aria-label="Resize terminal pane"
+				tabindex="0"
+				class="{effectiveTerminalLayout === 'below' ? 'h-2 cursor-ns-resize w-full' : 'w-2 cursor-ew-resize h-full'} flex items-center justify-center hover:bg-muted/50 transition-colors {isResizingTerminal ? 'bg-muted/50' : ''}"
+				onpointerdown={startTerminalResize}
+				onpointermove={handleTerminalResize}
+				onpointerup={stopTerminalResize}
+				onpointercancel={stopTerminalResize}
+				onkeydown={(e) => {
+					if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); adjustTerminalSplit(-0.05); }
+					if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); adjustTerminalSplit(0.05); }
+				}}
 			>
-				<GripHorizontal class="{terminalLayout === 'below' ? 'w-8 h-4' : 'w-4 h-8 rotate-90'} text-zinc-600" />
+				<GripHorizontal class="{effectiveTerminalLayout === 'below' ? 'w-8 h-4' : 'w-4 h-8 rotate-90'} text-zinc-600" />
 			</div>
 			<!-- Terminal -->
-			<div class="min-h-0 min-w-0 border rounded-lg overflow-hidden" style="{terminalLayout === 'below' ? `height: ${(1 - terminalSplitRatio) * 100}%` : `width: ${(1 - terminalSplitRatio) * 100}%`}">
+			<div class="min-h-0 min-w-0 border rounded-lg overflow-hidden" style="{effectiveTerminalLayout === 'below' ? `height: ${(1 - terminalSplitRatio) * 100}%` : `width: ${(1 - terminalSplitRatio) * 100}%`}">
 				<TerminalPanel
 					containerId={terminalContainerId}
 					containerName={terminalContainerName}

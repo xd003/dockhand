@@ -123,15 +123,15 @@
 
 {#if mode === 'exec'}
 	<!-- Shell selector -->
-	<div class="flex items-center gap-2">
-		<Label class="text-sm text-muted-foreground">{m.terminal_shell_label()}</Label>
+	<div class="flex min-w-40 flex-1 items-center gap-2 md:flex-none">
+		<Label class="hidden text-sm text-muted-foreground md:inline">{m.terminal_shell_label()}</Label>
 		{#if detectingShells}
-			<div class="h-9 w-36 flex items-center justify-center border rounded-md bg-muted/50">
+			<div class="h-11 w-full flex items-center justify-center border rounded-md bg-muted/50 md:h-9 md:w-36">
 				<Loader2 class="w-4 h-4 animate-spin text-muted-foreground" />
 			</div>
 		{:else}
 			<Select.Root type="single" bind:value={shell} onValueChange={() => onChange?.()}>
-				<Select.Trigger class="h-9 w-44" disabled={!anyShellAvailable}>
+				<Select.Trigger class="w-full data-[size=default]:h-11 md:w-44 md:data-[size=default]:h-9" disabled={!anyShellAvailable}>
 					<Shell class="w-4 h-4 mr-2 text-muted-foreground" />
 					<span class={!selectedShellAvailable ? 'text-muted-foreground line-through' : ''}>
 						{shellLabel(shell)}
@@ -170,10 +170,10 @@
 	</div>
 
 	<!-- User selector -->
-	<div class="flex items-center gap-2">
-		<Label class="text-sm text-muted-foreground">{m.terminal_user_label()}</Label>
+	<div class="flex min-w-40 flex-1 items-center gap-2 md:flex-none">
+		<Label class="hidden text-sm text-muted-foreground md:inline">{m.terminal_user_label()}</Label>
 		<Select.Root type="single" bind:value={user} onValueChange={onUserSelectChange}>
-			<Select.Trigger class="h-9 w-48">
+			<Select.Trigger class="w-full data-[size=default]:h-11 md:w-48 md:data-[size=default]:h-9">
 				<User class="w-4 h-4 mr-2 text-muted-foreground" />
 				<span>{USER_OPTIONS.find((o) => o.value === user)?.label || user || m.containers_list_select()}</span>
 			</Select.Trigger>
@@ -194,7 +194,7 @@
 							</Select.Item>
 							<button
 								type="button"
-								class="p-1 mr-1 opacity-0 group-hover:opacity-100 hover:text-destructive transition-opacity"
+								class="p-1 mr-1 opacity-0 group-hover:opacity-100 max-md:opacity-100 hover:text-destructive transition-opacity"
 								onclick={(e) => {
 									e.stopPropagation();
 									e.preventDefault();

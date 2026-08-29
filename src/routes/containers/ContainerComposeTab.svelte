@@ -304,7 +304,7 @@
 		{/if}
 
 		<!-- Toolbar -->
-		<div class="flex items-center gap-2 flex-wrap">
+		<div class="flex items-center gap-2 flex-wrap max-sm:flex-nowrap max-sm:overflow-x-auto max-sm:[scrollbar-width:none] max-sm:[&::-webkit-scrollbar]:hidden max-sm:[&>*]:shrink-0">
 			<span class="text-xs text-muted-foreground">{m.containers_compose_env_label()}</span>
 			<ToggleSwitch
 				value={envMode}
@@ -369,9 +369,11 @@
 			</div>
 		{/if}
 
-		<!-- Editor + validate panel -->
-		<div class="flex-1 min-h-0 flex gap-3">
-			<div class="flex-1 min-h-0 border rounded-md overflow-hidden">
+		<!-- Editor + validate panel. On phones the validate panel is a fixed 20rem
+		     side column, which in a ~19rem dialog left the editor 2px wide; it stacks
+		     under the editor there instead. -->
+		<div class="flex-1 min-h-0 flex gap-3 max-sm:flex-col">
+			<div class="flex-1 min-h-0 border rounded-md overflow-hidden max-sm:min-h-40">
 				<CodeEditor
 					bind:this={editorRef}
 					value={editorContent}
@@ -384,7 +386,7 @@
 				/>
 			</div>
 			{#if validatePanelOpen}
-				<div class="w-80 shrink-0 min-h-0">
+				<div class="w-80 shrink-0 min-h-0 max-sm:w-full max-sm:min-h-48">
 					<ComposeValidatePanel
 						report={validateReport}
 						loading={validateLoading}

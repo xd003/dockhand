@@ -5,6 +5,7 @@
 		y: number;
 		w: number;
 		h: number;
+		[key: string]: unknown;
 	}
 </script>
 
@@ -429,6 +430,8 @@
 		{@const currentHeight = isResizing ? Math.max(minPixelH, Math.min(maxPixelH, baseHeight + resizePixelDeltaY)) : baseHeight}
 		<div
 			class="grid-item"
+			tabindex={onitemclick ? 0 : undefined}
+			role={onitemclick ? 'button' : undefined}
 			class:dragging={isDragging}
 			class:resizing={isResizing}
 			style="left: {gridToPixel(item.x, colWidth)}px; top: {gridToPixel(item.y, rowHeight)}px; width: {currentWidth}px; height: {currentHeight}px; {isDragTarget ? `transform: translate(${dragOffsetX}px, ${dragOffsetY}px);` : ''}"
@@ -448,6 +451,12 @@
 					handleResizeStart(e, item);
 				} else {
 					handleDragStart(e, item);
+				}
+			}}
+			onkeydown={(e) => {
+				if (onitemclick && (e.key === 'Enter' || e.key === ' ') && !(e.target as HTMLElement).closest('button,input,a,select,textarea')) {
+					e.preventDefault();
+					onitemclick(item.id);
 				}
 			}}
 		>
@@ -480,7 +489,7 @@
 		backface-visibility: hidden;
 		-webkit-backface-visibility: hidden;
 		cursor: pointer;
-		touch-action: none;
+		touch-action: auto;
 	}
 
 	.grid-item.dragging {
@@ -512,7 +521,7 @@
 	.grid-item-content {
 		width: 100%;
 		height: 100%;
-		overflow: hidden;
+		overflow: auto;
 	}
 
 	.tile-resize-handle {

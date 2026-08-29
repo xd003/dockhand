@@ -152,11 +152,11 @@
 </script>
 
 <div class="space-y-4 max-w-3xl">
-	<div class="flex items-center justify-between">
+	<div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
 		<p class="text-sm text-muted-foreground">
 			{m.templates_sources_intro()}
 		</p>
-		<div class="flex items-center gap-2">
+		<div class="flex flex-wrap items-center gap-2">
 			<Button size="sm" variant="outline" onclick={validateAllSources} disabled={validating}>
 				{#if validating}
 					<Loader2 class="w-3.5 h-3.5 mr-1.5 animate-spin" />
@@ -182,17 +182,19 @@
 	{#if addingNew}
 		<Card.Root class="gap-0 py-0 border-dashed border-primary/50">
 			<Card.Content class="p-3">
-				<div class="flex items-end gap-3">
+				<div class="flex flex-col gap-2 sm:flex-row sm:items-end sm:gap-3">
 					<div class="flex-1 space-y-1">
 						<label for="new-source-name" class="text-xs font-medium text-muted-foreground">{m.templates_sources_name_label()}</label>
-						<Input id="new-source-name" bind:value={newName} placeholder={m.templates_sources_name_placeholder()} class="h-8 text-sm" />
+						<Input id="new-source-name" bind:value={newName} placeholder={m.templates_sources_name_placeholder()} class="h-8 text-sm max-sm:h-11" />
 					</div>
 					<div class="flex-[2] space-y-1">
 						<label for="new-source-url" class="text-xs font-medium text-muted-foreground">{m.templates_sources_url_label()}</label>
-						<Input id="new-source-url" bind:value={newUrl} placeholder="https://example.com/templates.json" class="h-8 text-sm" />
+						<Input id="new-source-url" bind:value={newUrl} placeholder="https://example.com/templates.json" class="h-8 text-sm max-sm:h-11" />
 					</div>
-					<Button size="sm" onclick={addSource} disabled={!newName.trim() || !newUrl.trim()}>{m.templates_sources_add()}</Button>
-					<Button size="sm" variant="ghost" onclick={() => addingNew = false}>{m.templates_sources_cancel()}</Button>
+					<div class="flex items-center gap-2 max-sm:w-full">
+						<Button size="sm" class="max-sm:h-11 max-sm:flex-1" onclick={addSource} disabled={!newName.trim() || !newUrl.trim()}>{m.templates_sources_add()}</Button>
+						<Button size="sm" variant="ghost" class="max-sm:h-11 max-sm:flex-1" onclick={() => addingNew = false}>{m.templates_sources_cancel()}</Button>
+					</div>
 				</div>
 			</Card.Content>
 		</Card.Root>

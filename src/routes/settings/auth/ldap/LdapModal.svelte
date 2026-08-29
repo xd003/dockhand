@@ -228,7 +228,7 @@
 </script>
 
 <Dialog.Root bind:open onOpenChange={(o) => { if (o) { formError = ''; formErrors = {}; formModalTab = 'connection'; focusFirstInput(); } }}>
-	<Dialog.Content class="max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
+	<Dialog.Content class="max-w-2xl max-h-[calc(100dvh-1rem)] flex flex-col overflow-hidden">
 		<Dialog.Header class="flex-shrink-0">
 			<Dialog.Title class="flex items-center gap-2">
 				{#if isEditing}
@@ -258,7 +258,7 @@
 					<!-- Basic Settings -->
 					<div class="space-y-4">
 						<h4 class="text-sm font-medium text-muted-foreground">{m.settings_ldap_basic_settings()}</h4>
-						<div class="grid grid-cols-2 gap-4">
+						<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
 							<div class="space-y-2">
 								<Label>{m.settings_ldap_name_label()} <span class="text-destructive">*</span></Label>
 								<Input
@@ -299,7 +299,7 @@
 					<div class="space-y-4">
 						<h4 class="text-sm font-medium text-muted-foreground">{m.settings_ldap_bind_credentials()}</h4>
 						<p class="text-xs text-muted-foreground">{m.settings_ldap_bind_credentials_hint()}</p>
-						<div class="grid grid-cols-2 gap-4">
+						<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
 							<div class="space-y-2">
 								<Label>{m.settings_ldap_bind_dn_label()}</Label>
 								<Input
@@ -351,7 +351,7 @@
 					<!-- Attribute Mapping -->
 					<div class="space-y-4">
 						<h4 class="text-sm font-medium text-muted-foreground">{m.settings_ldap_attribute_mapping()}</h4>
-						<div class="grid grid-cols-3 gap-4">
+						<div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
 							<div class="space-y-2">
 								<Label>{m.settings_ldap_username_attribute_label()}</Label>
 								<Input
@@ -406,7 +406,7 @@
 					<div class="space-y-4">
 						<h4 class="text-sm font-medium text-muted-foreground">{m.settings_ldap_group_settings()}</h4>
 						<p class="text-xs text-muted-foreground">{m.settings_ldap_group_settings_hint()}</p>
-						<div class="grid grid-cols-2 gap-4">
+						<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
 							<div class="space-y-2">
 								<Label>{m.settings_ldap_group_base_dn_label()}</Label>
 								<Input
@@ -460,7 +460,7 @@
 												value={mapping.roleId ? String(mapping.roleId) : undefined}
 												onValueChange={(value) => updateRoleMappingRole(index, parseInt(value))}
 											>
-												<Select.Trigger class="w-40">
+										<Select.Trigger class="w-full sm:w-40">
 													{#if mapping.roleId}
 														{@const role = roles.find(r => r.id === mapping.roleId)}
 														{role?.name || m.settings_ldap_select_role()}
@@ -487,7 +487,7 @@
 								</div>
 							{/if}
 
-							<Button variant="outline" size="sm" onclick={addRoleMapping}>
+							<Button variant="outline" size="sm" class="max-sm:h-11" onclick={addRoleMapping}>
 								<Plus class="w-4 h-4" />
 								{m.settings_ldap_add_mapping()}
 							</Button>

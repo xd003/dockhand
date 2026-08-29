@@ -209,7 +209,7 @@
 </script>
 
 <Dialog.Root bind:open onOpenChange={(o) => { if (o) { formError = ''; formErrors = {}; focusFirstInput(); } }}>
-	<Dialog.Content class="max-w-2xl h-[80vh] flex flex-col overflow-hidden">
+	<Dialog.Content class="max-w-2xl max-h-[calc(100dvh-1rem)] flex flex-col overflow-hidden">
 		<Dialog.Header class="flex-shrink-0">
 			<Dialog.Title class="flex items-center gap-2">
 				{#if isEditing}
@@ -242,7 +242,7 @@
 				<!-- Basic Settings -->
 				<div class="space-y-4">
 					<h4 class="text-sm font-medium text-muted-foreground">{m.settings_oidc_basic_settings()}</h4>
-					<div class="grid grid-cols-2 gap-4">
+					<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
 						<div class="space-y-2">
 							<Label>{m.settings_oidc_name_label()} <span class="text-destructive">*</span></Label>
 							<Input
@@ -283,7 +283,7 @@
 				<div class="space-y-4">
 					<h4 class="text-sm font-medium text-muted-foreground">{m.settings_oidc_client_credentials()}</h4>
 					<p class="text-xs text-muted-foreground">{m.settings_oidc_client_credentials_hint()}</p>
-					<div class="grid grid-cols-2 gap-4">
+					<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
 						<div class="space-y-2">
 							<Label>{m.settings_oidc_client_id_label()} <span class="text-destructive">*</span></Label>
 							<Input
@@ -342,7 +342,7 @@
 				<div class="space-y-4">
 					<h4 class="text-sm font-medium text-muted-foreground">{m.settings_oidc_claim_mapping()}</h4>
 					<p class="text-xs text-muted-foreground">{m.settings_oidc_claim_mapping_hint()}</p>
-					<div class="grid grid-cols-3 gap-4">
+					<div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
 						<div class="space-y-2">
 							<Label>{m.settings_oidc_username_claim_label()}</Label>
 							<Input
@@ -393,7 +393,7 @@
 					<div class="space-y-4">
 						<h4 class="text-sm font-medium text-muted-foreground">{m.settings_oidc_admin_claim_title()}</h4>
 						<p class="text-xs text-muted-foreground">{m.settings_oidc_admin_claim_hint()}</p>
-						<div class="grid grid-cols-2 gap-4">
+						<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
 							<div class="space-y-2">
 								<Label>{m.settings_oidc_claim_name_label()}</Label>
 								<Input
@@ -415,13 +415,13 @@
 
 					<!-- Role Mappings Grid -->
 					<div class="space-y-4">
-						<div class="flex items-center justify-between">
+						<div class="flex flex-wrap items-center justify-between gap-2">
 							<div>
 								<h4 class="text-sm font-medium text-muted-foreground">{m.settings_oidc_role_mappings_title()}</h4>
 								<p class="text-xs text-muted-foreground mt-0.5">{m.settings_oidc_role_mappings_hint()}</p>
 							</div>
 							<Button
-								size="sm"
+								size="sm" class="max-sm:h-11"
 								variant="outline"
 								onclick={addRoleMapping}
 							>
@@ -438,7 +438,7 @@
 							<div class="space-y-2">
 								{#each formRoleMappings as mapping, index}
 									<div class="flex items-center gap-3 p-3 bg-muted/50 rounded-lg">
-										<div class="flex-1 grid grid-cols-2 gap-3">
+									<div class="flex-1 grid grid-cols-1 sm:grid-cols-2 gap-3">
 											<div class="space-y-1">
 												<Label class="text-xs">{m.settings_oidc_claim_value_label()}</Label>
 												<Input

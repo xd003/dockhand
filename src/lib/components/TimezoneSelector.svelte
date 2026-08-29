@@ -155,7 +155,7 @@
 			</Button>
 		{/snippet}
 	</Popover.Trigger>
-	<Popover.Content class="w-[350px] p-0 z-[200]" align="start">
+	<Popover.Content class="w-[min(350px,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] p-0 z-[200]" align="start">
 		<Command.Root shouldFilter={false}>
 			<Command.Input bind:value={searchQuery} placeholder={m.timezone_search_placeholder()} />
 			<Command.List class="max-h-[300px]">

@@ -81,17 +81,21 @@
 	</div>
 
 	{#if !scannerEnabled}
-		<div class="flex-1 min-h-0 flex flex-col items-center justify-center text-center gap-2 text-muted-foreground">
-			<ShieldAlert class="w-10 h-10 opacity-40" />
-			<p class="text-sm">{m.images_scan_tab_no_scanner()}</p>
-			<a href="/settings?tab=environments" class="text-sm text-primary hover:underline">{m.images_scan_tab_configure_scanner()}</a>
+		<div class="flex-1 min-h-0 overflow-y-auto">
+			<div class="flex min-h-full flex-col items-center justify-center gap-2 text-center text-muted-foreground">
+				<ShieldAlert class="w-10 h-10 opacity-40" />
+				<p class="text-sm">{m.images_scan_tab_no_scanner()}</p>
+				<a href="/settings?tab=environments" class="text-sm text-primary hover:underline">{m.images_scan_tab_configure_scanner()}</a>
+			</div>
 		</div>
 	{:else}
 		{#if !loading && findings.length === 0}
-			<div class="flex-1 min-h-0 flex flex-col items-center justify-center text-center gap-2 text-muted-foreground">
-				<ShieldCheck class="w-10 h-10 opacity-40" />
-				<p class="text-sm">{m.images_scan_tab_no_vulnerabilities()}</p>
-				<p class="text-xs">{m.images_scan_tab_empty_hint()}</p>
+			<div class="flex-1 min-h-0 overflow-y-auto">
+				<div class="flex min-h-full flex-col items-center justify-center gap-2 text-center text-muted-foreground">
+					<ShieldCheck class="w-10 h-10 opacity-40" />
+					<p class="text-sm">{m.images_scan_tab_no_vulnerabilities()}</p>
+					<p class="text-xs">{m.images_scan_tab_empty_hint()}</p>
+				</div>
 			</div>
 		{:else}
 			<div class="flex-1 min-h-0 flex flex-col">

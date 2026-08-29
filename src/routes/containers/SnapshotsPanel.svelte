@@ -353,8 +353,8 @@
 			</button>
 		{/if}
 	</div>
-	<div class="overflow-x-auto">
-		<table class="w-full text-xs">
+	<div class="overflow-hidden">
+		<table class="responsive-table w-full text-xs">
 			<thead>
 				<tr class="border-b text-left text-muted-foreground">
 					<th class="w-8 py-1.5 pl-2">
@@ -376,13 +376,13 @@
 						<td class="py-1.5 pl-2">
 							<Checkbox checked={selectedSnapshots.has(s.id)} onCheckedChange={() => toggleSnapshot(s.id)} aria-label={m.containers_snapshot_select({ id: s.shortId })} />
 						</td>
-						<td class="py-1.5 pl-2 font-mono text-muted-foreground">{s.shortId}</td>
-						<td class="py-1.5 pl-2">{formatDateTime(s.time)} <span class="text-muted-foreground opacity-60">({formatRelativeTime(s.time)})</span></td>
-						<td class="py-1.5 pl-2 text-muted-foreground" title={st ? m.containers_snapshot_stats_title({ filesNew: st.filesNew, filesChanged: st.filesChanged }) : ''}>{st ? formatBytes(st.dataAdded) : '—'}</td>
-						<td class="py-1.5 pl-2 text-muted-foreground">
+						<td data-label="Snapshot" class="py-1.5 pl-2 font-mono text-muted-foreground">{s.shortId}</td>
+						<td data-label="Taken" class="py-1.5 pl-2">{formatDateTime(s.time)} <span class="text-muted-foreground opacity-60">({formatRelativeTime(s.time)})</span></td>
+						<td data-label="Added" class="py-1.5 pl-2 text-muted-foreground" title={st ? m.containers_snapshot_stats_title({ filesNew: st.filesNew, filesChanged: st.filesChanged }) : ''}>{st ? formatBytes(st.dataAdded) : '—'}</td>
+						<td data-label="Repository" class="py-1.5 pl-2 text-muted-foreground">
 							<span class="flex items-center gap-1.5"><RepoIcon class="h-3.5 w-3.5 text-primary/70" />{s._destinationName}</span>
 						</td>
-						<td class="px-3 py-1.5 text-right">
+						<td data-label="Actions" class="px-3 py-1.5 text-right">
 							<div class="flex items-center justify-end gap-0.5">
 								{#if visibleSnapshots.length >= 2}
 									<button type="button" class="rounded p-1 transition-colors {isDiffPending ? 'bg-primary/20 text-primary' : 'hover:bg-muted'}" onclick={() => toggleDiff(s)} title={isDiffPending ? m.containers_snapshot_compare_cancel() : diffPending ? m.containers_snapshot_compare_with_selected() : m.containers_snapshot_compare()}>

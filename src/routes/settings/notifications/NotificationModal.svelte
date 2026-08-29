@@ -300,7 +300,7 @@
 </script>
 
 <Dialog.Root bind:open onOpenChange={(o) => { if (o) { formError = ''; focusFirstInput(); } }}>
-	<Dialog.Content class="max-w-3xl max-h-[90vh] flex flex-col overflow-hidden">
+	<Dialog.Content class="max-w-3xl max-h-[calc(100dvh-1rem)] flex flex-col overflow-hidden">
 		<Dialog.Header>
 			<Dialog.Title>{isEditing ? m.settings_notifications_modal_title_edit() : m.settings_notifications_modal_title_add()}</Dialog.Title>
 		</Dialog.Header>
@@ -324,9 +324,9 @@
 				</Tabs.Trigger>
 			</Tabs.List>
 
-			<div class="overflow-y-auto pb-4 pr-2 h-[530px]">
+			<div class="overflow-y-auto pb-4 pr-0 sm:pr-2 h-auto max-h-[min(530px,calc(100dvh-14rem))]">
 				<Tabs.Content value="channel" class="space-y-4 mt-0">
-			<div class="grid grid-cols-2 gap-4">
+			<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
 				<div class="space-y-2">
 					<Label for="notif-name">{m.settings_notifications_name_label()}</Label>
 					<Input id="notif-name" bind:value={formName} placeholder={m.settings_notifications_name_placeholder()} />
@@ -386,7 +386,7 @@
 							</Tooltip.Portal>
 						</Tooltip.Root>
 					</div>
-					<div class="grid grid-cols-3 gap-4">
+					<div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
 						<div class="space-y-2 col-span-2">
 							<Label for="notif-smtp-host">{m.settings_notifications_smtp_host()}</Label>
 							<Input id="notif-smtp-host" bind:value={formSmtpHost} placeholder="smtp.gmail.com" />
@@ -406,7 +406,7 @@
 							<TogglePill bind:checked={formSmtpSkipTlsVerify} onLabel={m.settings_notifications_yes()} offLabel={m.settings_notifications_no()} />
 						</div>
 					</div>
-					<div class="grid grid-cols-2 gap-4">
+					<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
 						<div class="space-y-2">
 							<Label for="notif-smtp-username">{m.settings_notifications_username()}</Label>
 							<Input id="notif-smtp-username" bind:value={formSmtpUsername} placeholder="user@example.com" />
@@ -416,7 +416,7 @@
 							<Input id="notif-smtp-password" type="password" bind:value={formSmtpPassword} placeholder={isEditing ? m.settings_notifications_password_keep_placeholder() : m.settings_notifications_password_placeholder()} />
 						</div>
 					</div>
-					<div class="grid grid-cols-2 gap-4">
+					<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
 						<div class="space-y-2">
 							<Label for="notif-smtp-from-email">{m.settings_notifications_from_email()}</Label>
 							<Input id="notif-smtp-from-email" bind:value={formSmtpFromEmail} placeholder="alerts@example.com" />

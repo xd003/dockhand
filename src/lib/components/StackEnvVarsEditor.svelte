@@ -187,7 +187,8 @@
 						bind:value={variable.key}
 						disabled={readonly}
 						oninput={() => onchange?.()}
-						class="h-9 font-mono text-xs"
+						class="h-9 max-md:h-11 font-mono text-xs"
+						aria-label="Variable name"
 					/>
 				</div>
 
@@ -199,13 +200,14 @@
 						type={variable.isSecret ? 'password' : 'text'}
 						disabled={readonly}
 						oninput={() => onchange?.()}
-						class="h-9 font-mono text-xs"
+						class="h-9 max-md:h-11 font-mono text-xs"
 						autocomplete="off"
 						data-1p-ignore
 						data-bwignore
 						data-lpignore="true"
 						data-form-type="other"
 						data-protonpass-ignore
+						aria-label="Variable value"
 					/>
 				</div>
 
@@ -223,7 +225,8 @@
 							type="button"
 							onclick={() => toggleSecret(index)}
 							title={variable.isSecret ? m.stackenv_secret_marked() : m.stackenv_secret_mark()}
-							class="h-9 w-9 flex items-center justify-center rounded-md shrink-0 transition-colors {variable.isSecret ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300' : 'text-muted-foreground hover:text-foreground hover:bg-muted'}"
+							aria-label={variable.isSecret ? `Unmark ${variable.key || 'variable'} as secret` : `Mark ${variable.key || 'variable'} as secret`}
+							class="h-9 w-9 max-md:h-11 max-md:w-11 flex items-center justify-center rounded-md shrink-0 transition-colors {variable.isSecret ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300' : 'text-muted-foreground hover:text-foreground hover:bg-muted'}"
 						>
 							<Key class="w-3.5 h-3.5" />
 						</button>
@@ -241,7 +244,8 @@
 						variant="ghost"
 						size="icon"
 						onclick={() => removeVariable(index)}
-						class="h-9 w-9 shrink-0 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+						class="h-9 w-9 max-md:h-11 max-md:w-11 shrink-0 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+						aria-label={`Remove ${variable.key || 'variable'}`}
 					>
 						<Trash2 class="w-3.5 h-3.5" />
 					</Button>
@@ -254,7 +258,7 @@
 			<div class="text-center py-6 text-muted-foreground">
 				<p class="text-sm">{m.stackenv_empty()}</p>
 				{#if !readonly}
-					<Button type="button" variant="link" onclick={addVariable} class="mt-1 text-xs">
+					<Button type="button" variant="link" onclick={addVariable} class="mt-1 min-h-11 text-xs">
 						<Plus class="w-3 h-3" />
 						{m.stackenv_add_first()}
 					</Button>

@@ -86,13 +86,13 @@
 </script>
 
 <div class="space-y-4">
-	<div class="flex justify-between items-center">
+	<div class="flex flex-wrap items-center justify-between gap-2">
 		<div>
 			<h3 class="text-lg font-medium">{m.settings_git_credentials_title()}</h3>
 			<p class="text-sm text-muted-foreground">{m.settings_git_credentials_description()}</p>
 		</div>
 		{#if $canAccess('settings', 'edit')}
-			<Button size="sm" onclick={() => openModal()}>
+			<Button size="sm" class="max-sm:h-11" onclick={() => openModal()}>
 				<Plus class="w-4 h-4" />
 				{m.settings_git_add_credential()}
 			</Button>
@@ -115,8 +115,8 @@
 		<div class="space-y-1.5">
 			{#each credentials as cred (cred.id)}
 				<Card.Root>
-					<Card.Content class="py-2 flex items-center justify-between">
-						<div class="flex items-center gap-2">
+					<Card.Content class="py-2 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+						<div class="flex items-center gap-2 min-w-0">
 							<div class="p-1.5 rounded-lg bg-muted">
 								{#if cred.authType === 'ssh'}
 									<KeyRound class="w-3.5 h-3.5" />

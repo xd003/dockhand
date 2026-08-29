@@ -205,7 +205,7 @@
 	<div class="space-y-4">
 		<Card.Root>
 			<Card.Header>
-				<div class="flex items-center justify-between">
+				<div class="flex flex-wrap items-center justify-between gap-2">
 					<div>
 						<Card.Title class="text-sm font-medium flex items-center gap-2">
 							<Network class="w-4 h-4" />
@@ -214,7 +214,7 @@
 						<p class="text-xs text-muted-foreground mt-1">{m.settings_ldap_description()}</p>
 					</div>
 					{#if $canAccess('settings', 'edit')}
-						<Button size="sm" onclick={() => openLdapModal(null)}>
+						<Button size="sm" class="max-sm:h-11" onclick={() => openLdapModal(null)}>
 							<Plus class="w-4 h-4" />
 							{m.settings_ldap_add()}
 						</Button>
@@ -254,7 +254,7 @@
 								<div class="flex items-center gap-2">
 									<Button
 										variant="outline"
-										size="sm"
+										size="sm" class="max-sm:h-11"
 										onclick={() => testLdapConnection(config.id)}
 										disabled={ldapTesting === config.id}
 									>
@@ -267,14 +267,14 @@
 									{#if $canAccess('settings', 'edit')}
 										<Button
 											variant="outline"
-											size="sm"
+											size="sm" class="max-sm:h-11"
 											onclick={() => toggleLdapEnabled(config)}
 										>
 											{config.enabled ? m.settings_ldap_disable() : m.settings_ldap_enable()}
 										</Button>
 										<Button
 											variant="outline"
-											size="sm"
+											size="sm" class="max-sm:h-11"
 											onclick={() => openLdapModal(config)}
 										>
 											<Pencil class="w-4 h-4" />

@@ -57,6 +57,11 @@
 	let prefsLoaded = $state(false);
 	const mobileWatcher = new IsMobile();
 	const isMobile = $derived.by(() => mobileWatcher.current);
+	let dashboardRef = $state<HTMLDivElement | null>(null);
+	let dashboardWidth = $state(0);
+	let dashboardResizeObserver: ResizeObserver | null = null;
+	const compactDashboard = $derived(dashboardWidth > 0 ? dashboardWidth < 768 : isMobile);
+	const dashboardCols = $derived(Math.max(1, Math.min(GRID_COLS, Math.floor((dashboardWidth + 10) / 310))));
 
 	// Dashboard lock and view mode from preferences
 	let locked = $state(false);
@@ -115,13 +120,15 @@
 							id: env.id,
 							name: env.name,
 							host: env.host,
-							port: env.port,
-							icon: env.icon || 'globe',
-							socketPath: env.socketPath,
-							collectActivity: false,
-							collectMetrics: true,
-							connectionType: env.connectionType || 'socket',
-							labels: [],
+									port: env.port,
+									icon: env.icon || 'globe',
+									socketPath: env.socketPath,
+									collectActivity: false,
+									collectMetrics: true,
+									connectionType: env.connectionType || 'socket',
+									updateCheckEnabled: false,
+									updateCheckAutoUpdate: false,
+									labels: [],
 							scannerEnabled: false,
 							online: undefined,
 							containers: { total: 0, running: 0, stopped: 0, paused: 0, restarting: 0, unhealthy: 0, pendingUpdates: 0 },
@@ -237,6 +244,24 @@
 	});
 	const orderedGridItems = $derived.by(() => {
 		return [...filteredGridItems].sort((a, b) => (a.y - b.y) || (a.x - b.x));
+	});
+	const displayCols = $derived(dashboardCols);
+	const layoutLocked = $derived(dashboardCols < GRID_COLS);
+	const responsiveGridItems = $derived.by(() => {
+		if (displayCols >= GRID_COLS) return filteredGridItems;
+		let x = 0;
+		let y = 0;
+		let rowHeight = 1;
+		return [...filteredGridItems]
+			.sort((a, b) => (a.y - b.y) || (a.x - b.x))
+			.map((item) => {
+				const w = Math.min(item.w, displayCols);
+				if (x + w > displayCols) { x = 0; y += rowHeight; rowHeight = 1; }
+				const result = { ...item, x, y, w };
+				x += w;
+				rowHeight = Math.max(rowHeight, item.h);
+				return result;
+			});
 	});
 
 	// AbortController for SSE stream cleanup
@@ -460,15 +485,17 @@
 											id: env.id,
 											stats: {
 												id: env.id,
-												name: env.name,
-												host: env.host,
-												port: env.port,
-												icon: env.icon,
-												socketPath: env.socketPath,
-												collectActivity: env.collectActivity ?? false,
-												collectMetrics: env.collectMetrics ?? true,
-												connectionType: env.connectionType || 'socket',
-												labels: env.labels || [],
+											name: env.name,
+											host: env.host,
+											port: env.port,
+											icon: env.icon,
+											socketPath: env.socketPath,
+											collectActivity: env.collectActivity ?? false,
+											collectMetrics: env.collectMetrics ?? true,
+											connectionType: env.connectionType || 'socket',
+											updateCheckEnabled: false,
+											updateCheckAutoUpdate: false,
+											labels: env.labels || [],
 												scannerEnabled: false,
 												online: undefined, // undefined = connecting, false = offline, true = online
 												containers: { total: 0, running: 0, stopped: 0, paused: 0, restarting: 0, unhealthy: 0, pendingUpdates: 0 },
@@ -928,6 +955,10 @@
 	}
 
 	onMount(async () => {
+		if (dashboardRef) {
+			dashboardResizeObserver = new ResizeObserver(([entry]) => { dashboardWidth = entry.contentRect.width; });
+			dashboardResizeObserver.observe(dashboardRef);
+		}
 		// Listen for tab visibility changes to reconnect when user returns
 		document.addEventListener('visibilitychange', handleVisibilityChange);
 		// Chrome 77+ Page Lifecycle API - fires when frozen tab is resumed
@@ -974,6 +1005,7 @@
 	});
 
 	onDestroy(() => {
+		dashboardResizeObserver?.disconnect();
 		// Remove visibility change listeners
 		document.removeEventListener('visibilitychange', handleVisibilityChange);
 		document.removeEventListener('resume', handleVisibilityChange);
@@ -1010,15 +1042,15 @@
 	});
 </script>
 
-<div class="flex flex-col gap-4 h-full overflow-auto pb-4">
+	<div bind:this={dashboardRef} class="@container/dashboard flex flex-col gap-4 h-full min-w-0 overflow-auto pb-4">
 	<!-- Header -->
 	<div class="shrink-0 flex flex-wrap justify-between items-center gap-3 min-h-8">
-		<div class="flex items-center gap-4">
+		<div class="flex min-w-0 flex-wrap items-center gap-3 sm:gap-4">
 			<PageHeader icon={LayoutGrid} title="Environments" count={tiles.length} />
 
 			<!-- Label filter toggles (only show if there are labels) -->
 			{#if allLabels.length > 0}
-				<div class="flex items-center gap-1.5">
+				<div class="flex max-w-full flex-wrap items-center gap-1.5">
 					<button
 						type="button"
 						class="px-2.5 py-1 text-xs font-medium rounded transition-colors {filterLabels.length === 0
@@ -1045,17 +1077,17 @@
 			{/if}
 		</div>
 
-		<div class="flex items-center gap-1">
+		<div class="flex flex-wrap items-center gap-1">
 			<!-- List view filters (search + connection type) -->
 			{#if viewMode === 'list'}
-				<div class="flex items-center gap-2 mr-2">
-					<SearchInput bind:value={listSearchQuery} placeholder="Search environments..." class="h-8 w-52 text-sm" />
+				<div class="flex w-full sm:w-auto flex-wrap items-center gap-2 mr-2">
+					<SearchInput bind:value={listSearchQuery} placeholder="Search environments..." class="h-8 w-full sm:w-52 text-sm" />
 					<MultiSelectFilter
 						bind:value={listConnectionFilter}
 						options={connectionOptions}
 						placeholder="All connections"
 						pluralLabel="connections"
-						width="w-48"
+						width="w-full sm:w-48"
 						defaultIcon={Plug}
 					/>
 					{#if listSearchQuery || listConnectionFilter.length > 0}
@@ -1177,7 +1209,7 @@
 			</Button>
 		</div>
 	{:else}
-		{#if isMobile}
+		{#if compactDashboard}
 			<div class="flex flex-col gap-3">
 				{#each orderedGridItems as item (item.id)}
 					{@const tile = getTileById(item.id)}
@@ -1188,16 +1220,22 @@
 								<EnvironmentTileSkeleton
 									name={tile.info?.name}
 									host={tile.info?.host}
-									width={2}
+									width={1}
 									height={Math.max(item.h, 2)}
 								/>
 							</div>
 						{:else if tile.stats}
 							<!-- Show actual tile with data -->
-							<div class="w-full cursor-pointer" onclick={() => handleTileClick(tile.stats!.id)}>
+							<div
+								class="w-full cursor-pointer rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+								tabindex="0"
+								role="button"
+								onclick={() => handleTileClick(tile.stats!.id)}
+								onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), handleTileClick(tile.stats!.id))}
+							>
 								<EnvironmentTile
 									stats={tile.stats}
-									width={2}
+									width={1}
 									height={Math.max(item.h, 2)}
 									oneventsclick={() => handleEventsClick(tile.stats!.id)}
 									showStacksBreakdown={false}
@@ -1210,16 +1248,16 @@
 		{:else}
 			<!-- Custom Draggable Grid -->
 			<DraggableGrid
-				items={filteredGridItems}
-				cols={GRID_COLS}
+				items={responsiveGridItems}
+				cols={displayCols}
 				rowHeight={GRID_ROW_HEIGHT}
 				gap={10}
 				minW={1}
 				maxW={2}
 				minH={1}
 				maxH={4}
-				{locked}
-				onchange={handleGridChange}
+				locked={locked || layoutLocked}
+				onchange={layoutLocked ? undefined : handleGridChange}
 				onitemclick={handleTileClick}
 			>
 				{#snippet children({ item })}
@@ -1230,12 +1268,12 @@
 							<EnvironmentTileSkeleton
 								name={tile.info?.name}
 								host={tile.info?.host}
-								width={item.w}
+								width={displayCols <= 2 ? Math.max(item.w, 2) : item.w}
 								height={item.h}
 							/>
 						{:else if tile.stats}
 							<!-- Show actual tile with data -->
-							<EnvironmentTile stats={tile.stats} width={item.w} height={item.h} oneventsclick={() => handleEventsClick(tile.stats!.id)} />
+							<EnvironmentTile stats={tile.stats} width={displayCols <= 2 ? Math.max(item.w, 2) : item.w} height={item.h} oneventsclick={() => handleEventsClick(tile.stats!.id)} />
 						{/if}
 					{/if}
 				{/snippet}

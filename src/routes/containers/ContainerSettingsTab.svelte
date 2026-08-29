@@ -850,7 +850,7 @@
 			<h3 class="text-sm font-semibold text-foreground">Basic settings</h3>
 		</div>
 
-		<div class="grid grid-cols-2 gap-3">
+		<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
 			<div class="space-y-1.5">
 				<Label for="name" class="text-xs font-medium">Container name *</Label>
 				<Input
@@ -893,7 +893,7 @@
 			<Input id="entrypoint" bind:value={entrypoint} placeholder="/docker-entrypoint.sh" class="h-9" />
 		</div>
 
-		<div class="grid grid-cols-2 gap-3">
+		<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
 			<div class="space-y-1.5">
 				<Label class="text-xs font-medium">Restart policy</Label>
 				<div class="flex items-center gap-1.5">
@@ -1193,7 +1193,7 @@
 								</div>
 								{#if isExpanded && networkConfigs[networkName]}
 									<div class="px-2.5 pb-2.5 pt-1 border-t space-y-2">
-										<div class="grid grid-cols-2 gap-2">
+								<div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
 											<div class="space-y-1">
 												<Label class="text-2xs font-medium text-muted-foreground">IPv4 address</Label>
 												<Input
@@ -1493,7 +1493,7 @@
 					{/if}
 				{/snippet}
 
-				<div class="grid grid-cols-2 gap-3">
+				<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
 					<div class="space-y-1.5">
 						<Label for="memoryLimit" class="text-xs font-medium">Memory limit</Label>
 						<div class="flex items-center gap-1.5">
@@ -1509,7 +1509,7 @@
 						</div>
 					</div>
 				</div>
-				<div class="grid grid-cols-2 gap-3">
+				<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
 					<div class="space-y-1.5">
 						<Label for="nanoCpus" class="text-xs font-medium">CPU limit</Label>
 						<div class="flex items-center gap-1.5">
@@ -1525,7 +1525,7 @@
 						</div>
 					</div>
 				</div>
-				<div class="grid grid-cols-2 gap-3">
+				<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
 					<div class="space-y-1.5">
 						<Label for="cpuQuota" class="text-xs font-medium">CPU quota</Label>
 						<div class="flex items-center gap-1.5">
@@ -1569,7 +1569,7 @@
 		</button>
 		{#if showSecurity}
 			<div class="px-3 pb-3 space-y-3 border-t">
-				<div class="grid grid-cols-2 gap-3 pt-2">
+				<div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
 					<div class="space-y-1.5">
 						<Label for="containerUser" class="text-xs font-medium">User</Label>
 						<Input id="containerUser" bind:value={containerUser} placeholder="user:group or UID:GID" class="h-9" />
@@ -1699,7 +1699,7 @@
 						<Label for="healthcheckCommand" class="text-xs font-medium">Command</Label>
 						<Input id="healthcheckCommand" bind:value={healthcheckCommand} placeholder="e.g., curl -f http://localhost/ || exit 1" class="h-9" />
 					</div>
-					<div class="grid grid-cols-4 gap-3">
+					<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
 						<div class="space-y-1.5">
 							<Label for="healthcheckInterval" class="text-xs font-medium">Interval (s)</Label>
 							<Input id="healthcheckInterval" type="number" bind:value={healthcheckInterval} min="1" class="h-9" />

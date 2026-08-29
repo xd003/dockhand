@@ -7,6 +7,7 @@
 		SIDEBAR_WIDTH_ICON,
 	} from "./constants.js";
 	import { setSidebar } from "./context.svelte.js";
+	import { onDestroy } from "svelte";
 
 	const SIDEBAR_STORAGE_KEY = "sidebar:state";
 
@@ -44,6 +45,8 @@
 			}
 		},
 	});
+
+	onDestroy(sidebar.destroy);
 
 </script>
 

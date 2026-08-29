@@ -205,9 +205,9 @@
 {:else}
 <div class="flex flex-col flex-1 min-h-0 h-full gap-3">
 	<!-- Header with container selector -->
-	<div class="flex items-center gap-4 flex-wrap">
+	<div class="flex items-center gap-2 flex-wrap md:gap-4">
 		<PageHeader icon={TerminalIcon} title={m.nav_shell()} />
-		<div class="relative flex-1 max-w-md min-w-[200px]">
+		<div class="relative min-w-0 max-md:w-full max-md:flex-none flex-1 max-w-md md:min-w-[200px]">
 			<!-- Search input - always visible, shows selected container or placeholder -->
 			<div class="relative">
 				<Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
@@ -249,10 +249,10 @@
 				</div>
 			{/if}
 		</div>
-		<div class="flex items-center gap-2">
-			<Label class="text-sm text-muted-foreground">{m.terminal_mode_label()}</Label>
+		<div class="flex min-w-40 flex-1 items-center gap-2 md:flex-none">
+			<Label class="hidden text-sm text-muted-foreground md:inline">{m.terminal_mode_label()}</Label>
 			<Select.Root type="single" value={terminalMode} onValueChange={(value) => terminalMode = value as TerminalMode}>
-				<Select.Trigger class="h-9 w-48">
+				<Select.Trigger class="w-full data-[size=default]:h-11 md:w-48 md:data-[size=default]:h-9">
 					{#if terminalMode === 'attach'}
 						<Unplug class="w-4 h-4 mr-2 text-muted-foreground" />
 						<span>{m.containers_list_terminal_attach()}</span>
@@ -275,7 +275,7 @@
 		</div>
 
 		{#if selectedContainer}
-			<Button size="sm" variant="ghost" onclick={clearSelection} class="h-9 px-3 text-sm text-muted-foreground hover:text-foreground">
+			<Button size="sm" variant="ghost" onclick={clearSelection} class="h-11 shrink-0 px-3 text-sm text-muted-foreground hover:text-foreground md:h-9">
 				<Unplug class="w-4 h-4 mr-1.5" />
 				{m.terminal_disconnect()}
 			</Button>

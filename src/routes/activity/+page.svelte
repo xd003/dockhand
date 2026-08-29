@@ -8,6 +8,7 @@
 	import { SearchInput } from '$lib/components/ui/search-input';
 	import { Badge } from '$lib/components/ui/badge';
 	import * as Dialog from '$lib/components/ui/dialog';
+	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
 	import {
 		RefreshCw,
 		Calendar,
@@ -31,7 +32,8 @@
 		FileX,
 		Heart,
 		Wifi,
-		Radio
+		Radio,
+		EllipsisVertical
 	} from 'lucide-svelte';
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import { currentEnvironment, environments as environmentsStore } from '$lib/stores/environment';
@@ -264,6 +266,12 @@
 		} finally {
 			clearingActivity = false;
 			showClearConfirm = false;
+		}
+	}
+
+	function requestClearActivity() {
+		if (!$appSettings.confirmDestructive || window.confirm('Clear the entire activity log?')) {
+			clearActivity();
 		}
 	}
 
@@ -648,9 +656,10 @@
 
 <div class="flex-1 min-h-0 flex flex-col gap-3 overflow-hidden">
 	<!-- Header with inline filters -->
-	<div class="shrink-0 flex flex-wrap justify-between items-center gap-3 min-h-8">
-		<div class="flex items-center gap-3">
-			<PageHeader icon={Activity} title={m.nav_activity()} count={visibleEnd > 0 ? `${visibleStart}-${visibleEnd}` : undefined} total={total > 0 ? total : undefined} countClass="min-w-32" />
+	<div class="flex min-h-8 shrink-0 flex-col gap-3 md:flex-row md:flex-wrap md:items-center md:justify-between">
+		<div class="flex w-full items-center justify-between gap-2 md:w-auto">
+			<div class="flex min-w-0 flex-wrap items-center gap-2 md:gap-3">
+			<PageHeader icon={Activity} title={m.nav_activity()} count={visibleEnd > 0 ? `${visibleStart}-${visibleEnd}` : undefined} total={total > 0 ? total : undefined} countClass="min-w-0 md:min-w-32" />
 			<Badge variant="outline" class="gap-1.5 {($appSettings.eventCollectionMode || 'stream') === 'stream' ? 'text-green-500 border-green-500/50' : 'text-amber-500 border-amber-500/50'}">
 				{#if ($appSettings.eventCollectionMode || 'stream') === 'stream'}
 					<Wifi class="w-3 h-3" />
@@ -662,10 +671,36 @@
 					<span class="text-muted-foreground">{m.activity_mode_off()}</span>
 				{/if}
 			</Badge>
+			</div>
+			<DropdownMenu.Root>
+				<DropdownMenu.Trigger>
+					{#snippet child({ props })}
+						<button {...props} type="button" class="flex size-11 shrink-0 items-center justify-center rounded-lg hover:bg-muted md:hidden" aria-label="Activity actions">
+							<EllipsisVertical class="size-5" />
+						</button>
+					{/snippet}
+				</DropdownMenu.Trigger>
+				<DropdownMenu.Content align="end" class="w-56 p-1">
+					<DropdownMenu.Item onclick={() => { hasMore = true; fetchEvents(false); }} disabled={loading} class="min-h-11">
+						<RefreshCw class={loading ? 'animate-spin' : ''} />
+						Refresh
+					</DropdownMenu.Item>
+					<DropdownMenu.Item onclick={clearFilters} disabled={!hasActiveFilters} class="min-h-11">
+						<X />
+						Clear filters
+					</DropdownMenu.Item>
+					{#if $canAccess('activity', 'delete')}
+						<DropdownMenu.Item onclick={requestClearActivity} disabled={clearingActivity || total === 0} variant="destructive" class="min-h-11">
+							<Trash2 />
+							Clear activity log
+						</DropdownMenu.Item>
+					{/if}
+				</DropdownMenu.Content>
+			</DropdownMenu.Root>
 		</div>
-		<div class="flex flex-wrap items-center gap-2">
+		<div class="grid w-full min-w-0 grid-cols-2 items-center gap-2 md:flex md:w-auto md:flex-wrap">
 			<!-- Container name search -->
-			<SearchInput bind:value={filterContainerName} placeholder={m.activity_filter_container_placeholder()} class="h-8 w-36 text-sm" />
+			<SearchInput bind:value={filterContainerName} placeholder="Search containers..." class="h-11 w-full text-sm md:h-8 md:w-36" />
 
 			<!-- Action filter -->
 			<MultiSelectFilter
@@ -673,7 +708,7 @@
 				options={actionOptions}
 				placeholder={m.activity_filter_action()}
 				pluralLabel={m.activity_filter_actions_plural()}
-				width="w-36"
+				width="w-full data-[size=sm]:h-11 md:w-36 md:data-[size=sm]:h-8"
 				defaultIcon={Activity}
 			/>
 
@@ -685,7 +720,7 @@
 					value={filterEnvironmentId !== null ? String(filterEnvironmentId) : undefined}
 					onValueChange={(v) => filterEnvironmentId = v ? parseInt(v) : null}
 				>
-					<Select.Trigger size="sm" class="w-44 text-sm">
+					<Select.Trigger size="sm" class="w-full text-sm data-[size=sm]:h-11 md:w-44 md:data-[size=sm]:h-8">
 						{#if selectedEnv}
 							<EnvironmentIcon icon={selectedEnv.icon || 'globe'} envId={selectedEnv.id} class="w-3.5 h-3.5 mr-1.5 text-muted-foreground shrink-0" />
 						{:else}
@@ -725,7 +760,7 @@
 					}
 				}}
 			>
-				<Select.Trigger size="sm" class="w-44 text-sm">
+				<Select.Trigger size="sm" class="w-full text-sm data-[size=sm]:h-11 md:w-44 md:data-[size=sm]:h-8">
 					<Calendar class="w-3.5 h-3.5 mr-1.5 text-muted-foreground shrink-0" />
 					<span class="truncate">
 						{#if selectedDatePreset === 'custom'}
@@ -748,28 +783,29 @@
 
 			<!-- Custom date inputs -->
 			{#if selectedDatePreset === 'custom'}
-				<DatePicker bind:value={filterFromDate} placeholder={m.activity_date_from()} class="h-8 w-28" />
-				<DatePicker bind:value={filterToDate} placeholder={m.activity_date_to()} class="h-8 w-28" />
+				<DatePicker bind:value={filterFromDate} placeholder={m.activity_date_from()} class="h-11 w-full md:h-8 md:w-28" />
+				<DatePicker bind:value={filterToDate} placeholder={m.activity_date_to()} class="h-11 w-full md:h-8 md:w-28" />
 			{/if}
 
 			<!-- Clear filters -->
 			<Button
 				variant="outline"
 				size="sm"
-				class="h-8 px-2"
+				class="hidden h-8 px-2 md:inline-flex"
 				onclick={clearFilters}
 				disabled={!hasActiveFilters}
+				aria-label="Clear filters"
 				title={m.activity_clear_filters()}
 			>
 				<X class="w-3.5 h-3.5" />
 			</Button>
 
-			<Button variant="outline" size="sm" onclick={() => { hasMore = true; fetchEvents(false); }} disabled={loading}>
+			<Button variant="outline" size="sm" class="hidden md:inline-flex" onclick={() => { hasMore = true; fetchEvents(false); }} disabled={loading} aria-label="Refresh activity">
 				<RefreshCw class="w-3.5 h-3.5 {loading ? 'animate-spin' : ''}" />
 			</Button>
 
 			{#if $canAccess('activity', 'delete')}
-				<ConfirmPopover
+				<div class="hidden md:block"><ConfirmPopover
 					localized
 					bind:open={showClearConfirm}
 					action={m.activity_confirm_action_clear()}
@@ -783,11 +819,11 @@
 					unstyled
 				>
 					{#snippet children({ open })}
-						<Button variant="outline" size="sm" disabled={clearingActivity || total === 0}>
+						<Button variant="outline" size="sm" disabled={clearingActivity || total === 0} aria-label="Clear activity log">
 							<Trash2 class="w-3.5 h-3.5" />
 						</Button>
 					{/snippet}
-				</ConfirmPopover>
+				</ConfirmPopover></div>
 			{/if}
 		</div>
 	</div>
@@ -801,6 +837,8 @@
 			keyField="id"
 			gridId="activity"
 			virtualScroll
+			rowHeight={33}
+			mobileRowHeight={174}
 			hasMore={hasMore}
 			onLoadMore={loadMoreEvents}
 			onVisibleRangeChange={handleVisibleRangeChange}

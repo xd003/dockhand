@@ -457,21 +457,21 @@
 
 <!-- Environments Tab Content -->
 <div class="space-y-4">
-	<div class="flex justify-between items-center">
-		<div class="flex items-center gap-3">
+	<div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+		<div class="flex items-center gap-3 max-sm:hidden">
 			<Badge variant="secondary" class="text-xs">{m.environments_total_count({ count: environments.length })}</Badge>
 		</div>
-		<div class="flex gap-2">
+		<div class="grid grid-flow-col auto-cols-fr gap-2 sm:flex">
 			{#if $canAccess('environments', 'create')}
-				<Button size="sm" onclick={openAddEnvModal}>
+				<Button size="sm" class="h-11 sm:h-8" onclick={openAddEnvModal}>
 					<Plus class="w-4 h-4 mr-1" />
-					{m.dashboard_add_environment()}
+					<span class="sm:hidden">Add</span><span class="max-sm:hidden">{m.dashboard_add_environment()}</span>
 				</Button>
 			{/if}
 			<Button
 				size="sm"
 				variant="outline"
-				class="min-w-[100px]"
+				class="h-11 sm:h-8 sm:min-w-[100px]"
 				onclick={testAllConnections}
 				disabled={testingAll || environments.length === 0}
 			>
@@ -486,7 +486,7 @@
 				<DropdownMenu.Root>
 					<DropdownMenu.Trigger>
 						{#snippet child({ props })}
-							<Button {...props} size="sm" variant="outline" disabled={environments.length === 0 || exportingReport}>
+							<Button {...props} size="sm" variant="outline" class="h-11 sm:h-8" disabled={environments.length === 0 || exportingReport}>
 								<FileDown class="w-4 h-4 mr-1" />
 								{m.settings_envs_export_report()}
 							</Button>
@@ -514,7 +514,7 @@
 					</DropdownMenu.Content>
 				</DropdownMenu.Root>
 			{/if}
-			<Button size="sm" variant="outline" onclick={fetchEnvironments}>{m.dashboard_refresh()}</Button>
+			<Button size="sm" variant="outline" class="h-11 sm:h-8" onclick={fetchEnvironments}>{m.dashboard_refresh()}</Button>
 		</div>
 	</div>
 
@@ -524,7 +524,7 @@
 		<p class="text-muted-foreground text-sm">{m.environments_empty()}</p>
 	{:else}
 		<div class="border rounded-lg overflow-hidden">
-			<Table.Root>
+			<Table.Root class="responsive-table">
 				<Table.Header>
 					<Table.Row>
 						<Table.Head class="w-[200px]">{m.gridcol_name()}</Table.Head>
@@ -564,7 +564,7 @@
 								: ''}"
 						>
 							<!-- Name Column -->
-							<Table.Cell>
+							<Table.Cell data-label="Name">
 								<div class="flex items-center gap-2">
 									{#if reorderMode}
 										<!-- Visual affordance only: dndzone handles the whole row,
@@ -606,7 +606,7 @@
 							</Table.Cell>
 
 							<!-- Connection Column -->
-							<Table.Cell>
+							<Table.Cell data-label="Connection">
 								<span class="text-sm text-muted-foreground">
 									{#if env.connectionType === 'socket' || !env.connectionType}
 										{env.socketPath || '/var/run/docker.sock'}
@@ -619,7 +619,7 @@
 							</Table.Cell>
 
 							<!-- Labels Column -->
-							<Table.Cell>
+							<Table.Cell data-label="Labels">
 								{#if env.labels && env.labels.length > 0}
 									<div class="flex flex-wrap gap-1">
 										{#each env.labels as label}
@@ -638,7 +638,7 @@
 							</Table.Cell>
 
 							<!-- Timezone Column -->
-							<Table.Cell>
+							<Table.Cell data-label="Timezone">
 								{#if env.timezone}
 									<div class="flex items-center gap-1.5">
 										<Clock class="w-3.5 h-3.5 text-muted-foreground" />
@@ -650,7 +650,7 @@
 							</Table.Cell>
 
 							<!-- Features Column -->
-							<Table.Cell>
+							<Table.Cell data-label="Features">
 								<div class="flex items-center gap-1.5">
 									{#if env.updateCheckEnabled}
 										<span title={env.updateCheckAutoUpdate ? m.dashboard_status_auto_update() : m.dashboard_status_update_check()}>
@@ -688,7 +688,7 @@
 							</Table.Cell>
 
 							<!-- Status Column -->
-							<Table.Cell>
+							<Table.Cell data-label="Status">
 								{#if testResult}
 									{#if testResult.success}
 										<div class="flex items-center gap-1.5 text-green-600 dark:text-green-400 text-sm">
@@ -720,7 +720,7 @@
 							</Table.Cell>
 
 							<!-- Docker Version Column -->
-							<Table.Cell>
+							<Table.Cell data-label="Docker">
 								{#if testResult?.info?.serverVersion}
 									<div class="flex items-center gap-1.5">
 										<span class="text-sm text-muted-foreground">{testResult.info.serverVersion}</span>
@@ -734,7 +734,7 @@
 							</Table.Cell>
 
 							<!-- Hawser Version Column -->
-							<Table.Cell>
+							<Table.Cell data-label="Hawser">
 								{#if testResult?.hawser?.hawserVersion}
 									<span class="text-sm text-muted-foreground">{testResult.hawser.hawserVersion}</span>
 								{:else if env.hawserVersion}
@@ -745,12 +745,12 @@
 							</Table.Cell>
 
 							<!-- Actions Column -->
-							<Table.Cell class="text-right">
-								<div class="flex items-center justify-end gap-1">
+							<Table.Cell class="environment-actions text-right" data-label="Actions">
+								<div class="grid grid-cols-2 gap-2 md:flex md:items-center md:justify-end md:gap-1">
 									<Button
 										variant="ghost"
 										size="sm"
-										class="h-7 px-2"
+										class="h-11 gap-1.5 px-2 md:h-7"
 										onclick={() => testConnection(env.id)}
 										disabled={isTesting}
 										title={m.settings_envs_test_connection()}
@@ -760,16 +760,18 @@
 										{:else}
 											<Wifi class="w-3.5 h-3.5" />
 										{/if}
+										<span class="text-xs md:hidden">Test</span>
 									</Button>
 									{#if $canAccess('environments', 'edit')}
 										<Button
 											variant="ghost"
 											size="sm"
-											class="h-7 px-2"
+											class="h-11 gap-1.5 px-2 md:h-7"
 											onclick={() => openEditEnvModal(env)}
 											title={m.environments_edit_title()}
 										>
 											<Pencil class="w-3.5 h-3.5" />
+											<span class="text-xs md:hidden">Edit</span>
 										</Button>
 									{/if}
 									{#if $canAccess('containers', 'remove') && $canAccess('images', 'remove') && $canAccess('volumes', 'remove') && $canAccess('networks', 'remove')}
@@ -788,7 +790,7 @@
 												<Button
 													variant="ghost"
 													size="sm"
-													class="h-7 px-2"
+													class="h-11 gap-1.5 px-2 md:h-7"
 													disabled={pruneStatus[env.id] === 'pruning'}
 													title={m.settings_envs_prune_system()}
 												>
@@ -801,6 +803,7 @@
 													{:else}
 														<Icon iconNode={broom} class="w-3.5 h-3.5" />
 													{/if}
+													<span class="text-xs md:hidden">Prune</span>
 												</Button>
 											{/snippet}
 										</ConfirmPopover>
@@ -809,11 +812,12 @@
 										<Button
 											variant="ghost"
 											size="sm"
-											class="h-7 px-2 text-muted-foreground hover:text-destructive"
+											class="h-11 gap-1.5 px-2 text-muted-foreground hover:text-destructive md:h-7"
 											title={m.settings_envs_delete_environment()}
 											onclick={() => requestDeleteEnvironment(env.id)}
 										>
 											<Trash2 class="w-3.5 h-3.5" />
+											<span class="text-xs md:hidden">Delete</span>
 										</Button>
 									{/if}
 								</div>
@@ -890,7 +894,7 @@
 						<code class="text-xs bg-muted px-1 py-0.5 rounded">{deleteEnvTarget.name}</code>
 						{splitAtName(m.settings_envs_delete_dialog_intro)[1]}
 					</p>
-					<div class="space-y-1 text-xs font-mono bg-muted/40 rounded-md p-3 border overflow-x-auto">
+					<div class="space-y-1 text-xs font-mono bg-muted/40 rounded-md p-3 border break-all">
 						<div class="flex items-center gap-2 whitespace-nowrap">
 							<Trash2 class="w-3.5 h-3.5 shrink-0 text-destructive" />
 							<code class="whitespace-nowrap">$DATA_DIR/stacks/{deleteEnvTarget.name}/</code>

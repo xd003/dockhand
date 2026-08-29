@@ -447,7 +447,7 @@
 </script>
 
 <Dialog.Root bind:open onOpenChange={(o) => { if (o) { formError = ''; formErrors = {}; focusFirstInput(); } }}>
-	<Dialog.Content class="max-w-6xl max-h-[85vh] flex flex-col overflow-hidden">
+	<Dialog.Content class="max-w-6xl max-h-[calc(100dvh-1rem)] flex flex-col overflow-hidden">
 		<Dialog.Header class="flex-shrink-0">
 			<Dialog.Title class="flex items-center gap-2">
 				{#if isEditing}
@@ -477,7 +477,7 @@
 				<Alert.Description>{formError}</Alert.Description>
 			</Alert.Root>
 		{/if}
-		<div class="flex-shrink-0 grid grid-cols-2 gap-4 py-4">
+		<div class="flex-shrink-0 grid grid-cols-1 sm:grid-cols-2 gap-4 py-4">
 			<div class="space-y-2">
 				<Label>Role name</Label>
 				<Input
@@ -510,7 +510,7 @@
 						<span class="text-xs text-muted-foreground">(always global)</span>
 					</div>
 				</div>
-				<div class="p-3 grid grid-cols-2 lg:grid-cols-4 gap-3">
+				<div class="p-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
 					<!-- BETA GATE: drop the backups permission group unless FEAT_BACKUPS_ENABLED (see features.ts) -->
 					{#each Object.entries(systemPermissions).filter(([c]) => c !== 'backups' || $page.data.backupsEnabled) as [category, permissions]}
 						{@const IconComponent = categoryIcons[category]}
@@ -576,7 +576,7 @@
 					<!-- Environment selector -->
 					{#if environments.length > 0}
 						{#if !formAllEnvironments}
-							<div class="mt-3 grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-6 gap-2">
+							<div class="mt-3 grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-2">
 								{#each environments as env}
 									<label class="flex items-center gap-2 p-2 border rounded-md cursor-pointer hover:bg-muted/50 transition-colors text-xs {formEnvironmentIds.includes(env.id) ? 'border-primary bg-primary/5' : ''}">
 										<Checkbox
@@ -598,7 +598,7 @@
 						<p class="text-xs text-muted-foreground mt-1">Permissions apply to all environments.</p>
 					{/if}
 				</div>
-				<div class="p-3 grid grid-cols-2 lg:grid-cols-5 gap-3">
+				<div class="p-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
 					{#each Object.entries(environmentPermissions) as [category, permissions]}
 						{@const IconComponent = categoryIcons[category]}
 						<div class="relative border rounded-md pt-5 pb-3 px-3">

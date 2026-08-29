@@ -77,7 +77,7 @@
 	{#if diskWarningEnabled}
 		<div class="flex items-center gap-3">
 			<Select.Root type="single" value={diskWarningMode} onValueChange={(v) => { if (v) diskWarningMode = v as 'percentage' | 'absolute'; }}>
-				<Select.Trigger class="w-48">
+				<Select.Trigger class="w-full sm:w-48">
 					<div class="flex items-center gap-2">
 						{#if diskWarningMode === 'percentage'}
 							{#if percentageDead}
@@ -122,7 +122,7 @@
 					min={1}
 					max={100}
 					bind:value={diskWarningThreshold}
-					class="w-24"
+					class="w-full sm:w-24"
 				/>
 				<span class="text-sm text-muted-foreground">%</span>
 			{:else}
@@ -130,7 +130,7 @@
 					type="number"
 					min={1}
 					bind:value={diskWarningThresholdGb}
-					class="w-24"
+					class="w-full sm:w-24"
 				/>
 				<span class="text-sm text-muted-foreground">GB</span>
 			{/if}

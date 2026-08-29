@@ -147,7 +147,7 @@
 </script>
 
 <Dialog.Root bind:open>
-	<Dialog.Content class="max-w-2xl h-[640px] flex flex-col">
+	<Dialog.Content class="max-w-2xl h-[min(640px,calc(100dvh-1rem))] flex flex-col">
 		<Dialog.Header class="shrink-0">
 			<Dialog.Title>{title}</Dialog.Title>
 		</Dialog.Header>

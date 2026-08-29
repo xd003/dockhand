@@ -274,7 +274,7 @@
 </script>
 
 <Dialog.Root bind:open onOpenChange={(isOpen) => !isOpen && onclose()}>
-	<Dialog.Content class="max-w-4xl max-h-[80vh] overflow-hidden flex flex-col">
+	<Dialog.Content class="max-w-4xl max-h-[calc(100dvh-1rem)] overflow-hidden flex flex-col">
 		<Dialog.Header>
 			<Dialog.Title class="flex items-center gap-2">
 				<Search class="w-5 h-5" />
@@ -344,7 +344,7 @@
 									defaultEnvId = v ? parseInt(v) : null;
 								}}
 							>
-								<Select.Trigger class="w-[220px]">
+								<Select.Trigger class="w-full sm:w-[220px]">
 									{#if defaultEnv}
 										<EnvironmentIcon icon={defaultEnv.icon || 'globe'} envId={defaultEnv.id} class="w-4 h-4 mr-2 shrink-0" />
 									{/if}
@@ -477,7 +477,7 @@
 													if (v) setStackEnv(stack.composePath, parseInt(v));
 												}}
 											>
-												<Select.Trigger class="h-8 w-[220px] text-xs">
+												<Select.Trigger class="h-8 w-full sm:w-[220px] text-xs">
 													{#if getStackEnv(stack.composePath)}
 														{@const stackEnv = getStackEnv(stack.composePath)}
 														<EnvironmentIcon icon={stackEnv?.icon || 'globe'} envId={stackEnv?.id || 0} class="w-3.5 h-3.5 mr-1.5 shrink-0" />

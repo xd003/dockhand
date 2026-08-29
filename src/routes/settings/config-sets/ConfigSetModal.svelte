@@ -205,7 +205,7 @@
 </script>
 
 <Dialog.Root bind:open onOpenChange={(o) => { if (o) { formError = ''; formErrors = {}; focusFirstInput(); } }}>
-	<Dialog.Content class="max-w-3xl max-h-[90vh] overflow-y-auto">
+	<Dialog.Content class="max-w-3xl max-h-[calc(100dvh-1rem)] overflow-y-auto">
 		<Dialog.Header>
 			<Dialog.Title>{isEditing ? 'Edit' : 'Add'} config set</Dialog.Title>
 		</Dialog.Header>
@@ -214,7 +214,7 @@
 				<div class="text-sm text-red-600 dark:text-red-400">{formError}</div>
 			{/if}
 
-			<div class="grid grid-cols-2 gap-4">
+			<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
 				<div class="space-y-2">
 					<Label for="cfg-name">Name *</Label>
 					<Input
@@ -234,7 +234,7 @@
 				</div>
 			</div>
 
-			<div class="grid grid-cols-2 gap-4">
+			<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
 				<div class="space-y-2">
 					<Label for="cfg-network">Network mode</Label>
 					<Select.Root type="single" value={formNetworkMode} onValueChange={(v) => formNetworkMode = v}>

@@ -262,17 +262,17 @@
 		</Dialog.Header>
 
 		<Tabs.Root value="basic" class="mt-4">
-			<Tabs.List class="grid w-full grid-cols-4">
-				<Tabs.Trigger value="basic" class="flex items-center gap-1.5 text-xs">
+			<Tabs.List class="grid w-full grid-cols-2 sm:grid-cols-4">
+				<Tabs.Trigger value="basic" class="flex items-center gap-1.5 text-xs max-md:min-h-11">
 					<Network class="w-3.5 h-3.5" />Basic
 				</Tabs.Trigger>
-				<Tabs.Trigger value="ipam" class="flex items-center gap-1.5 text-xs">
+				<Tabs.Trigger value="ipam" class="flex items-center gap-1.5 text-xs max-md:min-h-11">
 					<Settings class="w-3.5 h-3.5" />IPAM
 				</Tabs.Trigger>
-				<Tabs.Trigger value="options" class="flex items-center gap-1.5 text-xs">
+				<Tabs.Trigger value="options" class="flex items-center gap-1.5 text-xs max-md:min-h-11">
 					<Settings class="w-3.5 h-3.5" />Options
 				</Tabs.Trigger>
-				<Tabs.Trigger value="labels" class="flex items-center gap-1.5 text-xs">
+				<Tabs.Trigger value="labels" class="flex items-center gap-1.5 text-xs max-md:min-h-11">
 					<Tag class="w-3.5 h-3.5" />Labels
 				</Tabs.Trigger>
 			</Tabs.List>
@@ -350,7 +350,7 @@
 						<p class="text-xs font-medium text-amber-600 dark:text-amber-400">
 							{driver === 'macvlan' ? 'Macvlan' : 'IPvlan'} configuration (required)
 						</p>
-						<div class="grid grid-cols-2 gap-3">
+						<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
 							<div class="space-y-1">
 								<Label for="parentInterface" class="text-xs">Parent interface *</Label>
 								<Input
@@ -411,7 +411,7 @@
 								</div>
 							{/if}
 						</div>
-						<div class="grid grid-cols-2 gap-3">
+						<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
 							<div class="space-y-1">
 								<Label for="subnetQuick" class="text-xs">Subnet *</Label>
 								<Input
@@ -468,7 +468,7 @@
 					<p class="text-xs text-muted-foreground">IP Address Management driver (default: default)</p>
 				</div>
 
-				<div class="grid grid-cols-2 gap-4">
+				<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
 					<div class="space-y-2">
 						<Label for="subnet">Subnet</Label>
 						<Input id="subnet" bind:value={subnet} placeholder="172.20.0.0/16" />

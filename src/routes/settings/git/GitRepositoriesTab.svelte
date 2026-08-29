@@ -138,13 +138,13 @@
 </script>
 
 <div class="space-y-4">
-	<div class="flex justify-between items-center">
+	<div class="flex flex-wrap items-center justify-between gap-2">
 		<div>
 			<h3 class="text-lg font-medium">Git repositories</h3>
 			<p class="text-sm text-muted-foreground">Manage Git repositories that can be used to deploy stacks</p>
 		</div>
 		{#if $canAccess('settings', 'edit')}
-			<Button size="sm" onclick={() => openModal()}>
+			<Button size="sm" class="max-sm:h-11" onclick={() => openModal()}>
 				<Plus class="w-4 h-4" />
 				Add repository
 			</Button>
@@ -167,8 +167,8 @@
 		<div class="space-y-1">
 			{#each repositories as repo (repo.id)}
 				{@const ForgeIcon = forgeIcon(repo.url)}
-				<div class="flex items-center justify-between py-2 px-3 rounded-md border bg-card hover:bg-muted/50 transition-colors">
-					<div class="flex items-center gap-2 min-w-0 flex-1">
+				<div class="flex flex-col gap-2 py-2 px-3 rounded-md border bg-card hover:bg-muted/50 transition-colors sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+					<div class="flex items-center gap-2 min-w-0 sm:flex-1">
 						<ForgeIcon class="w-4 h-4 shrink-0 text-muted-foreground" />
 						{#if $canAccess('settings', 'edit')}
 							<button
@@ -182,7 +182,7 @@
 						{/if}
 						<span class="text-xs text-muted-foreground truncate hidden sm:inline">{repo.url}</span>
 					</div>
-					<div class="flex items-center gap-2 shrink-0">
+					<div class="flex items-center gap-2 shrink-0 flex-wrap">
 						{#if testResult?.id === repo.id}
 							<span class="flex items-center gap-1 text-xs px-2 py-0.5 rounded {testResult.success ? 'text-green-600 bg-green-50 dark:bg-green-950/30' : 'text-red-600 bg-red-50 dark:bg-red-950/30'}">
 								{#if testResult.success}

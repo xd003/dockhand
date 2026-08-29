@@ -397,7 +397,7 @@
 			{@const view = buildDeployRunView(run)}
 			{@const panelState = buildDeployLogPanelState(run)}
 			{@const logEntry = logs.get(run.id)}
-			<div class="w-full p-4 pl-12 shadow-inner bg-muted text-xs">
+			<div class="w-full p-4 pl-12 shadow-inner bg-muted text-xs max-md:pl-4">
 				<div class="grid grid-cols-2 gap-x-4 gap-y-1.5 sm:grid-cols-3">
 					<div>
 						<div class="text-muted-foreground">Containers</div>

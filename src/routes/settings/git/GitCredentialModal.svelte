@@ -153,7 +153,7 @@
 </script>
 
 <Dialog.Root bind:open onOpenChange={(o) => { if (o) focusFirstInput(); else onClose(); }}>
-	<Dialog.Content class="max-w-md">
+	<Dialog.Content class="max-w-md max-h-[calc(100dvh-1rem)] flex flex-col overflow-hidden">
 		<Dialog.Header>
 			<Dialog.Title class="flex items-center gap-2">
 				<Key class="w-5 h-5" />
@@ -164,7 +164,8 @@
 			</Dialog.Description>
 		</Dialog.Header>
 
-		<form onsubmit={(e) => { e.preventDefault(); saveCredential(); }} class="space-y-4">
+		<form onsubmit={(e) => { e.preventDefault(); saveCredential(); }} class="flex min-h-0 flex-1 flex-col">
+			<div class="min-h-0 flex-1 space-y-4 overflow-y-auto">
 			<div class="space-y-2">
 				<Label for="cred-name">Name</Label>
 				<Input
@@ -239,8 +240,9 @@
 			{#if formError}
 				<p class="text-sm text-destructive">{formError}</p>
 			{/if}
+			</div>
 
-			<Dialog.Footer>
+			<Dialog.Footer class="flex-shrink-0 border-t pt-4">
 				<Button variant="outline" type="button" onclick={onClose}>Cancel</Button>
 				<Button type="submit" disabled={formSaving}>
 					{formSaving ? 'Saving...' : (isEditing ? 'Save changes' : 'Add credential')}

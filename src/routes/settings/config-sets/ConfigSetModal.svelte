@@ -205,7 +205,7 @@
 </script>
 
 <Dialog.Root bind:open onOpenChange={(o) => { if (o) { formError = ''; formErrors = {}; focusFirstInput(); } }}>
-	<Dialog.Content class="max-w-3xl max-h-[90vh] overflow-y-auto">
+	<Dialog.Content class="max-w-3xl max-h-[calc(100dvh-1rem)] overflow-y-auto">
 		<Dialog.Header>
 			<Dialog.Title>{isEditing ? 'Edit' : 'Add'} config set</Dialog.Title>
 		</Dialog.Header>
@@ -214,7 +214,7 @@
 				<div class="text-sm text-red-600 dark:text-red-400">{formError}</div>
 			{/if}
 
-			<div class="grid grid-cols-2 gap-4">
+			<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
 				<div class="space-y-2">
 					<Label for="cfg-name">Name *</Label>
 					<Input
@@ -234,7 +234,7 @@
 				</div>
 			</div>
 
-			<div class="grid grid-cols-2 gap-4">
+			<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
 				<div class="space-y-2">
 					<Label for="cfg-network">Network mode</Label>
 					<Select.Root type="single" value={formNetworkMode} onValueChange={(v) => formNetworkMode = v}>
@@ -266,7 +266,7 @@
 
 			<!-- Environment Variables -->
 			<div class="space-y-2 border-t pt-4">
-				<div class="flex justify-between items-center">
+				<div class="flex flex-wrap items-center justify-between gap-2">
 					<Label class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Environment variables</Label>
 					<Button type="button" size="sm" variant="ghost" onclick={addEnvVar} class="h-7 text-xs">
 						<Plus class="w-3.5 h-3.5" />Add
@@ -285,7 +285,7 @@
 
 			<!-- Labels -->
 			<div class="space-y-2 border-t pt-4">
-				<div class="flex justify-between items-center">
+				<div class="flex flex-wrap items-center justify-between gap-2">
 					<Label class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Labels</Label>
 					<Button type="button" size="sm" variant="ghost" onclick={addLabel} class="h-7 text-xs">
 						<Plus class="w-3.5 h-3.5" />Add
@@ -304,14 +304,14 @@
 
 			<!-- Ports -->
 			<div class="space-y-2 border-t pt-4">
-				<div class="flex justify-between items-center">
+				<div class="flex flex-wrap items-center justify-between gap-2">
 					<Label class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Port mappings</Label>
 					<Button type="button" size="sm" variant="ghost" onclick={addPort} class="h-7 text-xs">
 						<Plus class="w-3.5 h-3.5" />Add
 					</Button>
 				</div>
 				{#each formPorts as port, i}
-					<div class="grid grid-cols-[1fr_1fr_5rem_auto] gap-2 items-start">
+					<div class="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] items-start gap-2 sm:grid-cols-[1fr_1fr_5rem_auto]">
 						<div>
 							<Input
 								bind:value={port.hostPort}
@@ -348,14 +348,14 @@
 
 			<!-- Volumes -->
 			<div class="space-y-2 border-t pt-4">
-				<div class="flex justify-between items-center">
+				<div class="flex flex-wrap items-center justify-between gap-2">
 					<Label class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Volume mappings</Label>
 					<Button type="button" size="sm" variant="ghost" onclick={addVolume} class="h-7 text-xs">
 						<Plus class="w-3.5 h-3.5" />Add
 					</Button>
 				</div>
 				{#each formVolumes as vol, i}
-					<div class="grid grid-cols-[1fr_1fr_5rem_auto] gap-2 items-center">
+					<div class="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] items-center gap-2 sm:grid-cols-[1fr_1fr_5rem_auto]">
 						<Input bind:value={vol.hostPath} placeholder="Host path" class="h-8" />
 						<Input bind:value={vol.containerPath} placeholder="Container path" class="h-8" />
 						<ToggleGroup

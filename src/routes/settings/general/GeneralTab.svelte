@@ -508,7 +508,7 @@ services:
 	});
 </script>
 
-<div class="flex-1 min-h-0 overflow-y-auto">
+	<div class="flex-1 min-h-0">
 	<div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
 		<!-- Left column -->
 		<div class="space-y-4">
@@ -819,7 +819,7 @@ services:
 								appSettings.setDefaultTimezone(value);
 								toast.success(`Default timezone set to ${value}`);
 							}}
-							class="w-[320px]"
+											class="w-full sm:w-[320px]"
 						/>
 						<p class="text-xs text-muted-foreground">Default timezone for new environments. Used for scheduled tasks like auto-updates.</p>
 					</div>
@@ -869,7 +869,7 @@ services:
 									onValueChange={handleLogMaxLinesChange}
 									disabled={!$canAccess('settings', 'edit')}
 								>
-									<Select.Trigger id="log-max-lines" class="w-48">
+									<Select.Trigger id="log-max-lines" class="w-full sm:w-48">
 										{logMaxLines.toLocaleString()} lines
 									</Select.Trigger>
 									<Select.Content>
@@ -894,7 +894,7 @@ services:
 										}}
 										disabled={!$canAccess('settings', 'edit')}
 									>
-										<Select.Trigger class="w-[180px]">
+										<Select.Trigger class="w-full sm:w-[180px]">
 											<FileText class="w-4 h-4 mr-2" />
 											<span>{downloadFormatLabel[downloadFormat]}</span>
 										</Select.Trigger>
@@ -981,11 +981,11 @@ services:
 					</div>
 					{#if $canAccess('settings', 'edit')}
 						<div class="flex gap-2">
-							<Button size="sm" variant="outline" onclick={saveComposeTemplate}>
+							<Button size="sm" class="max-sm:h-11" variant="outline" onclick={saveComposeTemplate}>
 								<Save class="w-3.5 h-3.5" />
 								Save template
 							</Button>
-							<Button size="sm" variant="ghost" onclick={revertComposeTemplate}>
+							<Button size="sm" class="max-sm:h-11" variant="ghost" onclick={revertComposeTemplate}>
 								<RotateCcw class="w-3.5 h-3.5" />
 								Revert to default
 							</Button>
@@ -1100,7 +1100,7 @@ services:
 							{/if}
 						</div>
 						<div class="pt-1">
-							<Button variant="outline" size="sm" onclick={checkScannerVersions} disabled={checkingScannerVersions}>
+							<Button variant="outline" size="sm" class="max-sm:h-11" onclick={checkScannerVersions} disabled={checkingScannerVersions}>
 								{checkingScannerVersions ? 'Checking...' : 'Check for newer scanner versions'}
 							</Button>
 						</div>
@@ -1173,14 +1173,14 @@ services:
 						</div>
 					{/if}
 					<div class="pt-2 border-t">
-						<div class="flex items-center justify-between">
+						<div class="flex flex-wrap items-center justify-between gap-2">
 							<div>
 								<p class="text-sm font-medium">Scanner cache</p>
 								<p class="text-xs text-muted-foreground">Remove cached vulnerability databases to free disk space. Next scan will re-download fresh data (~200MB).</p>
 							</div>
 							<Button
 								variant="outline"
-								size="sm"
+								size="sm" class="max-sm:h-11"
 								disabled={clearingCache || !$canAccess('settings', 'edit')}
 								onclick={clearScannerCache}
 							>

@@ -598,9 +598,9 @@
 	</div>
 
 	<!-- Registry Selector + Search Bar -->
-	<div class="shrink-0 flex gap-2">
+	<div class="shrink-0 flex flex-wrap gap-2">
 		<Select.Root type="single" value={selectedRegistryId ? String(selectedRegistryId) : undefined} onValueChange={(v) => { selectedRegistryId = Number(v); handleRegistryChange(); }}>
-			<Select.Trigger class="h-9 min-w-48 max-w-64 shrink-0">
+			<Select.Trigger class="shrink-0 max-sm:w-full data-[size=default]:h-11 sm:min-w-48 sm:max-w-64 sm:data-[size=default]:h-9">
 				{@const selected = registries.find(r => r.id === selectedRegistryId)}
 				{#if selected && isDockerHub(selected)}
 					<Icon iconNode={whale} class="w-4 h-4 mr-2 text-muted-foreground shrink-0" />
@@ -628,17 +628,17 @@
 				{/each}
 			</Select.Content>
 		</Select.Root>
-		<div class="relative flex-1">
+		<div class="relative min-w-0 flex-1">
 			<Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
 			<Input
 				type="text"
 				placeholder={selectedRegistry ? `Search ${selectedRegistry.name} for images...` : 'Search for images...'}
 				bind:value={searchTerm}
 				onkeydown={handleKeydown}
-				class="pl-10"
+				class="pl-10 max-sm:h-11"
 			/>
 		</div>
-		<Button onclick={search} disabled={loading || browsing || !searchTerm.trim()}>
+		<Button class="max-sm:h-11" onclick={search} disabled={loading || browsing || !searchTerm.trim()}>
 			{#if loading}
 				<RefreshCw class="w-4 h-4 mr-1 animate-spin" />
 			{:else}
@@ -647,7 +647,7 @@
 			Search
 		</Button>
 		{#if supportsBrowsing()}
-			<Button variant="outline" onclick={() => browse()} disabled={loading || browsing}>
+			<Button variant="outline" class="max-sm:h-11" onclick={() => browse()} disabled={loading || browsing}>
 				{#if browsing}
 					<RefreshCw class="w-4 h-4 mr-1 animate-spin" />
 				{:else}

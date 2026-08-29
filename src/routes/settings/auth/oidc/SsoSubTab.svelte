@@ -159,7 +159,7 @@
 <div class="space-y-4">
 	<Card.Root>
 		<Card.Header>
-			<div class="flex items-center justify-between">
+			<div class="flex flex-wrap items-center justify-between gap-2">
 				<div>
 					<Card.Title class="text-sm font-medium flex items-center gap-2">
 						<LogIn class="w-4 h-4" />
@@ -168,7 +168,7 @@
 					<p class="text-xs text-muted-foreground mt-1">Enable SSO using OpenID Connect providers like Okta, Auth0, Azure AD, or Google Workspace.</p>
 				</div>
 				{#if $canAccess('settings', 'edit')}
-					<Button size="sm" onclick={() => openOidcModal(null)}>
+					<Button size="sm" class="max-sm:h-11" onclick={() => openOidcModal(null)}>
 						<Plus class="w-4 h-4" />
 						Add provider
 					</Button>
@@ -205,7 +205,7 @@
 							<div class="flex items-center gap-1">
 								<Button
 									variant="ghost"
-									size="sm"
+									size="sm" class="max-sm:h-11"
 									title="Test connection"
 									onclick={() => testOidcConnection(config.id)}
 									disabled={oidcTesting === config.id}
@@ -219,7 +219,7 @@
 								{#if $canAccess('settings', 'edit')}
 									<Button
 										variant="ghost"
-										size="sm"
+										size="sm" class="max-sm:h-11"
 										title={config.enabled ? 'Disable provider' : 'Enable provider'}
 										onclick={() => toggleOidcEnabled(config)}
 									>
@@ -231,7 +231,7 @@
 									</Button>
 									<Button
 										variant="ghost"
-										size="sm"
+										size="sm" class="max-sm:h-11"
 										title="Edit provider"
 										onclick={() => openOidcModal(config)}
 									>

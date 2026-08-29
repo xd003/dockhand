@@ -125,18 +125,18 @@
 </script>
 
 <div class="space-y-4">
-	<div class="flex justify-between items-center">
+	<div class="flex flex-wrap items-center justify-between gap-2">
 		<div class="flex items-center gap-3">
 			<Badge variant="secondary" class="text-xs">{registries.length} total</Badge>
 		</div>
 		<div class="flex gap-2">
 			{#if $canAccess('registries', 'create')}
-				<Button size="sm" onclick={() => openRegModal()}>
+				<Button size="sm" class="max-sm:h-11" onclick={() => openRegModal()}>
 					<Plus class="w-4 h-4" />
 					Add registry
 				</Button>
 			{/if}
-			<Button size="sm" variant="outline" onclick={fetchRegistries}>Refresh</Button>
+			<Button size="sm" class="max-sm:h-11" variant="outline" onclick={fetchRegistries}>Refresh</Button>
 		</div>
 	</div>
 
@@ -190,7 +190,7 @@
 							{#if !registry.isDefault && $canAccess('registries', 'edit')}
 								<Button
 									variant="outline"
-									size="sm"
+									size="sm" class="max-sm:h-11"
 									onclick={() => setRegDefault(registry.id)}
 								>
 									<Star class="w-3 h-3" />
@@ -199,7 +199,7 @@
 							{/if}
 							<Button
 								variant="outline"
-								size="sm"
+								size="sm" class="max-sm:h-11"
 								onclick={() => testRegistry(registry.id)}
 								disabled={testingRegistryId === registry.id}
 								title="Test connectivity"
@@ -217,7 +217,7 @@
 							{#if $canAccess('registries', 'edit')}
 								<Button
 									variant="outline"
-									size="sm"
+									size="sm" class="max-sm:h-11"
 									onclick={() => openRegModal(registry)}
 								>
 									<Pencil class="w-3 h-3" />

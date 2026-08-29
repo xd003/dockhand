@@ -663,7 +663,7 @@
 </script>
 
 <Dialog.Root bind:open onOpenChange={(o) => { if (o) { formError = ''; repoConflictName = null; focusFirstInput(); } }}>
-	<Dialog.Content class="max-w-4xl max-h-[90vh] flex flex-col overflow-hidden">
+	<Dialog.Content class="max-w-4xl max-h-[calc(100dvh-1rem)] flex flex-col overflow-hidden">
 		<Dialog.Header>
 			<Dialog.Title>{isEditing ? 'Edit backup destination' : 'Add backup destination'}</Dialog.Title>
 			<Dialog.Description>{isEditing ? 'Update backup destination settings' : 'Configure a restic backup repository'}</Dialog.Description>
@@ -671,7 +671,7 @@
 
 		{#if formError}<p class="text-sm text-destructive">{formError}</p>{/if}
 
-		<div class="flex-1 overflow-y-auto pr-3">
+		<div class="min-h-0 flex-1 overflow-y-auto pr-3">
 		{#if selectedBackend.value === 'local'}
 			<div class="flex items-start gap-2 p-2.5 mt-4 rounded-md bg-amber-500/10 border border-amber-500/20 text-xs text-amber-600 dark:text-amber-400">
 				<HardDrive class="w-3.5 h-3.5 shrink-0 mt-0.5" />
@@ -683,7 +683,7 @@
 				<span>Dockhand uses only the supplied private key and verified <code>known_hosts</code> entries. Strict host-key checking is always on; password login, ssh-agent use, agent forwarding, and trust-on-first-use are disabled.</span>
 			</div>
 		{/if}
-		<div class="grid grid-cols-2 gap-6 py-4">
+		<div class="grid grid-cols-1 sm:grid-cols-2 gap-6 py-4">
 			<!-- Left column: connection -->
 			<div class="space-y-4">
 				<div class="space-y-2">
@@ -734,7 +734,7 @@
 									formFields.region = v;
 									formFields.endpoint = regionalEndpoint(v);
 								}}>
-									<Select.Trigger class="w-36 shrink-0" aria-label="AWS regions quick pick">AWS regions</Select.Trigger>
+									<Select.Trigger class="w-full sm:w-36 shrink-0" aria-label="AWS regions quick pick">AWS regions</Select.Trigger>
 									<Select.Content class="max-h-64">
 										{#each AWS_REGIONS as r}
 											<Select.Item value={r}>{r}</Select.Item>
@@ -765,14 +765,14 @@
 			<div class="space-y-4">
 				{#each credentialFields as field}
 					{#if field.key === 'skipHostKey'}
-						<div class="flex items-center justify-between">
+						<div class="flex flex-wrap items-center justify-between gap-2">
 							<Label>{field.label}</Label>
 							<TogglePill checked={formFields[field.key] === 'true'} onchange={() => { formFields[field.key] = formFields[field.key] === 'true' ? '' : 'true'; }} />
 						</div>
 					{:else}
 						<div class="space-y-1">
 							{#if field.multiline}
-								<div class="flex items-center justify-between">
+								<div class="flex flex-wrap items-center justify-between gap-2">
 									<FieldLabel label={field.label} forId="field-{field.key}" required={fieldRequired(field)} />
 									<div class="flex gap-1">
 										{#if isEditing && field.secretField && hasStoredSecret(field) && !formFields[field.key]}
@@ -866,9 +866,9 @@
 			<p class="text-xs text-muted-foreground -mt-1">
 				For a backend served over HTTPS with a private/self-signed CA. Leave blank to use the system trust store.
 			</p>
-			<div class="grid grid-cols-2 gap-6">
+			<div class="grid grid-cols-1 sm:grid-cols-2 gap-6">
 				<div class="space-y-1">
-					<div class="flex items-center justify-between">
+					<div class="flex flex-wrap items-center justify-between gap-2">
 						<Label for="dest-cacert">CA certificate</Label>
 						<div class="flex gap-1">
 							{#if isEditing && hadCacert && !formCacert}
@@ -890,7 +890,7 @@
 					<p class="text-xs text-muted-foreground">Verifies the backend's TLS certificate (restic <code class="font-mono">RESTIC_CACERT</code>).</p>
 				</div>
 				<div class="space-y-1">
-					<div class="flex items-center justify-between">
+					<div class="flex flex-wrap items-center justify-between gap-2">
 						<Label for="dest-client-cert">Client certificate (mTLS)</Label>
 						<div class="flex gap-1">
 							{#if isEditing && hadTlsClientCert && !formTlsClientCert}
@@ -1026,7 +1026,7 @@
 					{/if}
 				</div>
 				{#if repoStats}
-					<div class="grid grid-cols-3 gap-2">
+					<div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
 						<div class="bg-muted/30 rounded px-2 py-1.5 text-center border border-border/30">
 							<div class="text-sm font-semibold">{formatBytes(repoStats.totalSize)}</div>
 							<div class="text-[9px] text-muted-foreground">Size</div>
@@ -1066,7 +1066,7 @@
 		{/if}
 		<Dialog.Footer class="flex-shrink-0 border-t mt-auto pt-4">
 			<div class="flex items-center gap-2 mr-auto min-w-0">
-				<Button variant="outline" size="sm" onclick={testConnection} disabled={testing || !formValid} title={!formValid ? 'Fill in all required fields first' : undefined}>
+				<Button variant="outline" size="sm" class="max-sm:h-11" onclick={testConnection} disabled={testing || !formValid} title={!formValid ? 'Fill in all required fields first' : undefined}>
 					{#if testing}<Loader2 class="w-4 h-4 mr-1 animate-spin" />{:else}<Wifi class="w-4 h-4 mr-1" />{/if}
 					Test
 				</Button>

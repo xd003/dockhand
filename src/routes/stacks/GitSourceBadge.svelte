@@ -3,15 +3,17 @@
 	import { GitBranch, GitCommitHorizontal } from 'lucide-svelte';
 	import { forgeIcon } from '$lib/utils/git-forge';
 	import { appSettings } from '$lib/stores/settings';
-import { effectiveStackBranch } from '$lib/git-stack-branch';
+	import { effectiveStackBranch } from '$lib/git-stack-branch';
 
 	interface Props {
 		source: { repository?: { url?: string; branch?: string } | null; gitStack?: { lastCommit?: string | null; branch?: string | null } | null };
+		showTooltip?: boolean;
+		compact?: boolean;
 	}
-	let { source }: Props = $props();
+	let { source, showTooltip = true, compact = false }: Props = $props();
 
 	const ForgeIcon = $derived(forgeIcon(source.repository?.url));
-	const showHash = $derived(!!source.gitStack?.lastCommit && $appSettings.showGitCommitHash);
+	const showHash = $derived(!compact && !!source.gitStack?.lastCommit && $appSettings.showGitCommitHash);
 	// Effective branch: per-stack override wins, else repository default
 	// (shared with the server-side resolver in src/lib/git-stack-branch.ts).
 	const eff = $derived(
@@ -25,7 +27,7 @@ import { effectiveStackBranch } from '$lib/git-stack-branch';
 
 {#snippet badge()}
 	<span
-		class="inline-flex max-w-full items-center justify-center gap-1 overflow-hidden text-xs px-1.5 py-0.5 rounded-sm bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200 shadow-sm {showHash ? '' : 'min-w-[5.5rem]'}"
+		class="inline-flex max-w-full items-center justify-center gap-1 overflow-hidden rounded-sm bg-purple-100 px-1.5 py-0.5 text-xs text-purple-800 shadow-sm dark:bg-purple-900 dark:text-purple-200 {showHash || compact ? '' : 'min-w-[5.5rem]'}"
 	>
 		<ForgeIcon class="w-3 h-3 shrink-0" />
 		<span class="shrink-0">Git</span>
@@ -35,7 +37,7 @@ import { effectiveStackBranch } from '$lib/git-stack-branch';
 	</span>
 {/snippet}
 
-{#if hasGitInfo}
+{#if hasGitInfo && showTooltip}
 	<Tooltip.Root>
 		<Tooltip.Trigger class="block max-w-full overflow-hidden">
 			{@render badge()}

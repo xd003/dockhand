@@ -256,26 +256,26 @@
 </script>
 
 <Dialog.Root bind:open onOpenChange={handleClose}>
-	<Dialog.Content class="max-w-4xl h-[85vh] flex flex-col">
+	<Dialog.Content class="max-w-4xl h-[85vh] max-md:h-[calc(100dvh-1rem)] flex flex-col">
 		<Dialog.Header class="shrink-0 pb-2">
-			<Dialog.Title class="flex items-center gap-2">
+			<Dialog.Title class="flex min-w-0 items-center gap-2 max-sm:pr-12">
 				{#if scanStatus === 'complete' && scanResults.length > 0}
 					{#if hasCriticalOrHigh}
-						<ShieldX class="w-5 h-5 text-red-500" />
+						<ShieldX class="w-5 h-5 shrink-0 text-red-500" />
 					{:else if totalVulnerabilities > 0}
-						<ShieldAlert class="w-5 h-5 text-yellow-500" />
+						<ShieldAlert class="w-5 h-5 shrink-0 text-yellow-500" />
 					{:else}
-						<ShieldCheck class="w-5 h-5 text-green-500" />
+						<ShieldCheck class="w-5 h-5 shrink-0 text-green-500" />
 					{/if}
 				{:else if scanStatus === 'complete'}
-					<CheckCircle2 class="w-5 h-5 text-green-500" />
+					<CheckCircle2 class="w-5 h-5 shrink-0 text-green-500" />
 				{:else if scanStatus === 'error'}
-					<XCircle class="w-5 h-5 text-red-500" />
+					<XCircle class="w-5 h-5 shrink-0 text-red-500" />
 				{:else}
-					<ShieldCheck class="w-5 h-5" />
+					<ShieldCheck class="w-5 h-5 shrink-0" />
 				{/if}
-				Vulnerability scan
-				<code class="text-sm font-normal bg-muted px-1.5 py-0.5 rounded ml-1">{imageName}</code>
+				<span class="shrink-0">Vulnerability scan</span>
+				<code class="min-w-0 truncate text-sm font-normal bg-muted px-1.5 py-0.5 rounded ml-1">{imageName}</code>
 			</Dialog.Title>
 		</Dialog.Header>
 

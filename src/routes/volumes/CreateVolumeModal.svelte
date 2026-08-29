@@ -214,12 +214,12 @@
 </script>
 
 <Dialog.Root bind:open onOpenChange={(isOpen) => { if (isOpen) focusFirstInput(); handleOpenChange(isOpen); }}>
-	<Dialog.Content class="max-w-2xl">
-		<Dialog.Header>
+	<Dialog.Content class="max-w-2xl max-md:max-h-[calc(100dvh-1rem)] max-md:flex max-md:flex-col">
+		<Dialog.Header class="max-md:shrink-0">
 			<Dialog.Title>Create volume</Dialog.Title>
 		</Dialog.Header>
 
-		<div class="space-y-4">
+		<div class="space-y-4 max-md:min-h-0 max-md:flex-1 max-md:overflow-y-auto">
 			{#if error}
 				<div class="text-sm text-red-600 dark:text-red-400 p-2 bg-red-50 dark:bg-red-950 rounded">
 					{error}
@@ -277,7 +277,7 @@
 			<!-- Driver-specific fields -->
 			{#if driver === 'cifs'}
 				<!-- CIFS fields -->
-				<div class="grid grid-cols-2 gap-4">
+				<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
 					<div class="space-y-2">
 						<Label for="cifs-server">Server / IP *</Label>
 						<Input
@@ -307,7 +307,7 @@
 						{/if}
 					</div>
 				</div>
-				<div class="grid grid-cols-2 gap-4">
+				<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
 					<div class="space-y-2">
 						<Label for="cifs-username">Username</Label>
 						<Input
@@ -328,7 +328,7 @@
 						/>
 					</div>
 				</div>
-				<div class="grid grid-cols-2 gap-4">
+				<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
 					<div class="space-y-2">
 						<Label for="cifs-version">SMB version</Label>
 						<Select.Root type="single" bind:value={cifsVersion} disabled={creating}>
@@ -390,7 +390,7 @@
 				</div>
 			{:else if driver === 'nfs'}
 				<!-- NFS fields -->
-				<div class="grid grid-cols-2 gap-4">
+				<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
 					<div class="space-y-2">
 						<Label for="nfs-server">Server / IP *</Label>
 						<Input

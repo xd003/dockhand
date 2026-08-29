@@ -80,17 +80,21 @@
 	</div>
 
 	{#if !scannerEnabled}
-		<div class="flex-1 min-h-0 flex flex-col items-center justify-center text-center gap-2 text-muted-foreground">
-			<ShieldAlert class="w-10 h-10 opacity-40" />
-			<p class="text-sm">No vulnerability scanner is configured for this environment.</p>
-			<a href="/settings?tab=environments" class="text-sm text-primary hover:underline">Configure a scanner in settings</a>
+		<div class="flex-1 min-h-0 overflow-y-auto">
+			<div class="flex min-h-full flex-col items-center justify-center gap-2 text-center text-muted-foreground">
+				<ShieldAlert class="w-10 h-10 opacity-40" />
+				<p class="text-sm">No vulnerability scanner is configured for this environment.</p>
+				<a href="/settings?tab=environments" class="text-sm text-primary hover:underline">Configure a scanner in settings</a>
+			</div>
 		</div>
 	{:else}
 		{#if !loading && findings.length === 0}
-			<div class="flex-1 min-h-0 flex flex-col items-center justify-center text-center gap-2 text-muted-foreground">
-				<ShieldCheck class="w-10 h-10 opacity-40" />
-				<p class="text-sm">No vulnerabilities found.</p>
-				<p class="text-xs">Click "Scan all images" to populate this view.</p>
+			<div class="flex-1 min-h-0 overflow-y-auto">
+				<div class="flex min-h-full flex-col items-center justify-center gap-2 text-center text-muted-foreground">
+					<ShieldCheck class="w-10 h-10 opacity-40" />
+					<p class="text-sm">No vulnerabilities found.</p>
+					<p class="text-xs">Click "Scan all images" to populate this view.</p>
+				</div>
 			</div>
 		{:else}
 			<div class="flex-1 min-h-0 flex flex-col">

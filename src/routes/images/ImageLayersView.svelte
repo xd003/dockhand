@@ -146,7 +146,7 @@
 				<p class="text-sm font-medium">Total layers: <span class="text-primary">{history.length}</span></p>
 				<p class="text-sm font-medium">Total size: <span class="text-primary">{formatSize(totalSize)}</span></p>
 			</div>
-			<Badge variant="secondary">
+			<Badge variant="secondary" class="max-md:max-w-[50%] max-md:truncate">
 				{imageId.startsWith('sha256:') ? imageId.slice(7, 19) : imageName || imageId}
 			</Badge>
 		</div>
@@ -196,8 +196,8 @@
 									</div>
 								</div>
 
-								<!-- Size -->
-								<div class="w-20 text-xs text-muted-foreground text-right shrink-0">
+								<!-- Size (redundant with the bar label on phones) -->
+								<div class="w-20 text-xs text-muted-foreground text-right shrink-0 max-md:hidden">
 									{formatSize(layer.Size)}
 								</div>
 
@@ -225,7 +225,7 @@
 								{#if layer.CreatedBy}
 									<div class="space-y-1">
 										<p class="text-xs font-medium text-muted-foreground">Command</p>
-										<code class="block text-xs bg-muted p-2 rounded overflow-x-auto whitespace-pre-wrap break-all">
+										<code class="block text-xs bg-muted p-2 rounded whitespace-pre-wrap break-all">
 											{@html highlightCommand(layer.CreatedBy)}
 										</code>
 									</div>

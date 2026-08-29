@@ -1017,7 +1017,7 @@
 				{@const key = config.key}
 				{@const snapshots = snapshotsMap.get(key) || []}
 				{@const isLoading = loadingSnapshots.has(key)}
-				<div class="p-4 pl-12 shadow-inner bg-muted/50 isolate sticky left-0 max-w-[calc(100vw-18rem)]">
+				<div class="p-4 pl-12 max-md:pl-4 max-md:max-w-full shadow-inner bg-muted/50 isolate sticky left-0 max-w-[calc(100vw-18rem)]">
 					{#if lastError?.configId === config.id}
 						<div class="flex items-start gap-2 mb-3 p-2 rounded bg-destructive/10 border border-destructive/20 text-xs">
 							<XCircle class="w-3.5 h-3.5 text-destructive shrink-0 mt-0.5" />

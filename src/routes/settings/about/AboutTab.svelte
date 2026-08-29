@@ -532,7 +532,7 @@
 							</div>
 						{/if}
 						{#if serverUptime !== null}
-							<div class="flex items-center gap-1 min-w-[8.5rem]">
+							<div class="flex items-center gap-1 sm:min-w-[8.5rem]">
 								<Clock class="w-3 h-3 shrink-0" />
 								<span class="tabular-nums">Uptime {formatUptime(serverUptime)}</span>
 							</div>
@@ -702,9 +702,9 @@
 									{/if}
 								</div>
 								{#if systemInfo.database.schemaVersion}
-									<div class="flex items-center gap-2">
+									<div class="flex flex-wrap items-center gap-2">
 										<span class="text-muted-foreground">Schema</span>
-										<span class="font-mono text-xs">{systemInfo.database.schemaVersion}</span>
+										<span class="font-mono text-xs break-all">{systemInfo.database.schemaVersion}</span>
 										{#if systemInfo.database.schemaDate}
 											<span class="text-muted-foreground/60 text-xs">({systemInfo.database.schemaDate})</span>
 										{/if}
@@ -777,7 +777,7 @@
 
 						{#if systemInfo.docker}
 						<!-- Resource Stats -->
-						<div class="grid grid-cols-5 gap-2 pt-3">
+						<div class="grid grid-cols-2 gap-2 pt-3 sm:grid-cols-3 md:grid-cols-5">
 							<div class="stat-box stat-box-blue">
 								<div class="stat-icon-wrapper bg-blue-500/10">
 									<Box class="w-4 h-4 text-blue-500" />
@@ -856,10 +856,10 @@
 								<!-- svelte-ignore a11y_click_events_have_key_events -->
 								<!-- svelte-ignore a11y_no_static_element_interactions -->
 								<div
-									class="flex items-center justify-between p-3 cursor-pointer hover:bg-muted/50 rounded-lg transition-colors"
+									class="flex flex-wrap items-center justify-between gap-y-1 p-3 cursor-pointer hover:bg-muted/50 rounded-lg transition-colors"
 									onclick={() => toggleRelease(index)}
 								>
-									<div class="flex items-center gap-2">
+									<div class="flex flex-wrap items-center gap-2">
 										{#if isExpanded}
 											<ChevronDown class="w-4 h-4 text-muted-foreground" />
 										{:else}
@@ -907,7 +907,7 @@
 
 			<Tabs.Content value="dependencies" class="px-4 pb-4">
 				<div class="mb-3">
-					<SearchInput bind:value={depsSearch} placeholder="Search packages or licenses..." class="h-7 text-xs" containerClass="w-full max-w-xs" />
+					<SearchInput bind:value={depsSearch} placeholder="Search packages or licenses..." class="h-11 text-xs sm:h-7" containerClass="w-full max-w-xs" />
 				</div>
 				{#if loadingDeps}
 					<div class="flex items-center justify-center py-8">
@@ -919,23 +919,23 @@
 					</div>
 				{:else}
 					<div class="space-y-1">
-						<div class="grid grid-cols-[1fr_auto_auto_auto] gap-2 text-2xs font-medium text-muted-foreground px-2 py-1 border-b">
+						<div class="grid grid-cols-[1fr_auto_auto_auto] gap-1.5 sm:gap-2 text-2xs font-medium text-muted-foreground px-2 py-1 border-b">
 							<div>Package</div>
-							<div class="w-20 text-center">Version</div>
-							<div class="w-24 text-center">License</div>
-							<div class="w-8"></div>
+							<div class="w-16 sm:w-20 text-center">Version</div>
+							<div class="w-20 sm:w-24 text-center">License</div>
+							<div class="w-6 sm:w-8"></div>
 						</div>
 						<div class="max-h-[300px] overflow-y-auto pr-2">
 							{#each filteredDeps as dep}
-								<div class="grid grid-cols-[1fr_auto_auto_auto] gap-2 text-xs px-2 py-1.5 hover:bg-muted/50 rounded items-center">
+								<div class="grid grid-cols-[1fr_auto_auto_auto] gap-1.5 sm:gap-2 text-xs px-2 py-1.5 hover:bg-muted/50 rounded items-center">
 									<div class="font-mono text-[11px] truncate" title={dep.name}>{dep.name}</div>
-									<div class="w-20 text-center">
+									<div class="w-16 sm:w-20 text-center">
 										<Badge variant="outline" class="text-2xs px-1 py-0 h-4 font-mono">{dep.version}</Badge>
 									</div>
-									<div class="w-24 text-center">
+									<div class="w-20 sm:w-24 text-center">
 										<Badge variant="secondary" class="text-2xs px-1.5 py-0 h-4">{dep.license}</Badge>
 									</div>
-									<div class="w-8 flex justify-center">
+									<div class="w-6 sm:w-8 flex justify-center">
 										{#if dep.repository}
 											<a
 												href={dep.repository}

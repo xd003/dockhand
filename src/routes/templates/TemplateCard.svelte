@@ -34,7 +34,7 @@
 >
 	<Card.Root class="h-full gap-0 py-0 transition-all hover:border-primary/50 hover:shadow-md group-focus-visible:ring-2 group-focus-visible:ring-ring {loading ? 'opacity-60' : ''}">
 		<Card.Header class="p-3 pb-1.5">
-			<div class="flex items-start gap-2.5">
+			<div class="flex min-w-0 items-start gap-2.5">
 				<!-- Logo -->
 				<div class="w-8 h-8 rounded-md bg-muted flex items-center justify-center flex-shrink-0 overflow-hidden">
 					{#if template.logo && !logoError}

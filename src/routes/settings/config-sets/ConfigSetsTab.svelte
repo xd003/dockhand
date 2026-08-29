@@ -89,18 +89,18 @@
 		</Card.Content>
 	</Card.Root>
 
-	<div class="flex justify-between items-center">
+	<div class="flex flex-wrap items-center justify-between gap-2">
 		<div class="flex items-center gap-3">
 			<Badge variant="secondary" class="text-xs">{configSets.length} total</Badge>
 		</div>
 		<div class="flex gap-2">
 			{#if $canAccess('configsets', 'create')}
-				<Button size="sm" onclick={() => openCfgModal()}>
+				<Button size="sm" class="max-sm:h-11" onclick={() => openCfgModal()}>
 					<Plus class="w-4 h-4" />
 					Add config set
 				</Button>
 			{/if}
-			<Button size="sm" variant="outline" onclick={fetchConfigSets}>Refresh</Button>
+			<Button size="sm" class="max-sm:h-11" variant="outline" onclick={fetchConfigSets}>Refresh</Button>
 		</div>
 	</div>
 
@@ -155,7 +155,7 @@
 							{#if $canAccess('configsets', 'edit')}
 								<Button
 									variant="outline"
-									size="sm"
+									size="sm" class="max-sm:h-11"
 									onclick={() => openCfgModal(cfg)}
 								>
 									<Pencil class="w-3 h-3" />

@@ -577,7 +577,7 @@
 
 <div class="space-y-4">
 	<!-- Backup helper image -->
-	<div class="flex items-center gap-3 p-3 border rounded-md bg-muted/20">
+	<div class="flex flex-col gap-2 p-3 border rounded-md bg-muted/20 sm:flex-row sm:items-center sm:gap-3">
 		<Label class="text-xs shrink-0 flex items-center gap-1.5">
 			Backup helper image
 			<Tooltip.Provider delayDuration={200}>
@@ -593,17 +593,17 @@
 				</Tooltip.Root>
 			</Tooltip.Provider>
 		</Label>
-		<Input bind:value={backupImage} class="w-80" />
-		<Button variant="outline" size="sm" class="h-8" onclick={saveBackupImage} disabled={savingImage}>
+		<Input bind:value={backupImage} class="w-full sm:w-80" />
+		<Button variant="outline" size="sm" class="h-11 sm:h-8" onclick={saveBackupImage} disabled={savingImage}>
 			{#if savingImage}<Loader2 class="w-3.5 h-3.5 animate-spin" />{:else if imageSavedOk}<CheckCircle class="w-3.5 h-3.5 text-green-500" />{:else}<Save class="w-3.5 h-3.5" />{/if}
 		</Button>
 	</div>
 
-	<div class="flex justify-between items-center">
-		<div class="flex items-center gap-3">
-			<SearchInput bind:value={searchQuery} placeholder="Filter destinations..." class="h-8 w-64 text-sm" />
+	<div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+		<div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+			<SearchInput bind:value={searchQuery} placeholder="Filter destinations..." class="h-11 w-full text-sm sm:h-8 sm:w-64" />
 			<Select.Root type="single" value={statusFilter} onValueChange={(v) => statusFilter = (v as typeof statusFilter) ?? 'all'}>
-				<Select.Trigger class="h-8 w-40 text-sm">
+				<Select.Trigger class="h-11 w-full text-sm sm:h-8 sm:w-40">
 					{statusFilter === 'success' ? 'Initialized' : statusFilter === 'needs_init' ? 'Needs init' : statusFilter === 'failed' ? 'Failed' : 'All statuses'}
 				</Select.Trigger>
 				<Select.Content>
@@ -613,20 +613,20 @@
 					<Select.Item value="failed"><XCircle class="w-3.5 h-3.5 text-destructive mr-1.5 inline" />Failed</Select.Item>
 				</Select.Content>
 			</Select.Root>
-			<Badge variant="secondary" class="text-xs">{destinations.length} destination{destinations.length !== 1 ? 's' : ''}</Badge>
+			<Badge variant="secondary" class="text-xs hidden sm:inline-flex">{destinations.length} destination{destinations.length !== 1 ? 's' : ''}</Badge>
 		</div>
-		<div class="flex gap-2">
+		<div class="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
 			{#if $canAccess('backups', 'manage')}
-				<Button size="sm" onclick={() => openModal()}>
+				<Button size="sm" class="h-11 sm:h-8" onclick={() => openModal()}>
 					<Plus class="w-4 h-4 mr-1" />
 					Add destination
 				</Button>
 			{/if}
-			<Button size="sm" variant="outline" onclick={testAllDestinations} disabled={testingAll}>
+			<Button size="sm" variant="outline" class="h-11 sm:h-8" onclick={testAllDestinations} disabled={testingAll}>
 				{#if testingAll}<Loader2 class="w-3.5 h-3.5 mr-1 animate-spin" />{:else}<Wifi class="w-3.5 h-3.5 mr-1" />{/if}
 				Test all
 			</Button>
-			<Button size="sm" variant="outline" onclick={fetchData}>
+			<Button size="sm" variant="outline" class="h-11 sm:h-8" onclick={fetchData}>
 				<RefreshCw class="w-3.5 h-3.5" />
 			</Button>
 		</div>
@@ -822,7 +822,7 @@
 />
 
 <Dialog.Root bind:open={browseOpen}>
-	<Dialog.Content class="max-w-6xl w-[calc(100vw-4rem)] h-[88vh] flex flex-col overflow-hidden">
+	<Dialog.Content class="max-w-6xl w-[calc(100vw-1rem)] sm:w-[calc(100vw-4rem)] max-h-[calc(100dvh-1rem)] flex flex-col overflow-hidden">
 		<Dialog.Header>
 			<Dialog.Title class="flex items-center gap-2">
 				<FolderOpen class="w-5 h-5" />

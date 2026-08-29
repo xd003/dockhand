@@ -94,7 +94,7 @@
 			<div class="flex gap-1 border-b shrink-0">
 				{#each results as r}
 					<button
-						class="px-3 py-1.5 text-xs font-medium border-b-2 transition-colors cursor-pointer {activeTab === r.scanner ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
+						class="px-3 py-1.5 text-xs font-medium border-b-2 transition-colors cursor-pointer max-md:min-h-11 {activeTab === r.scanner ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
 						onclick={() => activeScanner = r.scanner}
 					>
 						{r.scanner === 'grype' ? 'Grype' : 'Trivy'}
@@ -159,8 +159,8 @@
 
 			<!-- Vulnerability list (takes remaining space) -->
 			{#if activeResult.vulnerabilities.length > 0 && !compact}
-				<div class="border rounded-lg overflow-hidden flex-1 min-h-0 overflow-y-auto">
-					<table class="w-full text-xs">
+				<div class="border rounded-lg flex-1 min-h-0 overflow-y-auto max-md:overflow-x-auto">
+					<table class="w-full text-xs max-md:min-w-[520px]">
 						<thead class="bg-muted sticky top-0">
 							<tr>
 								<th class="text-left py-1.5 px-2 font-medium w-[22%]">

@@ -92,15 +92,18 @@
 </script>
 
 {#if events && events.length > 0}
-	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<div
 		class="pt-2 border-t border-border/50 {onclick ? 'cursor-pointer hover:bg-muted/50 -mx-2 px-2 rounded transition-colors' : ''}"
+		role={onclick ? 'button' : undefined}
+		tabindex={onclick ? 0 : undefined}
 		onclick={(e) => {
 			if (onclick) {
 				e.stopPropagation();
 				onclick();
 			}
+		}}
+		onkeydown={(e) => {
+			if (onclick && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onclick(); }
 		}}
 		onpointerdown={(e) => {
 			if (onclick) {

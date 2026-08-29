@@ -390,14 +390,14 @@
 		}
 	}}
 >
-	<Dialog.Content class="sm:max-w-2xl">
-		<Dialog.Header>
+	<Dialog.Content class="sm:max-w-2xl max-h-[calc(100dvh-1rem)] flex flex-col overflow-hidden">
+		<Dialog.Header class="flex-shrink-0">
 			<Dialog.Title class="flex items-center gap-2">
 				<KeyRound class="w-5 h-5 text-muted-foreground" />
 				{isEditing ? "Edit" : "Add"} secret provider
 			</Dialog.Title>
 		</Dialog.Header>
-		<div class="space-y-4">
+		<div class="min-h-0 flex-1 space-y-4 overflow-y-auto">
 			{#if formError}
 				<div class="text-sm text-red-600 dark:text-red-400">
 					{formError}
@@ -442,7 +442,7 @@
 			<!-- Provider config fields: a 2-column grid, or one per row for providers whose
 			     fields read better stacked (Vault, Connect, Doppler). min-height +
 			     content-start keep the dialog a stable height while laying rows top-aligned. -->
-			<div class="grid {stackConfigFields ? 'grid-cols-1' : 'grid-cols-2'} gap-x-4 gap-y-3 content-start" style="min-height: 21rem;">
+			<div class="grid {stackConfigFields ? 'grid-cols-1' : 'grid-cols-1 sm:grid-cols-2'} gap-x-4 gap-y-3 content-start sm:min-h-[21rem]">
 				{#each fields as field (field.key)}
 					<div class="space-y-1.5 self-start {fields.length === 1 ? 'col-span-full' : ''}">
 						<FieldLabel label={field.label} forId={`provider-${field.key}`} required={fieldRequired(field, formConfig)} />

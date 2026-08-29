@@ -11,7 +11,7 @@
 
 <div class="space-y-4">
 	<!-- Git subtabs -->
-	<div class="inline-flex gap-1 p-1 bg-muted/50 rounded-lg">
+	<div class="inline-flex gap-1 p-1 bg-muted/50 rounded-lg max-md:w-full max-md:flex-wrap max-md:[&>a]:min-h-11 max-md:[&>a]:grow max-md:[&>a]:whitespace-nowrap">
 		<a
 			href="/settings?tab=git&subtab=repositories"
 			class="px-3 py-1.5 text-sm font-medium rounded-md transition-all flex items-center gap-1.5 {gitSubTab === 'repositories' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}"

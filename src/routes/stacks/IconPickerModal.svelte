@@ -147,13 +147,13 @@
 </script>
 
 <Dialog.Root bind:open>
-	<Dialog.Content class="max-w-2xl h-[640px] flex flex-col">
+	<Dialog.Content class="max-w-2xl h-[min(640px,calc(100dvh-1rem))] flex flex-col">
 		<Dialog.Header class="shrink-0">
 			<Dialog.Title>{title}</Dialog.Title>
 		</Dialog.Header>
 
 		<Tabs.Root value="icons" onValueChange={onTabChange} class="flex-1 flex flex-col min-h-0">
-			<Tabs.List class="grid grid-cols-3 shrink-0">
+			<Tabs.List class="grid w-full grid-cols-3 shrink-0">
 				<Tabs.Trigger value="icons">Icons</Tabs.Trigger>
 				<Tabs.Trigger value="selfhst">App logos</Tabs.Trigger>
 				<Tabs.Trigger value="upload">Upload</Tabs.Trigger>
@@ -162,7 +162,7 @@
 			<!-- Lucide icons -->
 			<Tabs.Content value="icons" class="mt-3 flex-1 min-h-0 data-[state=active]:flex flex-col">
 				<SearchInput bind:value={lucideQuery} placeholder="Search icons..." containerClass="mb-3 shrink-0" />
-				<div class="grid grid-cols-12 gap-1 flex-1 overflow-y-auto pr-1 content-start">
+				<div class="grid grid-cols-7 sm:grid-cols-12 gap-1 flex-1 overflow-y-auto pr-1 content-start">
 					{#each filteredLucide as name (name)}
 						{@const Icon = getStackIconComponent(name)}
 						<button
@@ -196,7 +196,7 @@
 								<Loader2 class="w-4 h-4 animate-spin" /> Loading icons...
 							</div>
 						{/if}
-						<div class="grid grid-cols-12 gap-1 content-start" class:hidden={showIconSpinner}>
+						<div class="grid grid-cols-7 sm:grid-cols-12 gap-1 content-start" class:hidden={showIconSpinner}>
 							{#each selfhstResults as entry (entry.Reference)}
 								<button
 									type="button"

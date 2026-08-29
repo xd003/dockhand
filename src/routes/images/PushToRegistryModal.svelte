@@ -145,25 +145,25 @@
 </script>
 
 <Dialog.Root bind:open onOpenChange={handleClose}>
-	<Dialog.Content class="max-w-3xl h-[70vh] flex flex-col">
+	<Dialog.Content class="max-w-3xl h-[70vh] max-md:h-[calc(100dvh-1rem)] flex flex-col">
 		<Dialog.Header class="shrink-0 pb-2">
-			<Dialog.Title class="flex items-center gap-2">
+			<Dialog.Title class="flex min-w-0 items-center gap-2 max-sm:pr-12">
 				{#if pushStatus === 'complete'}
-					<CheckCircle2 class="w-5 h-5 text-green-500" />
+					<CheckCircle2 class="w-5 h-5 shrink-0 text-green-500" />
 				{:else if pushStatus === 'error'}
-					<XCircle class="w-5 h-5 text-red-500" />
+					<XCircle class="w-5 h-5 shrink-0 text-red-500" />
 				{:else}
-					<Upload class="w-5 h-5" />
+					<Upload class="w-5 h-5 shrink-0" />
 				{/if}
-				Push to registry
-				<code class="text-sm font-normal bg-muted px-1.5 py-0.5 rounded ml-1">{imageName}</code>
+				<span class="shrink-0">Push to registry</span>
+				<code class="min-w-0 truncate text-sm font-normal bg-muted px-1.5 py-0.5 rounded ml-1">{imageName}</code>
 			</Dialog.Title>
 		</Dialog.Header>
 
 		<!-- Step tabs -->
-		<div class="flex items-center border-b shrink-0">
+		<div class="flex items-center border-b shrink-0 max-md:overflow-x-auto max-md:[scrollbar-width:none] max-md:[&::-webkit-scrollbar]:hidden">
 			<button
-				class="px-4 py-2 text-sm font-medium border-b-2 transition-colors cursor-pointer {currentStep === 'configure' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
+				class="px-4 py-2 text-sm font-medium border-b-2 transition-colors cursor-pointer max-md:min-h-11 max-md:shrink-0 {currentStep === 'configure' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
 				onclick={() => { if (!isProcessing && currentStep !== 'configure') currentStep = 'configure'; }}
 				disabled={isProcessing}
 			>
@@ -172,7 +172,7 @@
 			</button>
 			<ArrowBigRight class="w-3.5 h-3.5 text-muted-foreground/50 shrink-0" />
 			<button
-				class="px-4 py-2 text-sm font-medium border-b-2 transition-colors cursor-pointer {currentStep === 'push' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
+				class="px-4 py-2 text-sm font-medium border-b-2 transition-colors cursor-pointer max-md:min-h-11 max-md:shrink-0 {currentStep === 'push' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
 				onclick={() => { if (!isProcessing && pushStatus !== 'idle') currentStep = 'push'; }}
 				disabled={isProcessing || pushStatus === 'idle'}
 			>

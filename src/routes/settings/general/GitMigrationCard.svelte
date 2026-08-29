@@ -125,7 +125,7 @@
 			</div>
 			<div class="flex items-center gap-2">
 				<Button
-					size="sm"
+					size="sm" class="max-sm:h-11"
 					variant="outline"
 					onclick={migrateSelected}
 					disabled={selectedForMigration.size === 0 || migrateBusy || migrationActive || !$canAccess('settings', 'edit')}

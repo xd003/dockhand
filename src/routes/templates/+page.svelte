@@ -130,10 +130,11 @@
 	<div class="shrink-0 flex flex-wrap justify-between items-center gap-3 min-h-8">
 		<PageHeader icon={LibraryBig} title="Templates" count={loading ? undefined : filteredTemplates.length} showConnection={false}>
 			<button
-				class="p-1 rounded hover:bg-muted transition-colors"
+				class="inline-flex size-11 items-center justify-center rounded hover:bg-muted transition-colors md:size-auto md:p-1"
 				onclick={() => fetchTemplates(true)}
 				disabled={loading}
 				title="Refresh templates"
+				aria-label="Refresh templates"
 			>
 				{#if loading}
 					<Loader2 class="w-3.5 h-3.5 animate-spin text-emerald-500" />
@@ -146,14 +147,14 @@
 			<!-- Tab toggle -->
 			<div class="flex items-center gap-0.5 bg-zinc-200 dark:bg-zinc-700 rounded-md p-0.5">
 				<button
-					class="flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition-colors {activeTab === 'browse' ? 'bg-white dark:bg-zinc-900 shadow-sm' : 'text-muted-foreground hover:text-foreground'}"
+					class="flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition-colors max-md:min-h-11 max-md:px-3 {activeTab === 'browse' ? 'bg-white dark:bg-zinc-900 shadow-sm' : 'text-muted-foreground hover:text-foreground'}"
 					onclick={() => activeTab = 'browse'}
 				>
 					<Package class="w-3.5 h-3.5" />
 					Browse
 				</button>
 				<button
-					class="flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition-colors {activeTab === 'sources' ? 'bg-white dark:bg-zinc-900 shadow-sm' : 'text-muted-foreground hover:text-foreground'}"
+					class="flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition-colors max-md:min-h-11 max-md:px-3 {activeTab === 'sources' ? 'bg-white dark:bg-zinc-900 shadow-sm' : 'text-muted-foreground hover:text-foreground'}"
 					onclick={() => activeTab = 'sources'}
 				>
 					<Settings2 class="w-3.5 h-3.5" />
@@ -166,12 +167,12 @@
 	{#if activeTab === 'browse'}
 		<!-- Filter bar -->
 		<div class="shrink-0 flex flex-wrap items-center gap-2">
-			<div class="relative">
+			<div class="relative max-sm:w-full">
 				<Search class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
 				<Input
 					type="text"
 					placeholder="Search templates..."
-					class="pl-9 w-64 h-8 text-sm"
+					class="pl-9 w-64 h-8 text-sm max-sm:h-11 max-sm:w-full"
 					bind:value={searchQuery}
 					onkeydown={(e) => e.key === 'Escape' && (searchQuery = '')}
 				/>
@@ -180,7 +181,7 @@
 			<!-- Category filter -->
 			{#if allCategories.length > 0}
 				<Select.Root type="multiple" bind:value={selectedCategories}>
-					<Select.Trigger size="sm" class="w-44 text-sm">
+					<Select.Trigger size="sm" class="w-44 text-sm data-[size=sm]:h-11 max-sm:flex-1 max-sm:min-w-40 md:data-[size=sm]:h-8">
 						<span class="truncate">
 							{#if selectedCategories.length === 0}
 								All categories
@@ -202,7 +203,7 @@
 			<!-- Source filter -->
 			{#if allSources.length > 1}
 				<Select.Root type="multiple" bind:value={selectedSources}>
-					<Select.Trigger size="sm" class="w-48 text-sm">
+					<Select.Trigger size="sm" class="w-48 text-sm data-[size=sm]:h-11 max-sm:flex-1 max-sm:min-w-40 md:data-[size=sm]:h-8">
 						<span class="truncate">
 							{#if selectedSources.length === 0}
 								All sources

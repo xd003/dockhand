@@ -561,7 +561,7 @@
 			<div class="relative">
 				<button
 					onclick={() => (showLayoutMenu = !showLayoutMenu)}
-					class="h-6 px-2 flex items-center gap-1 rounded text-xs text-zinc-600 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors"
+					class="h-6 px-2 flex items-center gap-1 rounded text-xs text-zinc-600 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors max-md:h-11 max-md:px-3"
 					title="Change layout"
 				>
 					{#if currentLayout === "breadthfirst"}
@@ -580,7 +580,7 @@
 				{#if showLayoutMenu}
 					<!-- svelte-ignore a11y_no_static_element_interactions -->
 					<div
-						class="absolute right-0 top-full mt-1 bg-white dark:bg-zinc-800 rounded-lg shadow-lg border border-zinc-200 dark:border-zinc-700 py-1 z-20 min-w-[120px]"
+						class="absolute right-0 top-full mt-1 bg-white dark:bg-zinc-800 rounded-lg shadow-lg border border-zinc-200 dark:border-zinc-700 py-1 z-20 min-w-[120px] [&>button]:max-md:min-h-11"
 						onmouseleave={() => (showLayoutMenu = false)}
 					>
 						<button
@@ -635,7 +635,7 @@
 			<!-- Theme toggle -->
 			<button
 				onclick={toggleGraphTheme}
-				class="h-6 w-6 flex items-center justify-center rounded text-zinc-500 dark:text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors"
+				class="h-6 w-6 flex items-center justify-center rounded text-zinc-500 dark:text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors max-md:h-11 max-md:w-11"
 				title={graphTheme === "light" ? "Switch to dark theme" : "Switch to light theme"}
 			>
 				{#if graphTheme === "light"}
@@ -645,16 +645,16 @@
 				{/if}
 			</button>
 			<div class="w-px h-4 bg-zinc-300 dark:bg-zinc-600 mx-1"></div>
-			<Button variant="ghost" size="sm" onclick={zoomOut} class="h-6 w-6 p-0 text-zinc-500 dark:text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200">
+			<Button variant="ghost" size="sm" onclick={zoomOut} class="h-6 w-6 p-0 text-zinc-500 dark:text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 max-md:h-11 max-md:w-11">
 				<ZoomOut class="w-3.5 h-3.5" />
 			</Button>
-			<Button variant="ghost" size="sm" onclick={zoomIn} class="h-6 w-6 p-0 text-zinc-500 dark:text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200">
+			<Button variant="ghost" size="sm" onclick={zoomIn} class="h-6 w-6 p-0 text-zinc-500 dark:text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 max-md:h-11 max-md:w-11">
 				<ZoomIn class="w-3.5 h-3.5" />
 			</Button>
-			<Button variant="ghost" size="sm" onclick={fitToScreen} class="h-6 w-6 p-0 text-zinc-500 dark:text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200">
+			<Button variant="ghost" size="sm" onclick={fitToScreen} class="h-6 w-6 p-0 text-zinc-500 dark:text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 max-md:h-11 max-md:w-11">
 				<Maximize2 class="w-3.5 h-3.5" />
 			</Button>
-			<Button variant="ghost" size="sm" onclick={resetLayout} class="h-6 w-6 p-0 text-zinc-500 dark:text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200">
+			<Button variant="ghost" size="sm" onclick={resetLayout} class="h-6 w-6 p-0 text-zinc-500 dark:text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 max-md:h-11 max-md:w-11">
 				<RotateCcw class="w-3.5 h-3.5" />
 			</Button>
 		</div>
@@ -682,7 +682,7 @@
 			</div>
 			<!-- Details panel (overlay) -->
 			{#if selectedNode || selectedEdge}
-				<div class="absolute top-0 right-0 bottom-0 w-[420px] border-l border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/95 shadow-lg z-20 flex flex-col">
+				<div class="absolute top-0 right-0 bottom-0 w-full sm:w-[min(420px,40%)] max-w-full border-l border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/95 shadow-lg z-20 flex flex-col">
 					<!-- Sticky header -->
 					{#if selectedNode}
 						{@const NodeIcon = getNodeIcon(selectedNode.type)}

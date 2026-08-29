@@ -201,9 +201,9 @@
 	<SidebarProvider>
 		<AppSidebar />
 		<MainContent>
-			<header class="h-14 shrink-0 flex items-center justify-between gap-4 border-b bg-background px-4">
-				<div class="flex items-center gap-2 min-w-0">
-					<SidebarTrigger class="md:hidden shrink-0" />
+			<header class="h-14 shrink-0 flex items-center justify-between gap-4 border-b bg-background px-4 min-w-0">
+				<div class="flex min-w-0 max-md:flex-1 items-center gap-2">
+					<SidebarTrigger class="md:hidden shrink-0 size-9 -ml-3.5" />
 					<HostInfo />
 				</div>
 				<div class="flex items-center gap-3 shrink-0">
@@ -226,19 +226,20 @@
 					{#if $expiryMessage}
 						<a
 							href="/settings?tab=license"
-							class="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-colors
+							aria-label={$expiryMessage}
+							class="responsive-touch-target flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-colors
 								{!$licenseStore.isEnterprise || $daysUntilExpiry <= 7
 									? 'bg-red-100 text-red-800 hover:bg-red-200 dark:bg-red-900/30 dark:text-red-400 dark:hover:bg-red-900/50'
 									: 'bg-amber-100 text-amber-800 hover:bg-amber-200 dark:bg-amber-900/30 dark:text-amber-400 dark:hover:bg-amber-900/50'}"
 						>
 							<AlertTriangle class="w-3.5 h-3.5" />
-							{$expiryMessage}
+							<span class="hidden sm:inline">{$expiryMessage}</span>
 						</a>
 					{/if}
 					<ThemeToggle />
 				</div>
 			</header>
-			<div class="flex-1 min-h-0 h-[calc(100%-3.5rem)] overflow-auto py-2 px-3 flex flex-col">
+			<div class="flex-1 min-h-0 min-w-0 h-[calc(100%-3.5rem)] overflow-auto py-2 px-3 flex flex-col">
 				{#if licenceHold}
 					<!-- A lapsed licence refuses every read at once, so each page would
 					     otherwise show its own empty table or spinner and read as broken. -->

@@ -283,9 +283,9 @@
 {:else}
 <div class="flex flex-col flex-1 min-h-0 h-full gap-3">
 	<!-- Header with container selector -->
-	<div class="flex items-center gap-4 flex-wrap">
+	<div class="flex items-center gap-2 flex-wrap md:gap-4">
 		<PageHeader icon={TerminalIcon} title="Shell" />
-		<div class="relative flex-1 max-w-md min-w-[200px]">
+		<div class="relative min-w-0 max-md:w-full max-md:flex-none flex-1 max-w-md md:min-w-[200px]">
 			<!-- Search input - always visible, shows selected container or placeholder -->
 			<div class="relative">
 				<Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
@@ -327,10 +327,10 @@
 				</div>
 			{/if}
 		</div>
-		<div class="flex items-center gap-2">
-			<Label class="text-sm text-muted-foreground">Mode:</Label>
+		<div class="flex min-w-40 flex-1 items-center gap-2 md:flex-none">
+			<Label class="hidden text-sm text-muted-foreground md:inline">Mode:</Label>
 			<Select.Root type="single" value={terminalMode} onValueChange={(value) => terminalMode = value as TerminalMode}>
-				<Select.Trigger class="h-9 w-48">
+				<Select.Trigger class="w-full data-[size=default]:h-11 md:w-48 md:data-[size=default]:h-9">
 					{#if terminalMode === 'attach'}
 						<Unplug class="w-4 h-4 mr-2 text-muted-foreground" />
 						<span>Attach to process</span>
@@ -353,7 +353,7 @@
 		</div>
 
 		{#if selectedContainer}
-			<Button size="sm" variant="ghost" onclick={clearSelection} class="h-9 px-3 text-sm text-muted-foreground hover:text-foreground">
+			<Button size="sm" variant="ghost" onclick={clearSelection} class="h-11 shrink-0 px-3 text-sm text-muted-foreground hover:text-foreground md:h-9">
 				<Unplug class="w-4 h-4 mr-1.5" />
 				Disconnect
 			</Button>
@@ -361,15 +361,15 @@
 
 		<!-- Shell selector - only used by exec mode -->
 		{#if terminalMode === 'exec'}
-		<div class="flex items-center gap-2">
-			<Label class="text-sm text-muted-foreground">Shell:</Label>
+		<div class="flex min-w-40 flex-1 items-center gap-2 md:flex-none">
+			<Label class="hidden text-sm text-muted-foreground md:inline">Shell:</Label>
 			{#if detectingShells}
-				<div class="h-9 w-36 flex items-center justify-center border rounded-md bg-muted/50">
+				<div class="h-11 w-full flex items-center justify-center border rounded-md bg-muted/50 md:h-9 md:w-36">
 					<Loader2 class="w-4 h-4 animate-spin text-muted-foreground" />
 				</div>
 			{:else}
 				<Select.Root type="single" bind:value={selectedShell}>
-					<Select.Trigger class="h-9 w-44" disabled={!anyShellAvailable}>
+					<Select.Trigger class="w-full data-[size=default]:h-11 md:w-44 md:data-[size=default]:h-9" disabled={!anyShellAvailable}>
 						<Shell class="w-4 h-4 mr-2 text-muted-foreground" />
 						<span class={!selectedShellAvailable ? 'text-muted-foreground line-through' : ''}>
 							{shellDetection?.allShells.find(o => o.path === selectedShell)?.label ||
@@ -420,10 +420,10 @@
 		</div>
 
 		<!-- User selector - only used by exec mode -->
-		<div class="flex items-center gap-2">
-			<Label class="text-sm text-muted-foreground">User:</Label>
+		<div class="flex min-w-40 flex-1 items-center gap-2 md:flex-none">
+			<Label class="hidden text-sm text-muted-foreground md:inline">User:</Label>
 			<Select.Root type="single" bind:value={selectedUser} onValueChange={onUserSelectChange}>
-				<Select.Trigger class="h-9 w-48">
+				<Select.Trigger class="w-full data-[size=default]:h-11 md:w-48 md:data-[size=default]:h-9">
 					<User class="w-4 h-4 mr-2 text-muted-foreground" />
 					<span>{USER_OPTIONS.find(o => o.value === selectedUser)?.label || selectedUser || 'Select'}</span>
 				</Select.Trigger>
@@ -444,7 +444,7 @@
 								</Select.Item>
 								<button
 									type="button"
-									class="p-1 mr-1 opacity-0 group-hover:opacity-100 hover:text-destructive transition-opacity"
+									class="p-1 mr-1 opacity-0 group-hover:opacity-100 max-md:opacity-100 hover:text-destructive transition-opacity"
 									onclick={(e) => { e.stopPropagation(); e.preventDefault(); removeCustomUser(cu); customUsers = getCustomUsers(); if (selectedUser === cu) { selectedUser = 'root'; commitUser('root'); } }}
 									title="Remove user"
 								>

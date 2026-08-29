@@ -144,18 +144,18 @@
 		</Card.Content>
 	</Card.Root>
 
-	<div class="flex justify-between items-center">
+	<div class="flex flex-wrap items-center justify-between gap-2">
 		<div class="flex items-center gap-3">
 			<Badge variant="secondary" class="text-xs">{notifications.length} channels</Badge>
 		</div>
 		<div class="flex gap-2">
 			{#if $canAccess('notifications', 'create')}
-				<Button size="sm" onclick={() => openNotifModal()}>
+				<Button size="sm" class="max-sm:h-11" onclick={() => openNotifModal()}>
 					<Plus class="w-4 h-4" />
 					Add channel
 				</Button>
 			{/if}
-			<Button size="sm" variant="outline" onclick={fetchNotifications}>Refresh</Button>
+			<Button size="sm" class="max-sm:h-11" variant="outline" onclick={fetchNotifications}>Refresh</Button>
 		</div>
 	</div>
 
@@ -223,7 +223,7 @@
 						<div class="flex items-center gap-2 pt-2 flex-wrap">
 							<Button
 								variant="outline"
-								size="sm"
+								size="sm" class="max-sm:h-11"
 								onclick={() => testNotification(notif.id)}
 								disabled={testingNotif !== null}
 							>
@@ -233,7 +233,7 @@
 							{#if $canAccess('notifications', 'edit')}
 								<Button
 									variant="outline"
-									size="sm"
+									size="sm" class="max-sm:h-11"
 									onclick={() => openNotifModal(notif)}
 								>
 									<Pencil class="w-3 h-3" />

@@ -169,20 +169,20 @@
 </script>
 
 <div class="space-y-4">
-	<div class="flex justify-between items-center">
-		<div class="flex items-center gap-3">
+	<div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+		<div class="hidden items-center gap-3 sm:flex">
 			<Badge variant="secondary" class="text-xs"
 				>{providers.length} total</Badge
 			>
 		</div>
-		<div class="flex gap-2">
+		<div class="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
 			{#if $canAccess("secrets", "create")}
-				<Button size="sm" onclick={() => openModal()}>
+				<Button size="sm" class="h-11 sm:h-8" onclick={() => openModal()}>
 					<Plus class="w-4 h-4" />
 					Add secret provider
 				</Button>
 			{/if}
-			<Button size="sm" variant="outline" onclick={fetchProviders}
+			<Button size="sm" variant="outline" class="h-11 sm:h-8" onclick={fetchProviders}
 				>Refresh</Button
 			>
 		</div>
@@ -273,7 +273,7 @@
 									</Button>
 									<Button
 										variant="outline"
-										size="sm"
+										size="sm" class="max-sm:h-11"
 										onclick={() => openModal(provider)}
 									>
 										<Pencil class="w-3 h-3" />

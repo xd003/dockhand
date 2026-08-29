@@ -1194,8 +1194,8 @@
 	}}
 >
 	<Dialog.Content class="max-w-4xl w-[calc(100%-2rem)] h-[85vh] p-0 flex flex-col overflow-hidden">
-		<Dialog.Header class="px-5 py-4 border-b bg-muted/30 shrink-0 sticky top-0 z-10">
-			<Dialog.Title class="text-base font-semibold flex items-center gap-1">
+		<Dialog.Header class="px-5 py-4 max-sm:px-4 max-sm:pr-12 border-b bg-muted/30 shrink-0 sticky top-0 z-10">
+			<Dialog.Title class="text-base font-semibold flex flex-wrap items-center gap-1">
 				<button
 					type="button"
 					onclick={() => (showIconPicker = true)}
@@ -1222,7 +1222,7 @@
 						type="button"
 						onclick={saveEditingTitle}
 						title="Save"
-						class="p-0.5 rounded hover:bg-muted transition-colors"
+						class="p-0.5 max-sm:p-2.5 rounded hover:bg-muted transition-colors"
 					>
 						<Check class="w-3 h-3 text-green-500 hover:text-green-600" />
 					</button>
@@ -1230,18 +1230,18 @@
 						type="button"
 						onclick={cancelEditingTitle}
 						title="Cancel"
-						class="p-0.5 rounded hover:bg-muted transition-colors"
+						class="p-0.5 max-sm:p-2.5 rounded hover:bg-muted transition-colors"
 					>
 						<X class="w-3 h-3 text-muted-foreground hover:text-foreground" />
 					</button>
 				{:else if name}
 					<span class="text-muted-foreground ml-1">-</span>
-					<span class="font-semibold">{name}</span>
+					<span class="max-sm:max-w-[55vw] max-sm:truncate font-semibold">{name}</span>
 					<button
 						type="button"
 						onclick={startEditingTitle}
 						title="Rename container"
-						class="p-0.5 rounded hover:bg-muted transition-colors ml-0.5"
+						class="p-0.5 max-sm:p-2.5 rounded hover:bg-muted transition-colors ml-0.5"
 					>
 						<Pencil class="w-3 h-3 text-muted-foreground hover:text-foreground" />
 					</button>
@@ -1258,7 +1258,7 @@
 				Loading container data...
 			</div>
 		{:else}
-			<div class="px-5 flex gap-1 border-b shrink-0">
+			<div class="flex gap-1 border-b shrink-0 px-5 max-sm:px-4 max-sm:overflow-x-auto max-sm:[scrollbar-width:none] max-sm:[&::-webkit-scrollbar]:hidden max-sm:[&>button]:shrink-0">
 				<button
 					type="button"
 					class="flex items-center gap-1.5 px-3 py-2 text-sm transition-colors border-b-2 -mb-px {activeTab === 'settings' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
@@ -1284,7 +1284,7 @@
 				{/if}
 			</div>
 
-			<div class="px-5 py-4 flex-1 overflow-y-auto h-0">
+			<div class="px-5 py-4 max-sm:px-4 flex-1 overflow-y-auto h-0">
 				{#if activeTab === 'backups'}
 					<BackupPanel
 						bind:this={backupPanelRef}
@@ -1385,11 +1385,11 @@
 				{/if}
 			</div>
 
-			<div class="flex justify-end gap-2 px-5 py-3 border-t bg-muted/30 shrink-0">
-				<Button type="button" variant="outline" onclick={handleClose} size="sm">
+			<div class="flex justify-end gap-2 px-5 py-3 max-sm:px-4 border-t bg-muted/30 shrink-0">
+				<Button type="button" variant="outline" onclick={handleClose} size="sm" class="max-sm:min-h-11 max-sm:flex-1">
 					Cancel
 				</Button>
-				<Button type="button" variant="secondary" disabled={loading} size="sm" onclick={handleSubmit}>
+				<Button type="button" variant="secondary" disabled={loading} size="sm" class="max-sm:min-h-11 max-sm:flex-1" onclick={handleSubmit}>
 					{#if loading}
 						<Loader2 class="w-4 h-4 mr-1 animate-spin" />
 						Updating...

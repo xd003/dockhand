@@ -202,7 +202,7 @@
 {/if}
 
 <!-- Auth Subtabs Navigation -->
-<div class="inline-flex gap-1 p-1 bg-muted/50 rounded-lg mb-3 flex-shrink-0">
+<div class="inline-flex gap-1 p-1 bg-muted/50 rounded-lg mb-3 flex-shrink-0 max-md:w-full max-md:flex-wrap max-md:[&>button]:min-h-11 max-md:[&>button]:grow max-md:[&>button]:whitespace-nowrap">
 	<button
 		class="flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-md transition-all {authSubTab ===
 		'general'
@@ -358,7 +358,7 @@
 						{/if}
 					</div>
 					{#if $canAccess('settings', 'edit')}
-						<Button size="sm" onclick={saveAuthSettings} disabled={authSaving}>
+						<Button size="sm" class="max-sm:h-11" onclick={saveAuthSettings} disabled={authSaving}>
 							{#if authSaving}
 								<RefreshCw class="w-4 h-4 mr-1 animate-spin" />
 							{:else}

@@ -65,7 +65,7 @@
 			<button
 				type="button"
 				onclick={onToggleTheme}
-				class="p-1 rounded hover:bg-muted transition-colors"
+				class="p-1 max-sm:size-11 max-sm:rounded-md max-sm:flex max-sm:items-center max-sm:justify-center rounded hover:bg-muted transition-colors"
 				title="Toggle log theme"
 			>
 				{#if darkMode}
@@ -94,7 +94,7 @@
 							{formatTimestamp(parsed.timestamp)}
 						</span>
 					{/if}
-					<span class="break-all">{cleanContent(parsed.content, parsed.type)}</span>
+					<span class="break-words">{cleanContent(parsed.content, parsed.type)}</span>
 				</div>
 			{/each}
 		{:else}

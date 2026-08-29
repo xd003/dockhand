@@ -94,28 +94,29 @@
 	}}
 >
 	<Dialog.Content
-		class="max-w-none w-[calc(100vw-4rem)] h-[95vh] flex flex-col p-0 gap-0 shadow-xl border-zinc-200 dark:border-zinc-700"
+		class="max-w-none w-[calc(100vw-4rem)] h-[95vh] flex flex-col p-0 gap-0 shadow-xl border-zinc-200 dark:border-zinc-700 max-md:w-[calc(100vw-1rem)]! max-md:h-[calc(100dvh-1rem)]! max-md:max-h-[calc(100dvh-1rem)]! max-md:rounded-2xl!"
 		showCloseButton={false}
 	>
-		<Dialog.Header class="px-5 py-3 border-b border-zinc-200 dark:border-zinc-700 flex-shrink-0">
+		<Dialog.Header class="px-5 py-3 border-b border-zinc-200 dark:border-zinc-700 flex-shrink-0 max-md:px-3 max-md:py-2">
 			<div class="flex items-center justify-between">
-				<div class="flex items-center gap-3">
-					<div class="flex items-center gap-2">
-						<div class="p-1.5 rounded-md bg-zinc-200 dark:bg-zinc-700">
+				<div class="flex items-center gap-3 min-w-0">
+					<div class="flex items-center gap-2 min-w-0">
+						<div class="p-1.5 rounded-md bg-zinc-200 dark:bg-zinc-700 shrink-0">
 							<Layers class="w-4 h-4 text-zinc-600 dark:text-zinc-300" />
 						</div>
-						<div>
-							<Dialog.Title class="text-sm font-semibold text-zinc-800 dark:text-zinc-100">View network graph</Dialog.Title>
-							<Dialog.Description class="text-xs text-zinc-500 dark:text-zinc-400">View network connections between containers</Dialog.Description>
+						<div class="min-w-0">
+							<Dialog.Title class="text-sm font-semibold text-zinc-800 dark:text-zinc-100 truncate">View network graph</Dialog.Title>
+							<Dialog.Description class="text-xs text-zinc-500 dark:text-zinc-400 truncate">View network connections between containers</Dialog.Description>
 						</div>
 					</div>
 				</div>
 
-				<div class="flex items-center gap-2">
+				<div class="flex items-center gap-2 shrink-0">
 					<!-- Close button -->
 					<button
 						onclick={tryClose}
-						class="p-1.5 rounded-md text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors"
+						aria-label="Close"
+						class="p-1.5 rounded-md text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors max-md:flex max-md:size-11 max-md:items-center max-md:justify-center max-md:p-0"
 					>
 						<X class="w-4 h-4" />
 					</button>
@@ -130,7 +131,7 @@
 		</div>
 
 		<!-- Footer -->
-		<div class="px-5 py-2.5 border-t border-zinc-200 dark:border-zinc-700 flex items-center justify-between flex-shrink-0" />
+		<div class="px-5 py-2.5 border-t border-zinc-200 dark:border-zinc-700 flex items-center justify-between flex-shrink-0 max-md:hidden" />
 	</Dialog.Content>
 </Dialog.Root>
 

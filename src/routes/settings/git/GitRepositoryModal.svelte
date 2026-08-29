@@ -359,7 +359,7 @@
 	if (o) focusFirstInput();
 	else handleClose();
 }}>
-	<Dialog.Content class="max-w-lg">
+	<Dialog.Content class="max-w-lg max-h-[calc(100dvh-1rem)] flex flex-col overflow-hidden">
 		{#if isCentralizedMode && cloneStatus === 'cloning'}
 			<!-- ── Cloning state ── -->
 			<Dialog.Header>
@@ -434,7 +434,8 @@
 				</Dialog.Description>
 			</Dialog.Header>
 
-			<form onsubmit={(e) => { e.preventDefault(); saveRepository(); }} class="space-y-4">
+			<form onsubmit={(e) => { e.preventDefault(); saveRepository(); }} class="flex min-h-0 flex-1 flex-col">
+				<div class="min-h-0 flex-1 space-y-4 overflow-y-auto">
 				<div class="space-y-2">
 					<Label for="repo-name">Name</Label>
 					<Input
@@ -585,8 +586,9 @@
 				{#if formError}
 					<p class="text-sm text-destructive">{formError}</p>
 				{/if}
+				</div>
 
-				<Dialog.Footer>
+				<Dialog.Footer class="flex-shrink-0 border-t pt-4">
 					<Button variant="outline" type="button" onclick={handleClose}>Cancel</Button>
 					<Button
 						type="button"

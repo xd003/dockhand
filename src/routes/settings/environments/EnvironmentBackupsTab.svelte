@@ -226,7 +226,7 @@
 				</div>
 				<div class="flex items-center justify-end gap-2">
 					<Button variant="ghost" size="sm" class="text-xs" onclick={() => showBatch = false}>Cancel</Button>
-					<Button size="sm" disabled={!batchDestId || batchSaving} onclick={batchApply}>
+					<Button size="sm" class="max-sm:h-11" disabled={!batchDestId || batchSaving} onclick={batchApply}>
 						{#if batchSaving}<Loader2 class="w-3.5 h-3.5 mr-1 animate-spin" />{/if}
 						Schedule {unconfiguredLabel}
 					</Button>

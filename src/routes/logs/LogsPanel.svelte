@@ -195,23 +195,26 @@
 	}
 
 	// Drag handle functionality
-	function startDrag(e: MouseEvent) {
+	function startDrag(e: PointerEvent) {
 		e.preventDefault();
 		isDragging = true;
-		document.addEventListener('mousemove', handleDrag);
-		document.addEventListener('mouseup', stopDrag);
+		(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
 	}
 
-	function handleDrag(e: MouseEvent) {
+	function handleDrag(e: PointerEvent) {
 		if (!isDragging || !panelRef) return;
 		const newHeight = window.innerHeight - e.clientY;
 		panelHeight = Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, newHeight));
 	}
 
-	function stopDrag() {
+	function stopDrag(e?: PointerEvent) {
 		isDragging = false;
-		document.removeEventListener('mousemove', handleDrag);
-		document.removeEventListener('mouseup', stopDrag);
+		if (e && (e.currentTarget as HTMLElement).hasPointerCapture(e.pointerId)) (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+		saveHeight();
+	}
+
+	function adjustHeight(delta: number) {
+		panelHeight = Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, panelHeight + delta));
 		saveHeight();
 	}
 
@@ -516,7 +519,7 @@
 				logs = [];
 				return;
 			}
-			const { entries } = parseLines(data.logs || '');
+			const { entries } = parseLines(data.logs || '', '');
 			logs = entries;
 			scrollToBottom();
 		} catch (error) {
@@ -705,8 +708,6 @@
 
 	onDestroy(() => {
 		// Clean up document event listeners in case destroyed mid-drag
-		document.removeEventListener('mousemove', handleDrag);
-		document.removeEventListener('mouseup', stopDrag);
 		document.removeEventListener('visibilitychange', handleVisibilityChange);
 		document.removeEventListener('resume', handleVisibilityChange);
 		// Flush pending text and clean up timers
@@ -718,24 +719,37 @@
 <!-- Always keep mounted, use display:none to hide while preserving content -->
 <div
 	bind:this={panelRef}
-	class="border rounded-lg flex flex-col w-full transition-colors {darkMode ? 'bg-zinc-950 border-zinc-800' : 'bg-gray-50 border-gray-300'}"
+	class="logs-panel border rounded-lg flex flex-col min-w-0 w-full transition-colors {darkMode ? 'bg-zinc-950 border-zinc-800' : 'bg-gray-50 border-gray-300'}"
 	class:hidden={!visible}
 	class:h-full={fillHeight}
 	style="{fillHeight ? '' : `height: ${panelHeight}px;`}"
 >
 	<!-- Drag handle -->
+	<!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
 	<div
 		role="separator"
 		aria-orientation="horizontal"
-		class="h-2 cursor-ns-resize flex items-center justify-center transition-colors rounded-t-lg {darkMode ? 'hover:bg-zinc-800' : 'hover:bg-gray-200'}"
-		onmousedown={startDrag}
+		aria-valuemin={MIN_HEIGHT}
+		aria-valuemax={MAX_HEIGHT}
+		aria-valuenow={panelHeight}
+		aria-label="Resize log panel"
+		tabindex="0"
+		class="h-2 max-sm:hidden cursor-ns-resize flex items-center justify-center transition-colors rounded-t-lg {darkMode ? 'hover:bg-zinc-800' : 'hover:bg-gray-200'}"
+		onpointerdown={startDrag}
+		onpointermove={handleDrag}
+		onpointerup={stopDrag}
+		onpointercancel={stopDrag}
+		onkeydown={(e) => {
+			if (e.key === 'ArrowUp') { e.preventDefault(); adjustHeight(20); }
+			if (e.key === 'ArrowDown') { e.preventDefault(); adjustHeight(-20); }
+		}}
 	>
 		<GripHorizontal class="w-8 h-4 {darkMode ? 'text-zinc-600' : 'text-gray-400'}" />
 	</div>
 
 	<!-- Header -->
-	<div class="flex items-center justify-between px-3 py-1.5 border-b transition-colors {darkMode ? 'border-zinc-800 bg-zinc-900/50' : 'border-gray-300 bg-gray-100'}">
-		<div class="flex items-center gap-2 min-w-[120px]">
+	<div class="flex flex-wrap items-center justify-between gap-1 px-3 py-1.5 border-b transition-colors {darkMode ? 'border-zinc-800 bg-zinc-900/50' : 'border-gray-300 bg-gray-100'}">
+		<div class="flex items-center gap-2 min-w-0 flex-1">
 			<!-- Connection status indicator -->
 			{#if streamingEnabled}
 				{#if isConnected}
@@ -776,11 +790,11 @@
 			<span class="text-xs {darkMode ? 'text-zinc-400' : 'text-gray-500'}">|</span>
 			<span class="text-xs font-medium {darkMode ? 'text-zinc-200' : 'text-gray-800'} truncate max-w-[150px]" title={containerName}>{containerName}</span>
 		</div>
-		<div class="flex items-center gap-2">
+		<div class="flex flex-wrap items-center gap-2 min-w-0">
 			<!-- Streaming toggle -->
 			<button
 				onclick={toggleStreaming}
-				class="flex items-center gap-1 px-1.5 py-0.5 rounded text-xs transition-colors {streamingEnabled ? (darkMode ? 'bg-amber-500/20 ring-1 ring-amber-500/50 text-amber-400' : 'bg-amber-500/30 ring-1 ring-amber-600/50 text-amber-700') : darkMode ? 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-300'}"
+				class="flex items-center gap-1 px-1.5 py-0.5 max-sm:min-h-11 max-sm:min-w-11 max-sm:justify-center max-sm:px-2.5 max-sm:py-2 rounded text-xs transition-colors {streamingEnabled ? (darkMode ? 'bg-amber-500/20 ring-1 ring-amber-500/50 text-amber-400' : 'bg-amber-500/30 ring-1 ring-amber-600/50 text-amber-700') : darkMode ? 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-300'}"
 				title={streamingEnabled ? 'Pause live streaming' : 'Resume live streaming'}
 			>
 				{#if streamingEnabled}
@@ -791,7 +805,7 @@
 			</button>
 			<!-- Tail lines selector -->
 			<Select.Root type="single" value={tailCount} onValueChange={(v) => { tailCount = v; saveSettings(); reloadLogs(); }}>
-				<Select.Trigger size="sm" class="!h-auto !py-0.5 w-[52px] text-xs px-1.5 {darkMode ? 'bg-zinc-800 border-zinc-700 text-zinc-300' : 'bg-white border-gray-300 text-gray-700'} [&_svg]:size-3" title="Number of log lines to load">
+				<Select.Trigger size="sm" class="!h-auto !py-0.5 max-sm:!h-11 max-sm:!py-0 w-[52px] max-sm:w-16 text-xs px-1.5 {darkMode ? 'bg-zinc-800 border-zinc-700 text-zinc-300' : 'bg-white border-gray-300 text-gray-700'} [&_svg]:size-3" title="Number of log lines to load">
 					<span>{tailOptions.find(o => o.value === tailCount)?.label ?? tailCount}</span>
 				</Select.Trigger>
 				<Select.Content>
@@ -813,14 +827,14 @@
 			<!-- Auto-scroll button -->
 			<button
 				onclick={toggleAutoScroll}
-				class="flex items-center gap-1 px-1.5 py-0.5 rounded text-xs transition-colors {autoScroll ? (darkMode ? 'bg-amber-500/20 ring-1 ring-amber-500/50 text-amber-400' : 'bg-amber-500/30 ring-1 ring-amber-600/50 text-amber-700') : darkMode ? 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-300'}"
+				class="flex items-center gap-1 px-1.5 py-0.5 max-sm:min-h-11 max-sm:min-w-11 max-sm:justify-center max-sm:px-2.5 max-sm:py-2 rounded text-xs transition-colors {autoScroll ? (darkMode ? 'bg-amber-500/20 ring-1 ring-amber-500/50 text-amber-400' : 'bg-amber-500/30 ring-1 ring-amber-600/50 text-amber-700') : darkMode ? 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-300'}"
 				title="Toggle auto-scroll"
 			>
 				<ArrowDownToLine class="w-3 h-3" />
 			</button>
 			<!-- Font size -->
 			<Select.Root type="single" value={String(fontSize)} onValueChange={(v) => updateFontSize(Number(v))}>
-				<Select.Trigger size="sm" class="!h-auto !py-0.5 w-14 text-xs px-1.5 {darkMode ? 'bg-zinc-800 border-zinc-700 text-zinc-300' : 'bg-white border-gray-300 text-gray-700'} [&_svg]:size-3">
+				<Select.Trigger size="sm" class="!h-auto !py-0.5 max-sm:!h-11 max-sm:!py-0 w-14 max-sm:w-16 text-xs px-1.5 {darkMode ? 'bg-zinc-800 border-zinc-700 text-zinc-300' : 'bg-white border-gray-300 text-gray-700'} [&_svg]:size-3">
 					<span>{fontSize}px</span>
 				</Select.Trigger>
 				<Select.Content>
@@ -832,7 +846,7 @@
 			<!-- Word wrap -->
 			<button
 				onclick={toggleWordWrap}
-				class="p-1 rounded transition-colors {wordWrap ? (darkMode ? 'bg-amber-500/20 ring-1 ring-amber-500/50' : 'bg-amber-500/30 ring-1 ring-amber-600/50') : ''} {darkMode ? 'hover:bg-zinc-800' : 'hover:bg-gray-300'}"
+				class="p-1 max-sm:size-11 max-sm:rounded-md rounded transition-colors {wordWrap ? (darkMode ? 'bg-amber-500/20 ring-1 ring-amber-500/50' : 'bg-amber-500/30 ring-1 ring-amber-600/50') : ''} {darkMode ? 'hover:bg-zinc-800' : 'hover:bg-gray-300'}"
 				title="Toggle word wrap"
 			>
 				<WrapText class="w-3 h-3 transition-colors {wordWrap ? (darkMode ? 'text-amber-400' : 'text-amber-700') : darkMode ? 'text-zinc-500 hover:text-zinc-300' : 'text-gray-500 hover:text-gray-700'}" />
@@ -840,7 +854,7 @@
 			<!-- Timestamps toggle -->
 			<button
 				onclick={() => { showTimestamps = !showTimestamps; localStorage.setItem('dockhand-log-timestamps', String(showTimestamps)); }}
-				class="p-1 rounded transition-colors {showTimestamps ? (darkMode ? 'bg-amber-500/20 ring-1 ring-amber-500/50' : 'bg-amber-500/30 ring-1 ring-amber-600/50') : ''} {darkMode ? 'hover:bg-zinc-800' : 'hover:bg-gray-300'}"
+				class="p-1 max-sm:size-11 max-sm:rounded-md rounded transition-colors {showTimestamps ? (darkMode ? 'bg-amber-500/20 ring-1 ring-amber-500/50' : 'bg-amber-500/30 ring-1 ring-amber-600/50') : ''} {darkMode ? 'hover:bg-zinc-800' : 'hover:bg-gray-300'}"
 				title={showTimestamps ? 'Hide timestamps' : 'Show timestamps'}
 			>
 				<Clock class="w-3 h-3 transition-colors {showTimestamps ? (darkMode ? 'text-amber-400' : 'text-amber-700') : darkMode ? 'text-zinc-500 hover:text-zinc-300' : 'text-gray-500 hover:text-gray-700'}" />
@@ -848,7 +862,7 @@
 			<!-- Container name toggle -->
 			<button
 				onclick={() => { showContainerName = !showContainerName; localStorage.setItem('dockhand-log-container-name', String(showContainerName)); }}
-				class="p-1 rounded transition-colors {showContainerName ? (darkMode ? 'bg-amber-500/20 ring-1 ring-amber-500/50' : 'bg-amber-500/30 ring-1 ring-amber-600/50') : ''} {darkMode ? 'hover:bg-zinc-800' : 'hover:bg-gray-300'}"
+				class="p-1 max-sm:size-11 max-sm:rounded-md rounded transition-colors {showContainerName ? (darkMode ? 'bg-amber-500/20 ring-1 ring-amber-500/50' : 'bg-amber-500/30 ring-1 ring-amber-600/50') : ''} {darkMode ? 'hover:bg-zinc-800' : 'hover:bg-gray-300'}"
 				title={showContainerName ? 'Hide container name prefix' : 'Show container name prefix'}
 			>
 				<Tag class="w-3 h-3 transition-colors {showContainerName ? (darkMode ? 'text-amber-400' : 'text-amber-700') : darkMode ? 'text-zinc-500 hover:text-zinc-300' : 'text-gray-500 hover:text-gray-700'}" />
@@ -856,7 +870,7 @@
 			<!-- Line numbers -->
 			<button
 				onclick={() => { showLineNumbers = !showLineNumbers; saveSettings(); }}
-				class="p-1 rounded transition-colors {showLineNumbers ? (darkMode ? 'bg-amber-500/20 ring-1 ring-amber-500/50' : 'bg-amber-500/30 ring-1 ring-amber-600/50') : ''} {darkMode ? 'hover:bg-zinc-800' : 'hover:bg-gray-300'}"
+				class="p-1 max-sm:size-11 max-sm:rounded-md rounded transition-colors {showLineNumbers ? (darkMode ? 'bg-amber-500/20 ring-1 ring-amber-500/50' : 'bg-amber-500/30 ring-1 ring-amber-600/50') : ''} {darkMode ? 'hover:bg-zinc-800' : 'hover:bg-gray-300'}"
 				title={showLineNumbers ? 'Hide line numbers' : 'Show line numbers'}
 			>
 				<Hash class="w-3 h-3 transition-colors {showLineNumbers ? (darkMode ? 'text-amber-400' : 'text-amber-700') : darkMode ? 'text-zinc-500 hover:text-zinc-300' : 'text-gray-500 hover:text-gray-700'}" />
@@ -864,7 +878,7 @@
 			<!-- Theme toggle -->
 			<button
 				onclick={toggleTheme}
-				class="p-1 rounded transition-colors {darkMode ? 'hover:bg-zinc-800' : 'hover:bg-gray-300'}"
+				class="p-1 max-sm:size-11 max-sm:rounded-md rounded transition-colors {darkMode ? 'hover:bg-zinc-800' : 'hover:bg-gray-300'}"
 				title={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
 			>
 				{#if darkMode}
@@ -875,19 +889,19 @@
 			</button>
 			<!-- Search -->
 			{#if logSearchActive}
-				<div class="flex items-center gap-1 rounded px-1.5 py-0.5 {darkMode ? 'bg-zinc-800' : 'bg-gray-200'}">
-					<Search class="w-3 h-3 text-amber-400" />
+				<div class="flex items-center gap-1 max-sm:gap-1.5 rounded px-1.5 max-sm:px-2 py-0.5 max-sm:py-1.5 max-sm:h-11 {darkMode ? 'bg-zinc-800' : 'bg-gray-200'}">
+					<Search class="w-3 h-3 max-sm:w-4 max-sm:h-4 text-amber-400" />
 					<input
 						bind:this={logSearchInputRef}
 						type="text"
 						placeholder="Search..."
 						bind:value={logSearchQuery}
 						onkeydown={handleLogSearchKeydown}
-						class="bg-transparent border-none outline-none text-xs w-20 {darkMode ? 'text-zinc-200 placeholder:text-zinc-500' : 'text-gray-800 placeholder:text-gray-400'}"
+						class="bg-transparent border-none outline-none text-xs w-20 max-sm:w-28 {darkMode ? 'text-zinc-200 placeholder:text-zinc-500' : 'text-gray-800 placeholder:text-gray-400'}"
 					/>
 					<button
 						onclick={toggleSearchFilterMode}
-						class="p-0.5 rounded transition-colors {logSearchFilterMode ? (darkMode ? 'bg-amber-500/20 ring-1 ring-amber-500/50' : 'bg-amber-500/30 ring-1 ring-amber-600/50') : darkMode ? 'hover:bg-zinc-700' : 'hover:bg-gray-300'}"
+						class="p-0.5 max-sm:min-w-11 max-sm:min-h-11 max-sm:justify-center flex items-center rounded transition-colors {logSearchFilterMode ? (darkMode ? 'bg-amber-500/20 ring-1 ring-amber-500/50' : 'bg-amber-500/30 ring-1 ring-amber-600/50') : darkMode ? 'hover:bg-zinc-700' : 'hover:bg-gray-300'}"
 						title={logSearchFilterMode ? 'Show all lines (filter mode active)' : 'Hide non-matching lines'}
 					>
 						<Filter class="w-3 h-3 transition-colors {logSearchFilterMode ? (darkMode ? 'text-amber-400' : 'text-amber-700') : darkMode ? 'text-zinc-400' : 'text-gray-500'}" />
@@ -897,20 +911,20 @@
 					{:else if logSearchQuery}
 						<span class="text-xs {darkMode ? 'text-zinc-500' : 'text-gray-400'}">0/0</span>
 					{/if}
-					<button onclick={() => navigateMatch('prev')} class="p-0.5 rounded {darkMode ? 'hover:bg-zinc-700' : 'hover:bg-gray-300'}" title="Previous">
+					<button onclick={() => navigateMatch('prev')} class="p-0.5 max-sm:min-w-11 max-sm:min-h-11 max-sm:justify-center flex items-center rounded {darkMode ? 'hover:bg-zinc-700' : 'hover:bg-gray-300'}" title="Previous">
 						<ChevronUp class="w-3 h-3 {darkMode ? 'text-zinc-400' : 'text-gray-500'}" />
 					</button>
-					<button onclick={() => navigateMatch('next')} class="p-0.5 rounded {darkMode ? 'hover:bg-zinc-700' : 'hover:bg-gray-300'}" title="Next">
+					<button onclick={() => navigateMatch('next')} class="p-0.5 max-sm:min-w-11 max-sm:min-h-11 max-sm:justify-center flex items-center rounded {darkMode ? 'hover:bg-zinc-700' : 'hover:bg-gray-300'}" title="Next">
 						<ChevronDown class="w-3 h-3 {darkMode ? 'text-zinc-400' : 'text-gray-500'}" />
 					</button>
-					<button onclick={closeLogSearch} class="p-0.5 rounded {darkMode ? 'hover:bg-zinc-700' : 'hover:bg-gray-300'}" title="Close">
+					<button onclick={closeLogSearch} class="p-0.5 max-sm:min-w-11 max-sm:min-h-11 max-sm:justify-center flex items-center rounded {darkMode ? 'hover:bg-zinc-700' : 'hover:bg-gray-300'}" title="Close">
 						<X class="w-3 h-3 {darkMode ? 'text-zinc-400' : 'text-gray-500'}" />
 					</button>
 				</div>
 			{:else}
 				<button
 					onclick={toggleLogSearch}
-					class="p-1 rounded transition-colors {darkMode ? 'hover:bg-zinc-800' : 'hover:bg-gray-300'}"
+					class="p-1 max-sm:size-11 max-sm:rounded-md rounded transition-colors {darkMode ? 'hover:bg-zinc-800' : 'hover:bg-gray-300'}"
 					title="Search logs"
 				>
 					<Search class="w-3 h-3 {darkMode ? 'text-zinc-500 hover:text-zinc-300' : 'text-gray-500 hover:text-gray-700'}" />
@@ -919,7 +933,7 @@
 			<!-- Copy -->
 			<button
 				onclick={copyLogs}
-				class="p-1 rounded transition-colors {darkMode ? 'hover:bg-zinc-800' : 'hover:bg-gray-300'}"
+				class="p-1 max-sm:size-11 max-sm:rounded-md rounded transition-colors {darkMode ? 'hover:bg-zinc-800' : 'hover:bg-gray-300'}"
 				title="Copy logs"
 			>
 				<Copy class="w-3 h-3 {darkMode ? 'text-zinc-500 hover:text-zinc-300' : 'text-gray-500 hover:text-gray-700'}" />
@@ -927,7 +941,7 @@
 			<!-- Download -->
 			<button
 				onclick={downloadLogs}
-				class="p-1 rounded transition-colors {darkMode ? 'hover:bg-zinc-800' : 'hover:bg-gray-300'}"
+				class="p-1 max-sm:size-11 max-sm:rounded-md rounded transition-colors {darkMode ? 'hover:bg-zinc-800' : 'hover:bg-gray-300'}"
 				title="Download logs"
 			>
 				<Download class="w-3 h-3 {darkMode ? 'text-zinc-500 hover:text-zinc-300' : 'text-gray-500 hover:text-gray-700'}" />
@@ -935,7 +949,7 @@
 			<!-- Clear -->
 			<button
 				onclick={clearLogs}
-				class="p-1 rounded transition-colors {darkMode ? 'hover:bg-zinc-800' : 'hover:bg-gray-300'}"
+				class="p-1 max-sm:size-11 max-sm:rounded-md rounded transition-colors {darkMode ? 'hover:bg-zinc-800' : 'hover:bg-gray-300'}"
 				title="Clear logs"
 			>
 				<Eraser class="w-3 h-3 {darkMode ? 'text-zinc-500 hover:text-zinc-300' : 'text-gray-500 hover:text-gray-700'}" />
@@ -943,7 +957,7 @@
 			<!-- Refresh -->
 			<button
 				onclick={fetchLogs}
-				class="p-1 rounded transition-colors {darkMode ? 'hover:bg-zinc-800' : 'hover:bg-gray-300'}"
+				class="p-1 max-sm:size-11 max-sm:rounded-md rounded transition-colors {darkMode ? 'hover:bg-zinc-800' : 'hover:bg-gray-300'}"
 				title="Refresh logs"
 			>
 				<RefreshCw class="w-3 h-3 {darkMode ? 'text-zinc-500 hover:text-zinc-300' : 'text-gray-500 hover:text-gray-700'}" />
@@ -952,7 +966,7 @@
 			{#if showCloseButton}
 				<button
 					onclick={handleClose}
-					class="p-1 rounded transition-colors {darkMode ? 'hover:bg-zinc-800' : 'hover:bg-gray-300'}"
+					class="p-1 max-sm:size-11 max-sm:rounded-md rounded transition-colors {darkMode ? 'hover:bg-zinc-800' : 'hover:bg-gray-300'}"
 					title="Close logs"
 				>
 					<X class="w-3 h-3 {darkMode ? 'text-zinc-500 hover:text-zinc-300' : 'text-gray-500 hover:text-gray-700'}" />
@@ -964,7 +978,7 @@
 	<!-- Logs content -->
 	<div bind:this={logsRef} onscroll={handleLogsScroll} class="flex-1 overflow-auto p-3">
 		{#if logs.length > 0}
-			<pre class="logs-fade-in {wordWrap ? 'whitespace-pre-wrap' : 'whitespace-pre'} {showLineNumbers ? 'show-line-numbers' : ''} {darkMode ? 'text-zinc-50' : 'text-gray-900'}" style="font-size: {fontSize}px; font-family: {terminalFontFamily()};">{#each filteredLogs as e (e.id)}<div class="log-line">{#if showTimestamps && e.timestamp}<span class="log-ts">{renderTimestamp(e.timestamp)}</span>{' '}{/if}{#if showContainerName && containerName}<span class="log-cname">[{containerName}]</span>{' '}{/if}<span>{@html renderLineHtml(e, logSearchQuery.trim())}</span></div>{/each}</pre>
+			<pre class="logs-fade-in {wordWrap ? 'whitespace-pre-wrap wrap-anywhere' : 'whitespace-pre'} {showLineNumbers ? 'show-line-numbers' : ''} {darkMode ? 'text-zinc-50' : 'text-gray-900'}" style="font-size: {fontSize}px; font-family: {terminalFontFamily()};">{#each filteredLogs as e (e.id)}<div class="log-line">{#if showTimestamps && e.timestamp}<span class="log-ts">{renderTimestamp(e.timestamp)}</span>{' '}{/if}{#if showContainerName && containerName}<span class="log-cname">[{containerName}]</span>{' '}{/if}<span>{@html renderLineHtml(e, logSearchQuery.trim())}</span></div>{/each}</pre>
 		{:else if loading}
 			<p class="text-xs {darkMode ? 'text-zinc-500' : 'text-gray-500'}">Connecting to log stream...</p>
 		{:else}
@@ -974,6 +988,14 @@
 </div>
 
 <style>
+	@media (pointer: coarse) {
+		.logs-panel button,
+		.logs-panel [role="combobox"] {
+			min-width: 2.75rem;
+			min-height: 2.75rem;
+		}
+	}
+
 	:global(.log-ts) {
 		color: rgb(113, 113, 122);
 	}

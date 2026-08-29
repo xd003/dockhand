@@ -148,7 +148,7 @@
 				</Card.Title>
 			</Card.Header>
 			<Card.Content class="space-y-4">
-				<div class="grid grid-cols-2 gap-4 text-sm">
+				<div class="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
 					<div>
 						<p class="text-muted-foreground">Licensed to</p>
 						<p class="font-medium">{licenseInfo.payload?.name}</p>

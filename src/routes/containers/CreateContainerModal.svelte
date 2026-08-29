@@ -581,7 +581,7 @@
 
 <Dialog.Root bind:open onOpenChange={(isOpen) => isOpen && focusFirstInput()}>
 	<Dialog.Content class="max-w-4xl w-[calc(100%-2rem)] h-[85vh] p-0 flex flex-col overflow-hidden !zoom-in-0 !zoom-out-0" showCloseButton={false}>
-		<Dialog.Header class="px-5 py-4 border-b bg-muted/30 shrink-0 sticky top-0 z-10">
+		<Dialog.Header class="px-5 py-4 max-sm:px-4 max-sm:pr-12 border-b bg-muted/30 shrink-0 sticky top-0 z-10">
 			<Dialog.Title class="text-base font-semibold">
 				Create new container
 				{#if $currentEnvironment}
@@ -592,7 +592,7 @@
 				type="button"
 				onclick={handleClose}
 				disabled={loading || isPulling || isScanning}
-				class="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none disabled:opacity-30"
+				class="absolute right-4 top-4 max-sm:right-1 max-sm:top-1 max-sm:flex max-sm:size-11 max-sm:items-center max-sm:justify-center rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none disabled:opacity-30"
 			>
 				<X class="h-4 w-4" />
 				<span class="sr-only">Close</span>
@@ -601,7 +601,7 @@
 
 		<!-- Tabs (hidden when skipPullTab) -->
 		{#if !skipPullTab}
-		<div class="flex items-center border-b shrink-0 px-5 bg-muted/10">
+		<div class="flex items-center border-b shrink-0 px-5 max-sm:px-4 bg-muted/10 max-sm:overflow-x-auto max-sm:[scrollbar-width:none] max-sm:[&::-webkit-scrollbar]:hidden max-sm:[&>button]:shrink-0">
 			<!-- Pull Tab -->
 			<button
 				class="px-4 py-2.5 text-sm font-medium border-b-2 transition-colors cursor-pointer flex items-center gap-2 {activeTab === 'pull' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
@@ -654,7 +654,7 @@
 
 		<!-- Tab Content -->
 		<!-- Pull Tab - using PullTab component -->
-		<div class="px-5 py-4 flex-1 min-h-0 flex flex-col" class:hidden={activeTab !== 'pull'}>
+		<div class="px-5 py-4 max-sm:px-4 flex-1 min-h-0 flex flex-col" class:hidden={activeTab !== 'pull'}>
 			<PullTab
 				bind:this={pullTabRef}
 				imageName={image}
@@ -669,7 +669,7 @@
 		</div>
 
 		<!-- Scan Tab - using ScanTab component -->
-		<div class="px-5 py-4 flex-1 min-h-0 flex flex-col" class:hidden={activeTab !== 'scan'}>
+		<div class="px-5 py-4 max-sm:px-4 flex-1 min-h-0 flex flex-col" class:hidden={activeTab !== 'scan'}>
 			{#if envHasScanning}
 				<ScanTab
 					bind:this={scanTabRef}
@@ -693,7 +693,7 @@
 		</div>
 
 		<!-- Container Settings Tab -->
-		<div class="px-5 py-4 flex-1 overflow-y-auto" class:hidden={activeTab !== 'container'}>
+		<div class="px-5 py-4 max-sm:px-4 flex-1 overflow-y-auto" class:hidden={activeTab !== 'container'}>
 			<ContainerSettingsTab
 				mode="create"
 				bind:name
@@ -757,20 +757,20 @@
 			/>
 		</div>
 
-		<div class="flex justify-between gap-2 px-5 py-3 border-t bg-muted/30 shrink-0">
-			<div>
+		<div class="flex justify-between gap-2 px-5 py-3 max-sm:px-4 border-t bg-muted/30 shrink-0">
+			<div class="min-w-0">
 				{#if activeTab === 'container' && hasCriticalOrHigh}
 					<div class="flex items-center gap-2 text-amber-600 text-xs">
-						<AlertTriangle class="w-4 h-4" />
+						<AlertTriangle class="w-4 h-4 shrink-0" />
 						<span>Critical/high vulnerabilities found in image</span>
 					</div>
 				{/if}
 			</div>
-			<div class="flex gap-2">
-				<Button type="button" variant="outline" onclick={handleClose} disabled={loading || isPulling || isScanning}>
+			<div class="flex gap-2 max-sm:flex-1">
+				<Button type="button" variant="outline" class="max-sm:min-h-11 max-sm:flex-1" onclick={handleClose} disabled={loading || isPulling || isScanning}>
 					Cancel
 				</Button>
-				<Button type="button" disabled={loading || isPulling || isScanning || activeTab !== 'container'} onclick={handleSubmit}>
+				<Button type="button" class="max-sm:min-h-11 max-sm:flex-1" disabled={loading || isPulling || isScanning || activeTab !== 'container'} onclick={handleSubmit}>
 					{#if loading}
 						<Loader2 class="w-4 h-4 animate-spin" />
 						Creating...

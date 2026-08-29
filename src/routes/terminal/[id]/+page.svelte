@@ -197,7 +197,7 @@
 	<title>Terminal - {containerName || 'Loading...'}</title>
 </svelte:head>
 
-<div class="h-screen w-screen flex flex-col bg-[#0c0c0c]">
+<div class="h-dvh w-full flex flex-col bg-[#0c0c0c]">
 	<!-- Header -->
 	<div class="flex items-center justify-between px-4 py-2 bg-zinc-900 border-b border-zinc-800 flex-shrink-0">
 		<div class="flex items-center gap-2">

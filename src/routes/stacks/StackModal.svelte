@@ -85,7 +85,6 @@
 	let { open = $bindable(), mode: propMode, stackName: propStackName = '', initialCompose, initialStackName, readonly = false, gitInfo = null, stackSource = null, onClose, onSuccess }: Props = $props();
 
 	let gitCommitCopied = $state<'ok' | 'error' | null>(null);
-	let gitUrlCopied = $state<'ok' | 'error' | null>(null);
 
 	// Local effective state - can transition from create → edit after failed deploy
 	let mode = $state(propMode);
@@ -1331,6 +1330,8 @@
 
 	// Resizable split panel state
 	let splitRatio = $state(60); // percentage for compose panel
+	// Mobile-only: which editor pane is shown (desktop uses the resizable split instead).
+	let mobilePane: 'compose' | 'vars' = $state('compose');
 	let isDraggingSplit = $state(false);
 	let containerRef: HTMLDivElement | null = $state(null);
 
@@ -1517,6 +1518,10 @@
 				!!(gitInfo && (gitInfo.commit || gitInfo.url || gitInfo.branch)))
 	);
 	const activeComposeDisplayPath = $derived(activeComposePath || workingComposePaths[0] || workingComposePath || '');
+
+	function shortGitUrl(url: string): string {
+		return url.replace(/^https?:\/\/(www\.)?github\.com\//, '').replace(/\.git$/, '');
+	}
 
 	function composeFileName(path: string): string {
 		return path.split('/').pop() || path;
@@ -2553,21 +2558,19 @@
 	}}
 >
 	<Dialog.Content
-		class="max-w-none w-[calc(100vw-4rem)] h-[95vh] flex flex-col p-0 gap-0 shadow-xl border-zinc-200 dark:border-zinc-700"
+		class="max-w-none w-[calc(100vw-4rem)] h-[95vh] flex flex-col p-0 gap-0 shadow-xl border-zinc-200 dark:border-zinc-700 max-md:w-[calc(100vw-1rem)]! max-md:h-[calc(100dvh-1rem)]! max-md:max-w-none! max-md:max-h-[calc(100dvh-1rem)]! max-md:rounded-2xl! max-md:border! max-md:border-border!"
 		showCloseButton={false}
 	>
-		<Dialog.Header class="px-5 py-3 border-b border-zinc-200 dark:border-zinc-700 flex-shrink-0">
-			<div class="flex items-center justify-between">
-				<div class="flex items-center gap-3">
-					<div class="flex items-center gap-2">
-						<!-- The stack icon is Dockhand metadata (stored via the /icon API); a
-						     read-only inspection shows it without offering a change. -->
+		<Dialog.Header class="px-4 py-3 text-left sm:px-8 sm:py-5 border-b border-zinc-200 dark:border-zinc-700 flex-shrink-0 max-md:pt-[max(0.75rem,env(safe-area-inset-top))]">
+			<div class="flex items-start justify-between gap-4">
+				<div class="flex items-start gap-3.5 min-w-0">
+					{#if !readonly}
 						<button
 							type="button"
-							title={readonly ? undefined : 'Change stack icon'}
-							disabled={readonly}
+							aria-label="Change stack icon"
+							title="Change stack icon"
 							onclick={() => (showIconPicker = true)}
-							class="p-1.5 rounded-md bg-zinc-200 dark:bg-zinc-700 transition-shadow {readonly ? '' : 'hover:ring-2 hover:ring-primary'}"
+							class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-zinc-300 bg-zinc-100 text-primary dark:border-zinc-600 dark:bg-zinc-800 max-md:h-11 max-md:w-11 hover:ring-2 hover:ring-primary transition-shadow"
 						>
 							{#if pendingUploadImage}
 								<img src={pendingUploadImage} alt="" class="w-4 h-4 rounded object-cover" />
@@ -2577,53 +2580,106 @@
 								<Layers class="w-4 h-4 text-zinc-600 dark:text-zinc-300" />
 							{/if}
 						</button>
-						<div>
-							<Dialog.Title class="text-sm font-semibold text-zinc-800 dark:text-zinc-100">
-								{#if mode === 'create'}
-									Create compose stack
-								{:else}
-									{stackName}
-								{/if}
-								{#if $currentEnvironment}
-									<span class="font-semibold">on <span class="text-amber-600 dark:text-amber-400">{$currentEnvironment.name}</span></span>
-								{/if}
-							</Dialog.Title>
-							<Dialog.Description class="text-xs text-zinc-500 dark:text-zinc-400">
-								{#if mode === 'create'}
-									Create a new Docker Compose stack
-								{:else if readonly}
-									View compose file and dependency graph
-								{:else}
-									Edit compose file and environment variables
-								{/if}
-							</Dialog.Description>
+					{:else}
+						<div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-zinc-300 bg-zinc-100 text-primary dark:border-zinc-600 dark:bg-zinc-800 max-md:h-11 max-md:w-11">
+							<Layers class="h-5 w-5" />
 						</div>
+					{/if}
+					<div class="min-w-0">
+						<Dialog.Title class="truncate text-base font-semibold text-zinc-800 dark:text-zinc-100" title={displayName}>
+							{displayName}
+						</Dialog.Title>
+						<Dialog.Description class="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+							{#if mode === 'create'}
+								Create a new Docker Compose stack
+							{:else if readonly}
+								Compose file and dependency graph
+							{:else}
+								Edit compose file and environment variables
+							{/if}
+						</Dialog.Description>
+						{#if readonly && gitInfo && (gitInfo.commit || gitInfo.url || gitInfo.branch)}
+							<div class="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400">
+								{#if gitInfo.commit}
+									<span class="group flex items-center gap-1.5 font-mono">
+										<GitCommitHorizontal class="h-3.5 w-3.5 shrink-0 opacity-70" />
+										<code>{gitInfo.commit}</code>
+										<button
+											type="button"
+											class="rounded p-0.5 opacity-0 transition-opacity hover:bg-zinc-200 group-hover:opacity-100 dark:hover:bg-zinc-700"
+											title="Copy commit hash"
+											onclick={() => copyText(gitInfo.commit ?? null, (v) => gitCommitCopied = v)}
+										>
+											{#if gitCommitCopied === 'ok'}<Check class="h-3 w-3 text-green-500" />{:else}<Copy class="h-3 w-3" />{/if}
+										</button>
+									</span>
+								{/if}
+								{#if gitInfo.url}
+									<span class="flex min-w-0 items-center gap-1.5">
+										<Github class="h-3.5 w-3.5 shrink-0 opacity-70" />
+										<a
+											href={gitInfo.url}
+											target="_blank"
+											rel="noopener noreferrer"
+											class="truncate hover:text-primary"
+										>
+											{shortGitUrl(gitInfo.url)}
+										</a>
+									</span>
+								{/if}
+								{#if gitInfo.branch}
+									<span class="flex items-center gap-1.5">
+										<GitBranch class="h-3.5 w-3.5 shrink-0 opacity-70" />
+										{gitInfo.branch}
+									</span>
+								{/if}
+							</div>
+						{/if}
 					</div>
 				</div>
 
-				<!-- Close button -->
-				<button
-					onclick={tryClose}
-					class="p-1.5 rounded-md text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors"
-				>
-					<X class="w-4 h-4" />
-				</button>
+				<div class="flex shrink-0 items-center gap-2">
+					{#if activeTab === 'editor'}
+						<button
+							type="button"
+							aria-label={editorTheme === 'light' ? 'Switch to dark editor theme' : 'Switch to light editor theme'}
+							onclick={toggleEditorTheme}
+							class="flex h-8 w-8 items-center justify-center rounded-md border border-zinc-200 bg-zinc-50 text-zinc-500 transition-colors hover:border-zinc-300 hover:text-zinc-700 dark:border-zinc-700 dark:bg-zinc-800 dark:hover:text-zinc-300 max-md:hidden"
+							title={editorTheme === 'light' ? 'Switch to dark theme' : 'Switch to light theme'}
+						>
+							{#if editorTheme === 'light'}
+								<Moon class="h-4 w-4" />
+							{:else}
+								<Sun class="h-4 w-4" />
+							{/if}
+						</button>
+					{/if}
+					<button
+						type="button"
+						aria-label="Close stack editor"
+						onclick={tryClose}
+						class="flex h-8 w-8 items-center justify-center rounded-md border border-zinc-200 bg-zinc-50 text-zinc-500 transition-colors hover:border-zinc-300 hover:text-zinc-700 dark:border-zinc-700 dark:bg-zinc-800 dark:hover:text-zinc-300 max-md:h-11 max-md:w-11"
+						title="Close"
+					>
+						<X class="h-4 w-4" />
+					</button>
+				</div>
 			</div>
 		</Dialog.Header>
 
 		<!-- View tabs — left-aligned underline bar under the header, matched to
 		     GitStackModal for a consistent look across the stack modals. -->
-		<div class="flex items-center gap-1 border-b border-zinc-200 px-5 dark:border-zinc-700 flex-shrink-0">
+		<div class="flex items-center gap-1 border-b border-zinc-200 px-5 max-md:px-4 dark:border-zinc-700 flex-shrink-0">
 			<button
 				type="button"
-				class="relative -mb-px flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm transition-colors {activeTab === 'editor' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
+				class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 px-3 max-md:px-2 py-2 max-md:py-3 text-sm transition-colors {activeTab === 'editor' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
 				onclick={() => activeTab = 'editor'}
 			>
 				<Code class="h-3.5 w-3.5" /> Editor
 			</button>
 			<button
 				type="button"
-				class="relative -mb-px flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm transition-colors {activeTab === 'graph' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
+				class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 px-3 max-md:px-2 py-2 max-md:py-3 text-sm transition-colors {activeTab === 'graph' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
 				onclick={() => activeTab = 'graph'}
 			>
 				<GitGraph class="h-3.5 w-3.5" /> Graph
@@ -2635,13 +2691,13 @@
 			{#if mode === 'edit' && $page.data.backupsEnabled && !needsFileLocation && !readonly}
 				<button
 					type="button"
-					class="relative -mb-px flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm transition-colors {activeTab === 'backups' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
+					class="relative -mb-px flex max-md:min-w-0 max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 px-3 max-md:px-1 py-2 max-md:py-3 text-sm transition-colors {activeTab === 'backups' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
 					onclick={() => activeTab = 'backups'}
 				>
 					<Archive class="h-3.5 w-3.5" /> Backups
-					{#if backupCount > 0}<span class="bg-primary/15 text-primary text-[10px] px-1.5 rounded-full font-medium">{backupCount}</span>{/if}
-					{#if backupTally.ok > 0}<span class="inline-flex items-center gap-0.5 rounded-full bg-emerald-500/15 px-1.5 text-[10px] font-medium text-emerald-500"><Check class="w-2.5 h-2.5" />{backupTally.ok}</span>{/if}
-					{#if backupTally.failed > 0}<span class="inline-flex items-center gap-0.5 rounded-full bg-red-500/15 px-1.5 text-[10px] font-semibold text-red-500"><X class="w-2.5 h-2.5" />{backupTally.failed}</span>{/if}
+					{#if backupCount > 0}<span class="bg-primary/15 text-primary text-[10px] px-1.5 rounded-full font-medium max-sm:hidden">{backupCount}</span>{/if}
+					{#if backupTally.ok > 0}<span class="inline-flex items-center gap-0.5 rounded-full bg-emerald-500/15 px-1.5 text-[10px] font-medium text-emerald-500 max-sm:hidden"><Check class="w-2.5 h-2.5" />{backupTally.ok}</span>{/if}
+					{#if backupTally.failed > 0}<span class="inline-flex items-center gap-0.5 rounded-full bg-red-500/15 px-1.5 text-[10px] font-semibold text-red-500 max-sm:hidden"><X class="w-2.5 h-2.5" />{backupTally.failed}</span>{/if}
 				</button>
 			{/if}
 			<!-- Deploys tab: recorded run history (keyed by stackName+env, independent of
@@ -2702,7 +2758,7 @@
 
 				<!-- Stack name and location inputs (create mode only) -->
 				{#if mode === 'create'}
-					<div class="px-6 py-4 border-b border-zinc-200 dark:border-zinc-700">
+					<div class="px-4 py-4 sm:px-6 border-b border-zinc-200 dark:border-zinc-700">
 						<div class="flex gap-4 items-start">
 							<div class="flex-1 max-w-xs space-y-1">
 								<Label for="stack-name">Stack name</Label>
@@ -2710,7 +2766,7 @@
 									id="stack-name"
 									bind:value={newStackName}
 									placeholder="my-stack"
-									class={errors.stackName ? 'border-destructive focus-visible:ring-destructive' : ''}
+									class="max-md:h-11 {errors.stackName ? 'border-destructive focus-visible:ring-destructive' : ''}"
 									oninput={() => {
 										stackNameUserEdited = true;
 										errors.stackName = undefined;
@@ -2758,80 +2814,28 @@
 				<!-- Content area -->
 				<div bind:this={containerRef} class="flex-1 min-h-0 flex flex-col {isDraggingSplit ? 'select-none' : ''}">
 					{#if activeTab === 'editor'}
-						<!-- Path bars row -->
-						<div class="flex items-center border-b border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/30">
-							{#if readonly}
-								<span class="ml-4 flex shrink-0 items-center gap-1 rounded-full border border-purple-500/30 bg-purple-500/10 px-2 py-0.5 text-2xs font-medium text-purple-600 dark:text-purple-400" title="This is a Git-managed stack — Dockhand shows its compose read-only; edit it in the repository.">
-									<GitBranch class="h-3 w-3" /> Git · read-only
-								</span>
-								{#if gitInfo && (gitInfo.commit || gitInfo.url || gitInfo.branch)}
-									<div class="ml-3 flex min-w-0 items-center gap-3 text-2xs text-muted-foreground">
-										{#if gitInfo.commit}
-											<span class="flex shrink-0 items-center gap-1">
-												<GitCommitHorizontal class="h-3.5 w-3.5 shrink-0 opacity-70" />
-												<code class="font-mono">{gitInfo.commit}</code>
-												<button type="button" class="rounded p-0.5 hover:bg-muted transition-colors" title="Copy commit hash" onclick={() => copyText(gitInfo.commit ?? null, (v) => gitCommitCopied = v)}>
-													{#if gitCommitCopied === 'ok'}<Check class="h-3 w-3 text-green-500" />{:else}<Copy class="h-3 w-3" />{/if}
-												</button>
-											</span>
-										{/if}
-										{#if gitInfo.url}
-											<span class="flex min-w-0 items-center gap-1">
-												<Github class="h-3.5 w-3.5 shrink-0 opacity-70" />
-												<span class="truncate">{gitInfo.url}</span>
-												<button type="button" class="rounded p-0.5 hover:bg-muted transition-colors shrink-0" title="Copy repository URL" onclick={() => copyText(gitInfo.url ?? null, (v) => gitUrlCopied = v)}>
-													{#if gitUrlCopied === 'ok'}<Check class="h-3 w-3 text-green-500" />{:else}<Copy class="h-3 w-3" />{/if}
-												</button>
-											</span>
-										{/if}
-										{#if gitInfo.branch}
-											<span class="flex shrink-0 items-center gap-1">
-												<GitBranch class="h-3.5 w-3.5 shrink-0 opacity-70" />
-												<span>{gitInfo.branch}</span>
-											</span>
-										{/if}
-									</div>
-								{/if}
-							{/if}
-							<!-- Env path -->
-							<div class="flex-1 min-w-0 px-4 py-2 bg-zinc-100/50 dark:bg-zinc-800/50">
-								<PathBarItem
-									label="Env file"
-									path={displayEnvPath || null}
-									selectedPath={workingEnvPath || suggestedEnvPath || ''}
-									placeholder="/path/to/.env (optional)"
-									copied={envPathCopied}
-									onCopy={() => copyText(displayEnvPath, (v) => envPathCopied = v)}
-									onBrowse={readonly ? undefined : openEnvBrowser}
-									isEditable={!readonly}
-									isCustom={!!workingEnvPath}
-									defaultText={mode === 'create' ? 'Enter stack name above' : 'Not specified'}
-									isSuggested={isEnvPathSuggested}
-									onPathChange={(value) => {
-										workingEnvPath = value;
-										isDirty = true;
-									}}
-								/>
-							</div>
-							<!-- Theme toggle -->
-							<div class="flex items-center px-2 shrink-0">
-								<button
-									onclick={toggleEditorTheme}
-									class="p-1 rounded text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors"
-									title={editorTheme === 'light' ? 'Switch to dark theme' : 'Switch to light theme'}
-								>
-									{#if editorTheme === 'light'}
-										<Moon class="w-3.5 h-3.5" />
-									{:else}
-										<Sun class="w-3.5 h-3.5" />
-									{/if}
-								</button>
-							</div>
+						<!-- Mobile: one pane at a time; desktop keeps the resizable split below. -->
+						<div class="flex items-center gap-1 border-b border-zinc-200 px-4 dark:border-zinc-700 flex-shrink-0 md:hidden">
+							<button
+								type="button"
+								class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 px-2 py-2.5 max-md:py-3 text-sm transition-colors {mobilePane === 'compose' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
+								onclick={() => mobilePane = 'compose'}
+							>
+								<Code class="h-3.5 w-3.5" /><span class="max-md:hidden">Compose files</span><span class="md:hidden">Compose</span>
+							</button>
+							<button
+								type="button"
+								class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 px-2 py-2.5 max-md:py-3 text-sm transition-colors {mobilePane === 'vars' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
+								onclick={() => mobilePane = 'vars'}
+							>
+								<FileText class="h-3.5 w-3.5" /><span class="max-md:hidden">Environment variables</span><span class="md:hidden">Variables</span>
+							</button>
 						</div>
-						<div class="flex flex-1 min-h-0">
+						<!-- Horizontal compose/vars split on desktop; one pane at a time on mobile. -->
+						<div class="flex flex-1 min-h-0 max-md:flex-col">
 							<!-- Compose panel -->
-							<div class="flex min-h-0 min-w-0 flex-shrink-0 flex-col" style="width: {splitRatio}%">
-								<div class="flex min-h-0 flex-1 flex-col px-8 py-6">
+							<div class="flex min-h-0 min-w-0 flex-shrink-0 flex-col max-md:w-full! {mobilePane === 'compose' ? 'max-md:flex-1' : 'max-md:hidden'}" style="width: {splitRatio}%">
+								<div class="flex min-h-0 flex-1 flex-col px-4 py-4 sm:px-8 sm:py-6">
 									<div class="mb-3.5 flex flex-wrap items-center justify-between gap-3">
 										<div class="flex items-center gap-2 text-sm font-semibold text-zinc-800 dark:text-zinc-100">
 											<Code class="h-4 w-4 text-muted-foreground" />
@@ -2862,41 +2866,42 @@
 												>
 													{#if total > 1}
 														<div class="flex shrink-0 flex-col -space-y-0.5">
-															<button type="button" title="Move up" disabled={i === 0} onclick={() => movePathUp(i)} class="p-0 hover:text-muted-foreground disabled:cursor-default disabled:opacity-30">
+															<button type="button" title="Move up" disabled={i === 0} onclick={() => movePathUp(i)} class="p-0 max-md:p-2 hover:text-muted-foreground disabled:cursor-default disabled:opacity-30">
 																<ArrowUp class="h-3 w-3" />
 															</button>
-															<button type="button" title="Move down" disabled={i === total - 1} onclick={() => movePathDown(i)} class="p-0 hover:text-muted-foreground disabled:cursor-default disabled:opacity-30">
+															<button type="button" title="Move down" disabled={i === total - 1} onclick={() => movePathDown(i)} class="p-0 max-md:p-2 hover:text-muted-foreground disabled:cursor-default disabled:opacity-30">
 																<ArrowDown class="h-3 w-3" />
 															</button>
 														</div>
 														<GripVertical class="h-3.5 w-3.5 shrink-0 cursor-grab text-muted-foreground/40" />
 													{/if}
-													<input
-														type="text"
-														value={workingComposePaths[i]}
+															<input
+																type="text"
+																value={workingComposePaths[i]}
+																aria-label={`Compose file path ${i + 1}`}
 														placeholder={i === 0 ? '/path/to/compose.yaml' : 'compose.override.yaml'}
-														class="min-w-0 flex-1 rounded border bg-background px-2 py-1 text-xs"
+														class="min-w-0 flex-1 rounded border bg-background px-2 py-1 text-xs max-md:h-11 max-md:text-sm"
 														oninput={(e) => renameComposePathAt(i, e.currentTarget.value)}
 													/>
-													<button type="button" onclick={() => browseForRow(i)} class="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted" title="Browse for file">
+													<button type="button" onclick={() => browseForRow(i)} class="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted max-md:flex max-md:h-11 max-md:w-11 max-md:items-center max-md:justify-center" title="Browse for file">
 														<FolderOpen class="h-3.5 w-3.5" />
 													</button>
 													{#if total > 1}
-														<button type="button" onclick={() => removeComposePath(i)} class="shrink-0 rounded p-1 text-muted-foreground hover:bg-red-100 hover:text-red-500 dark:hover:bg-red-900/30" title="Remove">
+														<button type="button" onclick={() => removeComposePath(i)} class="shrink-0 rounded p-1 text-muted-foreground hover:bg-red-100 hover:text-red-500 dark:hover:bg-red-900/30 max-md:flex max-md:h-11 max-md:w-11 max-md:items-center max-md:justify-center" title="Remove">
 															<X class="h-3.5 w-3.5" />
 														</button>
 													{/if}
 												</div>
 											{:else}
 												<div class="flex items-center gap-1">
-													<input type="text" readonly placeholder={mode === 'create' ? 'Enter stack name above' : 'Not specified'} class="min-w-0 flex-1 rounded border bg-muted/50 px-2 py-1 text-xs text-muted-foreground" />
-													<button type="button" onclick={openComposeBrowser} class="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted" title="Browse for file">
+													<input type="text" readonly placeholder={mode === 'create' ? 'Enter stack name above' : 'Not specified'} class="min-w-0 flex-1 rounded border bg-muted/50 px-2 py-1 text-xs text-muted-foreground max-md:h-11 max-md:text-sm" />
+													<button type="button" onclick={openComposeBrowser} class="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted max-md:flex max-md:h-11 max-md:w-11 max-md:items-center max-md:justify-center" title="Browse for file">
 														<FolderOpen class="h-3.5 w-3.5" />
 													</button>
 												</div>
 											{/each}
 											{#if workingComposePaths.length > 0}
-												<button type="button" onclick={() => addComposePath()} class="inline-flex items-center gap-1 rounded border bg-muted px-2 py-0.5 text-xs text-muted-foreground hover:bg-muted/80">
+												<button type="button" onclick={() => addComposePath()} class="inline-flex items-center gap-1 rounded border bg-muted px-2 py-0.5 text-xs text-muted-foreground hover:bg-muted/80 max-md:h-11">
 													+ Add compose file
 												</button>
 											{/if}
@@ -2914,13 +2919,13 @@
 													<div class="group flex min-w-0 items-center">
 														<Tabs.Trigger
 															value={path}
-															class="min-w-0 cursor-pointer break-all rounded-t-md border-b-2 px-3.5 py-2.5 font-mono text-xs rounded-none border-x-0 border-t-0 shadow-none transition-colors data-[state=active]:rounded-none data-[state=active]:border-primary data-[state=active]:bg-zinc-50 data-[state=active]:text-foreground data-[state=active]:shadow-none data-[state=active]:dark:bg-zinc-800/50"
+															class="min-w-0 cursor-pointer break-all rounded-t-md border-b-2 px-3.5 py-2.5 max-md:py-3 font-mono text-xs rounded-none border-x-0 border-t-0 shadow-none transition-colors data-[state=active]:rounded-none data-[state=active]:border-primary data-[state=active]:bg-zinc-50 data-[state=active]:text-foreground data-[state=active]:shadow-none data-[state=active]:dark:bg-zinc-800/50"
 														>
 															{composeFileName(path)}
 														</Tabs.Trigger>
 														<button
 															type="button"
-															class="rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 {path === (activeComposePath || workingComposePaths[0]) ? 'opacity-100' : ''}"
+															class="rounded p-0.5 max-md:p-2 text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 {path === (activeComposePath || workingComposePaths[0]) ? 'opacity-100' : ''}"
 															title="Copy path"
 															onclick={() => copyComposePathAtIndex(path, i)}
 														>
@@ -2975,7 +2980,7 @@
 															onSelect={handleComposeSelect}
 														/>
 													{/if}
-													<Button variant="outline" size="sm" onclick={openComposeBrowser}>
+													<Button variant="outline" size="sm" class="max-md:h-11" onclick={openComposeBrowser}>
 														<FolderOpen class="h-4 w-4" />
 														Browse for compose file
 													</Button>
@@ -2994,7 +2999,7 @@
 														<Button
 															variant="ghost"
 															size="sm"
-															class="h-7 shrink-0 px-2 text-xs text-muted-foreground"
+															class="h-7 max-md:h-11 shrink-0 px-2 text-xs text-muted-foreground"
 															onclick={runComposeValidate}
 															disabled={!composeContent}
 															title="Check this compose for problems before deploy"
@@ -3009,7 +3014,7 @@
 														<Button
 															variant="ghost"
 															size="sm"
-															class="h-7 shrink-0 px-2 text-xs text-muted-foreground"
+															class="h-7 max-md:h-11 shrink-0 px-2 text-xs text-muted-foreground"
 															onclick={() => copyText(composeContent, (v) => composeContentCopied = v)}
 															disabled={!composeContent}
 														>
@@ -3031,7 +3036,7 @@
 														</Button>
 													</div>
 												</div>
-												<div bind:this={editorRowRef} class="flex-1 min-h-0 flex">
+												<div bind:this={editorRowRef} class="flex-1 min-h-0 flex relative">
 													<CodeEditor
 														bind:this={codeEditorRef}
 														value={composeContent}
@@ -3047,7 +3052,7 @@
 													{#if validatePanelOpen}
 														<!-- Resize handle -->
 														<div
-															class="w-1 mx-1 flex-shrink-0 rounded bg-zinc-200 dark:bg-zinc-700 hover:bg-blue-400 dark:hover:bg-blue-500 cursor-col-resize transition-colors flex items-center justify-center group {isDraggingValidate ? 'bg-blue-500 dark:bg-blue-400' : ''}"
+															class="w-1 mx-1 flex-shrink-0 rounded bg-zinc-200 dark:bg-zinc-700 hover:bg-blue-400 dark:hover:bg-blue-500 cursor-col-resize transition-colors flex items-center justify-center group max-md:hidden {isDraggingValidate ? 'bg-blue-500 dark:bg-blue-400' : ''}"
 															onmousedown={startValidateDrag}
 															role="separator"
 															aria-orientation="vertical"
@@ -3057,7 +3062,8 @@
 																<GripVertical class="w-3 h-3 text-white" />
 															</div>
 														</div>
-														<div class="shrink-0 min-h-0" style="width: {validatePanelWidth}px">
+														<!-- Fixed-width docked panel on desktop; full-height overlay on mobile. -->
+												<div class="shrink-0 min-h-0 max-w-full max-md:absolute max-md:inset-y-0 max-md:right-0 max-md:z-20 max-md:w-full max-md:shadow-xl" style="width: {validatePanelWidth}px">
 															<ComposeValidatePanel
 																bind:this={validatePanelRef}
 																report={validateReport}
@@ -3080,7 +3086,7 @@
 
 							<!-- Resizable divider -->
 							<div
-								class="w-1 flex-shrink-0 bg-zinc-200 dark:bg-zinc-700 hover:bg-blue-400 dark:hover:bg-blue-500 cursor-col-resize transition-colors flex items-center justify-center group {isDraggingSplit ? 'bg-blue-500 dark:bg-blue-400' : ''}"
+								class="w-1 flex-shrink-0 bg-zinc-200 dark:bg-zinc-700 hover:bg-blue-400 dark:hover:bg-blue-500 cursor-col-resize transition-colors flex items-center justify-center group max-md:hidden {isDraggingSplit ? 'bg-blue-500 dark:bg-blue-400' : ''}"
 								onmousedown={startSplitDrag}
 								role="separator"
 								aria-orientation="vertical"
@@ -3092,8 +3098,8 @@
 							</div>
 
 							<!-- Environment variables panel -->
-							<div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-								<div class="flex min-h-0 flex-1 flex-col px-8 py-6">
+							<div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden {mobilePane === 'vars' ? 'max-md:flex-1' : 'max-md:hidden'}">
+								<div class="flex min-h-0 flex-1 flex-col px-4 py-4 sm:px-8 sm:py-6">
 									<div class="mb-3.5 flex items-center justify-between gap-3">
 										<div class="flex items-center gap-2 text-sm font-semibold text-zinc-800 dark:text-zinc-100">
 											<FileText class="h-4 w-4 text-muted-foreground" />
@@ -3109,6 +3115,26 @@
 											onchange={() => { secretProviderTouched = true; markDirty(); debouncedValidate(); }}
 										/>
 									{/if}
+
+									<div class="mb-5">
+										<PathBarItem
+											label="Env file"
+											path={displayEnvPath || null}
+											selectedPath={workingEnvPath || suggestedEnvPath || ''}
+											placeholder="/path/to/.env (optional)"
+											copied={envPathCopied}
+											onCopy={() => copyText(displayEnvPath, (v) => envPathCopied = v)}
+											onBrowse={readonly ? undefined : openEnvBrowser}
+											isEditable={!readonly}
+											isCustom={!!workingEnvPath}
+											defaultText={mode === 'create' ? 'Enter stack name above' : 'Not specified'}
+											isSuggested={isEnvPathSuggested}
+											onPathChange={(value) => {
+												workingEnvPath = value;
+												isDirty = true;
+											}}
+										/>
+									</div>
 
 									<StackEnvVarsPanel
 										bind:this={envVarsPanelRef}
@@ -3215,8 +3241,8 @@
 		</div>
 
 		<!-- Footer -->
-		<div class="flex flex-shrink-0 items-center justify-between border-t border-zinc-200 px-8 py-3 dark:border-zinc-700">
-			<div class="flex min-w-0 items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
+		<div class="flex flex-shrink-0 items-center justify-between gap-2 border-t border-zinc-200 px-4 py-3 sm:px-8 dark:border-zinc-700 max-md:pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+			<div class="flex min-w-0 items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400 max-sm:hidden">
 				{#if readonly}
 					<Lock class="h-3.5 w-3.5 shrink-0" />
 					{#if isGitView}
@@ -3233,18 +3259,18 @@
 				{/if}
 			</div>
 
-			<div class="flex items-center gap-2">
+			<div class="flex flex-wrap items-center justify-end gap-2 max-md:grid max-md:w-full max-md:grid-cols-2 max-md:gap-2">
 				{#if readonly}
-					<Button onclick={tryClose}>Close</Button>
+					<Button class="max-md:order-1 max-md:col-span-2 max-md:w-full max-md:min-h-11" onclick={tryClose}>Close</Button>
 				{:else}
-					<Button variant="outline" onclick={tryClose} disabled={saving}>
+					<Button variant="outline" class="max-md:min-h-11" onclick={tryClose} disabled={saving}>
 						Cancel
 					</Button>
 				{/if}
 
 				{#if !readonly && mode === 'create'}
 					<!-- Create mode buttons -->
-					<Button variant="outline" onclick={() => handleCreate(false)} disabled={saving}>
+					<Button variant="outline" class="max-md:min-h-11" onclick={() => handleCreate(false)} disabled={saving}>
 						{#if saving}
 							<Loader2 class="w-4 h-4 animate-spin" />
 							Creating...
@@ -3258,9 +3284,9 @@
 					     popover to override pull/build/forceRecreate before deploying. Two
 					     separate <button> elements, both independently reachable by keyboard --
 					     never one element whose behavior depends on click position. -->
-					<div class="inline-flex">
+					<div class="inline-flex max-md:col-span-2 max-md:w-full">
 						<Button
-							class="rounded-r-none"
+							class="max-md:min-h-11 max-md:flex-1 rounded-r-none"
 							onclick={() => handleCreate(true, false, createStartDefaults)}
 							disabled={saving}
 						>
@@ -3291,7 +3317,7 @@
 					</div>
 				{:else if !readonly}
 					<!-- Edit mode buttons -->
-					<Button variant="outline" class="w-24" onclick={() => handleSave(false)} disabled={saving || loading || (needsFileLocation && !workingComposePath.trim())}>
+					<Button variant="outline" class="max-md:min-h-11 max-md:w-full w-24" onclick={() => handleSave(false)} disabled={saving || loading || (needsFileLocation && !workingComposePath.trim())}>
 						{#if saving && !savingWithRestart}
 							<Loader2 class="w-4 h-4 animate-spin" />
 							Saving...
@@ -3301,9 +3327,9 @@
 						{/if}
 					</Button>
 					<!-- Same split-button shape as Create & Start above. -->
-					<div class="inline-flex">
+					<div class="inline-flex max-md:col-span-2 max-md:w-full">
 						<Button
-							class="w-36 rounded-r-none"
+							class="max-md:min-h-11 max-md:flex-1 w-36 rounded-r-none"
 							onclick={() => handleSave(true, undefined, false, saveRedeployDefaults)}
 							disabled={saving || loading || (needsFileLocation && !workingComposePath.trim())}
 						>

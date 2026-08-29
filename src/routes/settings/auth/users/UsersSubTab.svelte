@@ -251,7 +251,7 @@
 <div class="flex flex-col flex-1 min-h-0">
 	<Card.Root class="flex flex-col flex-1 min-h-0">
 		<Card.Header class="flex-shrink-0 py-3">
-			<div class="flex items-center justify-between">
+			<div class="flex flex-wrap items-center justify-between gap-2">
 				<div>
 					<Card.Title class="text-sm font-medium flex items-center gap-2">
 						<Users class="w-4 h-4" />
@@ -260,7 +260,7 @@
 					<p class="text-xs text-muted-foreground mt-1">Manage user accounts for local authentication, SSO, and LDAP.</p>
 				</div>
 				{#if $canAccess('users', 'create')}
-					<Button size="sm" onclick={() => openUserModal(null)}>
+					<Button size="sm" class="max-sm:h-11" onclick={() => openUserModal(null)}>
 						<UserPlus class="w-4 h-4" />
 						Add user
 					</Button>
@@ -288,7 +288,7 @@
 				</div>
 				<!-- Table -->
 				<div class="flex-1 min-h-0 overflow-auto rounded-lg border">
-					<table class="w-full text-sm">
+					<table class="responsive-table w-full text-sm">
 						<thead class="bg-muted sticky top-0 z-10">
 							<tr class="border-b">
 								<th class="text-left py-1.5 px-3 font-medium w-[25%]">
@@ -348,7 +348,7 @@
 								{@const hiddenRolesCount = (user.roles?.length || 0) - MAX_VISIBLE_ROLES}
 								<tr class="border-b border-muted hover:bg-muted/30 transition-colors">
 									<!-- User -->
-									<td class="py-2 px-3">
+									<td class="py-2 px-3" data-label="User">
 										<div class="flex items-center gap-2">
 											<div class="w-6 h-6 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
 												<User class="w-3 h-3 text-primary" />
@@ -362,11 +362,11 @@
 										</div>
 									</td>
 									<!-- Email -->
-									<td class="py-2 px-3">
+									<td class="py-2 px-3" data-label="Email">
 										<span class="text-muted-foreground truncate block">{user.email || '—'}</span>
 									</td>
 									<!-- MFA -->
-									<td class="py-2 px-3">
+									<td class="py-2 px-3" data-label="MFA">
 										{#if user.mfaEnabled}
 											<Badge variant="outline" class="text-2xs px-1.5 py-0 h-4 gap-1 rounded-sm bg-green-500/10 text-green-600 dark:text-green-400 border-green-500/30">
 												<Shield class="w-2.5 h-2.5" />
@@ -378,7 +378,7 @@
 									</td>
 									<!-- Roles (Enterprise only) -->
 									{#if $licenseStore.isEnterprise}
-										<td class="py-2 px-3">
+										<td class="py-2 px-3" data-label="Roles">
 											{#if user.roles && user.roles.length > 0}
 												<div class="flex items-center gap-1 flex-wrap">
 													{#each visibleRoles as role}
@@ -398,14 +398,14 @@
 										</td>
 									{/if}
 									<!-- Provider -->
-									<td class="py-2 px-3">
+									<td class="py-2 px-3" data-label="Provider">
 										<Badge variant="outline" class="text-2xs px-1.5 py-0 h-4 gap-1 rounded-sm {provider.class}">
 											<ProviderIcon class="w-2.5 h-2.5" />
 											{provider.label}
 										</Badge>
 									</td>
 									<!-- Actions -->
-									<td class="py-2 px-3 text-right">
+									<td class="py-2 px-3 text-right" data-label="Actions">
 										<div class="flex items-center justify-end gap-1">
 											{#if $canAccess('users', 'edit')}
 												<Button

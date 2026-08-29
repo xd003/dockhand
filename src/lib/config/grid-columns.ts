@@ -129,7 +129,7 @@ export const scheduleColumns: ColumnConfig[] = [
 	{ id: 'expand', label: '', fixed: 'start', width: 24, resizable: false },
 	{ id: 'schedule', label: 'Schedule', width: 450, minWidth: 300, grow: true },
 	{ id: 'environment', label: 'Environment', width: 140, minWidth: 100 },
-	{ id: 'cron', label: 'Schedule', width: 180, minWidth: 120 },
+	{ id: 'cron', label: 'Cron', width: 180, minWidth: 120 },
 	{ id: 'lastRun', label: 'Last run', width: 160, minWidth: 120 },
 	{ id: 'nextRun', label: 'Next run', width: 160, minWidth: 100 },
 	{ id: 'status', label: 'Status', width: 70, resizable: false },

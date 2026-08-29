@@ -682,7 +682,7 @@
 			</div>
 			<!-- Details panel (overlay) -->
 			{#if selectedNode || selectedEdge}
-				<div class="absolute top-0 right-0 bottom-0 w-[420px] border-l border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/95 shadow-lg z-20 flex flex-col">
+				<div class="absolute top-0 right-0 bottom-0 w-full sm:w-[min(420px,40%)] max-w-full border-l border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/95 shadow-lg z-20 flex flex-col">
 					<!-- Sticky header -->
 					{#if selectedNode}
 						{@const NodeIcon = getNodeIcon(selectedNode.type)}

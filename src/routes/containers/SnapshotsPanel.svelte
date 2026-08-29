@@ -338,22 +338,8 @@
 			{/each}
 		</div>
 	{/if}
-	<!-- Bulk actions: delete the selected snapshots, or all in the current view. -->
-	<div class="mb-2 flex items-center gap-2">
-		{#if selectedCount > 0}
-			<button type="button" class="inline-flex items-center gap-1.5 rounded-md border border-destructive/40 px-2.5 py-1 text-xs text-destructive transition-colors hover:bg-destructive/10" onclick={() => openBulk('selected')}>
-				<Trash2 class="h-3 w-3" /> Delete selected ({selectedCount})
-			</button>
-			<button type="button" class="text-xs text-muted-foreground hover:text-foreground" onclick={() => (selectedSnapshots = new Set())}>Clear</button>
-		{/if}
-		{#if visibleSnapshots.length > 0}
-			<button type="button" class="ml-auto inline-flex items-center gap-1.5 rounded-md border border-destructive/40 px-2.5 py-1 text-xs text-destructive transition-colors hover:bg-destructive/10" onclick={() => openBulk('all')}>
-				<Trash2 class="h-3 w-3" /> Delete all ({visibleSnapshots.length})
-			</button>
-		{/if}
-	</div>
-	<div class="overflow-x-auto">
-		<table class="w-full text-xs">
+	<div class="overflow-hidden">
+		<table class="responsive-table w-full text-xs">
 			<thead>
 				<tr class="border-b text-left text-muted-foreground">
 					<th class="w-8 py-1.5 pl-2">
@@ -371,17 +357,14 @@
 					{@const isDiffPending = diffPending?.id === s.id}
 					{@const RepoIcon = getRepoTypeIcon(s._destinationRepository)}
 					{@const st = stats.get(s.id)}
-					<tr class="border-b text-xs last:border-0 hover:bg-muted/30 {isDiffPending ? 'bg-primary/10' : ''} {selectedSnapshots.has(s.id) ? 'bg-primary/5' : ''}">
-						<td class="py-1.5 pl-2">
-							<Checkbox checked={selectedSnapshots.has(s.id)} onCheckedChange={() => toggleSnapshot(s.id)} aria-label="Select snapshot {s.shortId}" />
-						</td>
-						<td class="py-1.5 pl-2 font-mono text-muted-foreground">{s.shortId}</td>
-						<td class="py-1.5 pl-2">{formatDateTime(s.time)} <span class="text-muted-foreground opacity-60">({formatRelativeTime(s.time)})</span></td>
-						<td class="py-1.5 pl-2 text-muted-foreground" title={st ? `${st.filesNew} new, ${st.filesChanged} changed files` : ''}>{st ? formatBytes(st.dataAdded) : '—'}</td>
-						<td class="py-1.5 pl-2 text-muted-foreground">
+					<tr class="border-b text-xs last:border-0 hover:bg-muted/30 {isDiffPending ? 'bg-primary/10' : ''}">
+						<td data-label="Snapshot" class="py-1.5 pl-2 font-mono text-muted-foreground">{s.shortId}</td>
+						<td data-label="Taken" class="py-1.5 pl-2">{formatDateTime(s.time)} <span class="text-muted-foreground opacity-60">({formatRelativeTime(s.time)})</span></td>
+						<td data-label="Added" class="py-1.5 pl-2 text-muted-foreground" title={st ? `${st.filesNew} new, ${st.filesChanged} changed files` : ''}>{st ? formatBytes(st.dataAdded) : '—'}</td>
+						<td data-label="Repository" class="py-1.5 pl-2 text-muted-foreground">
 							<span class="flex items-center gap-1.5"><RepoIcon class="h-3.5 w-3.5 text-primary/70" />{s._destinationName}</span>
 						</td>
-						<td class="px-3 py-1.5 text-right">
+						<td data-label="Actions" class="px-3 py-1.5 text-right">
 							<div class="flex items-center justify-end gap-0.5">
 								{#if visibleSnapshots.length >= 2}
 									<button type="button" class="rounded p-1 transition-colors {isDiffPending ? 'bg-primary/20 text-primary' : 'hover:bg-muted'}" onclick={() => toggleDiff(s)} title={isDiffPending ? 'Cancel compare' : diffPending ? 'Compare with selected' : 'Compare'}>

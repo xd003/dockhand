@@ -104,7 +104,7 @@
 	</div>
 {:else}
 	<!-- Full header for standard tiles -->
-	<div class="flex items-center justify-between">
+	<div class="flex min-w-0 items-center justify-between gap-2">
 		<div class="flex items-center gap-2 min-w-0 flex-1">
 			<div class="p-1.5 rounded-lg {online ? 'bg-primary/10' : 'bg-muted'}">
 				<EnvironmentIcon {icon} envId={environmentId} class="w-4 h-4 {online ? 'text-primary' : 'text-muted-foreground'}" />
@@ -141,7 +141,7 @@
 			</div>
 		</div>
 
-		<div class="flex items-center gap-1.5">
+		<div class="flex shrink-0 items-center gap-1.5">
 			{#if updateCheckEnabled}
 				<span title={updateCheckAutoUpdate ? "Auto-update enabled" : "Update check enabled (notify only)"}>
 					{#if updateCheckAutoUpdate}
@@ -170,7 +170,7 @@
 				<button
 					onpointerdown={stopPointerPropagation}
 					onclick={openSettings}
-					class="p-0.5 rounded hover:bg-muted transition-colors"
+					class="min-h-9 min-w-9 flex items-center justify-center rounded hover:bg-muted transition-colors"
 					title="Edit environment settings"
 				>
 					<Settings class="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />

@@ -52,8 +52,8 @@
 				{#if oldComplex || newComplex}
 					<!-- Complex values: stacked -->
 					<div class="flex-1 min-w-0 space-y-1">
-						<pre class="text-xs text-muted-foreground bg-muted/50 rounded px-2 py-1 overflow-x-auto whitespace-pre-wrap">{formatDisplayValue(change.oldValue)}</pre>
-						<pre class="text-xs text-amber-600 dark:text-amber-400 bg-amber-500/10 rounded px-2 py-1 overflow-x-auto whitespace-pre-wrap">{formatDisplayValue(change.newValue)}</pre>
+						<pre class="text-xs text-muted-foreground bg-muted/50 rounded px-2 py-1 whitespace-pre-wrap break-all">{formatDisplayValue(change.oldValue)}</pre>
+						<pre class="text-xs text-amber-600 dark:text-amber-400 bg-amber-500/10 rounded px-2 py-1 whitespace-pre-wrap break-all">{formatDisplayValue(change.newValue)}</pre>
 					</div>
 				{:else}
 					<!-- Simple values: inline -->

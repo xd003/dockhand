@@ -66,11 +66,11 @@
 	});
 </script>
 
-<div class="flex items-center gap-3 {className}">
-	<Icon class="{headerIconClass()} {iconClass}" />
-	<h1 class="{headerTextClass()} font-bold">{title}</h1>
+<div class="flex items-center gap-3 min-w-0 {className}">
+	<Icon class="{headerIconClass()} {iconClass} shrink-0" />
+	<h1 class="{headerTextClass()} font-bold min-w-0 truncate">{title}</h1>
 	{#if countDisplay()}
-		<Badge variant="secondary" class="text-xs tabular-nums {countClass} justify-center">
+		<Badge variant="secondary" class="text-xs tabular-nums shrink-0 {countClass} justify-center">
 			{countDisplay()}
 		</Badge>
 	{/if}

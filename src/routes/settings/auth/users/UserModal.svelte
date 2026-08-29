@@ -324,7 +324,7 @@
 </script>
 
 <Dialog.Root bind:open onOpenChange={(o) => { if (o) { formError = ''; formErrors = {}; focusFirstInput(); } }}>
-	<Dialog.Content class="max-w-2xl">
+	<Dialog.Content class="max-w-2xl flex max-h-[calc(100dvh-1rem)] flex-col overflow-hidden">
 		<Dialog.Header>
 			<Dialog.Title class="flex items-center gap-2">
 				{#if isEditing}
@@ -336,8 +336,8 @@
 				{/if}
 			</Dialog.Title>
 		</Dialog.Header>
-		<form onsubmit={handleSubmit}>
-		<div class="space-y-5">
+		<form onsubmit={handleSubmit} class="flex min-h-0 flex-1 flex-col">
+		<div class="min-h-0 flex-1 space-y-5 overflow-y-auto">
 			{#if formError}
 				<Alert.Root variant="destructive">
 					<TriangleAlert class="h-4 w-4" />
@@ -359,7 +359,7 @@
 					<User class="w-4 h-4" />
 					User details
 				</h3>
-				<div class="grid grid-cols-2 gap-4">
+				<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
 					<div class="space-y-2">
 						<Label>Username {#if !isEditing}<span class="text-destructive">*</span>{/if}</Label>
 						<Input
@@ -403,7 +403,7 @@
 						<KeyRound class="w-4 h-4" />
 						Password
 					</h3>
-					<div class="grid grid-cols-2 gap-4">
+					<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
 						<div class="space-y-2">
 							{#if isEditing}
 								<Label>New password <span class="text-muted-foreground text-xs">(leave blank to keep current)</span></Label>
@@ -490,7 +490,7 @@
 									<Shield class="w-3.5 h-3.5" />
 									System roles
 								</p>
-								<div class="grid grid-cols-3 gap-2">
+								<div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
 									{#each systemRoles as role}
 										{@const isAssigned = formRoleAssignments.some(a => a.roleId === role.id)}
 										{@const RoleIcon = getRoleIcon(role.name)}
@@ -518,7 +518,7 @@
 									<Globe class="w-3.5 h-3.5" />
 									Custom roles
 								</p>
-								<div class="grid grid-cols-2 gap-2">
+								<div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
 									{#each customRoles as role}
 										{@const isAssigned = formRoleAssignments.some(a => a.roleId === role.id)}
 										{@const envCount = role.environmentIds?.length ?? 0}

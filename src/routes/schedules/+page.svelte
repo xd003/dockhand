@@ -8,6 +8,7 @@
 	import * as Select from '$lib/components/ui/select';
 	import * as Dialog from '$lib/components/ui/dialog';
 	import * as Tooltip from '$lib/components/ui/tooltip';
+	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
 	import {
 		Calendar,
 		RefreshCw,
@@ -45,7 +46,8 @@
 		PackageCheck,
 		FolderCheck,
 		Eraser,
-		ShieldCheck
+		ShieldCheck,
+		EllipsisVertical
 	} from 'lucide-svelte';
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import { DataGrid } from '$lib/components/data-grid';
@@ -939,15 +941,43 @@
 
 <div class="flex-1 min-h-0 flex flex-col gap-3 overflow-hidden">
 	<!-- Header with filters -->
-	<div class="shrink-0 flex flex-wrap justify-between items-center gap-3 min-h-8">
-		<PageHeader icon={Timer} title="Schedules" count={filteredSchedules.length} />
-		<div class="flex flex-wrap items-center gap-2">
-			<div class="relative">
+	<div class="flex min-h-8 shrink-0 flex-col gap-3 md:flex-row md:flex-wrap md:items-center md:justify-between">
+		<div class="flex w-full items-center justify-between gap-2 md:w-auto">
+			<PageHeader icon={Timer} title="Schedules" count={filteredSchedules.length} showConnection={false} />
+			<DropdownMenu.Root>
+				<DropdownMenu.Trigger>
+					{#snippet child({ props })}
+						<button {...props} type="button" class="flex size-11 shrink-0 items-center justify-center rounded-lg hover:bg-muted md:hidden" aria-label="Schedule actions">
+							<EllipsisVertical class="size-5" />
+						</button>
+					{/snippet}
+				</DropdownMenu.Trigger>
+				<DropdownMenu.Content align="end" class="w-56 p-1">
+					<DropdownMenu.Item onclick={() => { refreshing = true; loadSchedules(); }} disabled={refreshing} class="min-h-11">
+						<RefreshCw class={refreshing ? 'animate-spin' : ''} />
+						Refresh
+					</DropdownMenu.Item>
+					<DropdownMenu.Item onclick={clearFilters} disabled={!hasActiveFilters} class="min-h-11">
+						<X />
+						Clear filters
+					</DropdownMenu.Item>
+					{#if systemJobCount > 0}
+						<DropdownMenu.Item onclick={toggleHideSystemJobs} class="min-h-11">
+							{#if hideSystemJobs}<Eye />{:else}<EyeOff />{/if}
+							{hideSystemJobs ? `Show system (${systemJobCount})` : 'Hide system'}
+						</DropdownMenu.Item>
+					{/if}
+				</DropdownMenu.Content>
+			</DropdownMenu.Root>
+		</div>
+		<div class="grid w-full min-w-0 grid-cols-2 items-center gap-2 md:flex md:w-auto md:flex-wrap">
+			<div class="relative min-w-0">
 				<Search class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
 				<Input
 					type="text"
+					aria-label="Search schedules"
 					placeholder="Search schedules..."
-					class="pl-9 w-48 h-8 text-sm"
+					class="h-11 w-full pl-9 text-sm md:h-8 md:w-48"
 					bind:value={searchQuery}
 					onkeydown={(e) => e.key === 'Escape' && (searchQuery = '')}
 				/>
@@ -955,7 +985,7 @@
 
 			<!-- Type filter (multiselect) -->
 			<Select.Root type="multiple" bind:value={filterTypes}>
-				<Select.Trigger size="sm" class="w-40 text-sm">
+				<Select.Trigger size="sm" class="w-full text-sm data-[size=sm]:h-11 md:w-40 md:data-[size=sm]:h-8">
 					<span class="truncate">
 						{#if filterTypes.length === 0}
 							All types
@@ -1040,7 +1070,7 @@
 
 			<!-- Environment filter (multiselect) -->
 			<Select.Root type="multiple" bind:value={filterEnvironments}>
-				<Select.Trigger size="sm" class="w-40 text-sm">
+				<Select.Trigger size="sm" class="w-full text-sm data-[size=sm]:h-11 md:w-40 md:data-[size=sm]:h-8">
 					<Server class="w-3.5 h-3.5 mr-2 shrink-0" />
 					<span class="truncate">
 						{#if filterEnvironments.length === 0}
@@ -1073,7 +1103,7 @@
 
 			<!-- Status filter (multiselect) -->
 			<Select.Root type="multiple" bind:value={filterStatuses}>
-				<Select.Trigger size="sm" class="w-36 text-sm">
+				<Select.Trigger size="sm" class="w-full text-sm data-[size=sm]:h-11 md:w-36 md:data-[size=sm]:h-8">
 					<span class="truncate">
 						{#if filterStatuses.length === 0}
 							All statuses
@@ -1134,7 +1164,7 @@
 				<Button
 					variant={hideSystemJobs ? 'outline' : 'secondary'}
 					size="sm"
-					class="h-8"
+					class="hidden h-8 md:inline-flex"
 					onclick={toggleHideSystemJobs}
 				>
 					{#if hideSystemJobs}
@@ -1151,9 +1181,10 @@
 			<Button
 				variant="outline"
 				size="sm"
-				class="h-8 px-2"
+				class="hidden h-8 px-2 md:inline-flex"
 				onclick={clearFilters}
 				disabled={!hasActiveFilters}
+				aria-label="Clear filters"
 				title="Clear all filters"
 			>
 				<X class="w-3.5 h-3.5" />
@@ -1162,9 +1193,10 @@
 			<Button
 				variant="outline"
 				size="sm"
-				class="h-8 w-8 p-0"
+				class="hidden h-8 w-8 p-0 md:inline-flex"
 				onclick={() => { refreshing = true; loadSchedules(); }}
 				disabled={refreshing}
+				aria-label="Refresh schedules"
 			>
 				<RefreshCw class="w-3.5 h-3.5 {refreshing ? 'animate-spin' : ''}" />
 			</Button>
@@ -1227,7 +1259,7 @@
 					{:else}
 						<Wrench class="w-4 h-4 text-amber-500 shrink-0" />
 					{/if}
-					<div class="min-w-0">
+					<div class="min-w-0 flex-1">
 						<div class="font-medium flex items-center gap-2 truncate">
 							<span class="truncate">{schedule.name}</span>
 							{#if schedule.isSystem}
@@ -1347,15 +1379,18 @@
 								{@const EnvUpdateIcon = envUpdateStatus.icon}
 								<Badge variant="default" class={envUpdateStatus.class}>
 									<EnvUpdateIcon class="w-3.5 h-3.5" />
+									<span class="hidden max-sm:inline text-xs">{envUpdateStatus.label}</span>
 								</Badge>
 							{:else if isBlockedByVuln}
 								<Badge variant="default" class="bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
 									<Bug class="w-3.5 h-3.5" />
+									<span class="hidden max-sm:inline text-xs">Blocked</span>
 								</Badge>
 							{:else}
 								{@const BadgeIcon = badge.icon}
 								<Badge variant={badge.variant} class={badge.class}>
 									<BadgeIcon class="w-3.5 h-3.5 {schedule.lastExecution.status === 'running' ? 'animate-spin' : ''}" />
+									<span class="hidden max-sm:inline text-xs capitalize">{schedule.lastExecution.status === 'skipped' ? 'Up-to-date' : schedule.lastExecution.status}</span>
 								</Badge>
 							{/if}
 						</Tooltip.Trigger>
@@ -1378,6 +1413,7 @@
 						<Tooltip.Trigger>
 							<Badge variant="default" class="bg-slate-100 text-slate-700 dark:bg-slate-900/30 dark:text-slate-400">
 								<Minus class="w-3.5 h-3.5" />
+								<span class="hidden max-sm:inline text-xs">No runs</span>
 							</Badge>
 						</Tooltip.Trigger>
 						<Tooltip.Content>
@@ -1392,9 +1428,11 @@
 							type="button"
 							onclick={(e) => { e.stopPropagation(); loadExecutionDetail(schedule.lastExecution!.id); }}
 							title="View last execution logs"
+							aria-label="View last execution logs"
 							class="p-0.5 rounded hover:bg-muted transition-colors opacity-70 hover:opacity-100 cursor-pointer"
 						>
 							<FileText class="grid-action-icon grid-action-logs text-muted-foreground hover:text-blue-500" />
+							<span class="md:hidden">Last log</span>
 						</button>
 					{/if}
 					{#if canEditSchedules}
@@ -1402,12 +1440,15 @@
 							type="button"
 							onclick={(e) => { e.stopPropagation(); toggleScheduleEnabled(schedule); }}
 							title={schedule.enabled ? 'Pause schedule' : 'Resume schedule'}
+							aria-label={schedule.enabled ? 'Pause schedule' : 'Resume schedule'}
 							class="p-0.5 rounded hover:bg-muted transition-colors opacity-70 hover:opacity-100 cursor-pointer"
 						>
 							{#if schedule.enabled}
 								<Pause class="grid-action-icon grid-action-pause text-muted-foreground hover:text-amber-500" />
+								<span class="md:hidden">Pause</span>
 							{:else}
 								<PlayCircle class="grid-action-icon grid-action-start text-muted-foreground hover:text-green-500" />
+								<span class="md:hidden">Resume</span>
 							{/if}
 						</button>
 					{/if}
@@ -1416,9 +1457,11 @@
 							type="button"
 							onclick={(e) => { e.stopPropagation(); triggerSchedule(schedule); }}
 							title="Run now"
+							aria-label="Run schedule now"
 							class="p-0.5 rounded hover:bg-muted transition-colors opacity-70 hover:opacity-100 cursor-pointer"
 						>
 							<Play class="grid-action-icon grid-action-start text-muted-foreground hover:text-green-500" />
+							<span class="md:hidden">Run now</span>
 						</button>
 					{/if}
 					{#if canEditSchedules && !schedule.isSystem}
@@ -1434,6 +1477,7 @@
 						>
 							{#snippet children({ open })}
 								<Trash2 class="grid-action-icon grid-action-delete {open ? 'text-destructive' : 'text-muted-foreground hover:text-red-500'}" />
+								<span class="md:hidden">Remove</span>
 							{/snippet}
 						</ConfirmPopover>
 					{/if}
@@ -1446,7 +1490,7 @@
 			{@const executions = expandedExecutions.get(scheduleKey) || []}
 			{@const isLoading = loadingMoreExecutions.has(scheduleKey)}
 			{@const canLoadMore = hasMoreExecutions.get(scheduleKey) ?? false}
-			<div class="p-4 pl-12 shadow-inner bg-muted isolate sticky left-0 max-w-[calc(100vw-18rem)]">
+			<div class="p-4 pl-12 max-sm:pl-4 max-sm:max-w-full shadow-inner bg-muted isolate sticky left-0 max-w-[calc(100vw-18rem)]">
 				<div class="flex items-center justify-between mb-2">
 					<h4 class="text-xs font-medium">Execution history</h4>
 					{#if executions.length > 0 && canEditSchedules}
@@ -1517,7 +1561,7 @@
 											{#if exec.errorMessage}
 												<span class="text-destructive">{cleanError(exec.errorMessage)}</span>
 											{:else if exec.status === 'success' && exec.details?.dataAdded !== undefined}
-												<span class="text-muted-foreground">{exec.details.filesNew ?? 0} new, {exec.details.filesChanged ?? 0} changed · {formatBytes(exec.details.dataAdded ?? 0)} added</span>
+												<span class="max-sm:hidden text-muted-foreground">{exec.details.filesNew ?? 0} new, {exec.details.filesChanged ?? 0} changed · {formatBytes(exec.details.dataAdded ?? 0)} added</span>
 											{/if}
 										</td>
 										<td class="px-2 py-1">
@@ -1587,8 +1631,8 @@
 <!-- Execution Detail Dialog -->
 <Dialog.Root bind:open={showExecutionDialog}>
 	<Dialog.Content class="max-w-5xl h-[85vh] overflow-hidden flex flex-col">
-		<Dialog.Header class="flex flex-row items-center justify-between gap-4">
-			<Dialog.Title class="flex items-center gap-2">
+		<Dialog.Header class="flex flex-row items-center justify-between gap-4 max-sm:flex-col max-sm:items-start max-sm:gap-1.5">
+			<Dialog.Title class="flex items-center gap-2 max-sm:flex-wrap max-sm:pr-12">
 				{#if selectedExecution?.scheduleType === 'container_update'}
 					<CircleArrowUp class="w-5 h-5 text-green-500 glow-green" />
 				{:else if selectedExecution?.scheduleType === 'git_repository_sync' || selectedExecution?.scheduleType === 'git_stack_sync'}
@@ -1610,7 +1654,7 @@
 				{/if}
 			</Dialog.Title>
 			{#if selectedExecution}
-				<span class="text-xs text-muted-foreground shrink-0 pr-6 whitespace-nowrap inline-flex items-center gap-1">
+				<span class="text-xs text-muted-foreground shrink-0 pr-6 max-sm:pr-12 max-sm:whitespace-normal max-sm:flex-wrap inline-flex items-center gap-1">
 					{formatTimestamp(selectedExecution.triggeredAt, selectedExecutionTimezone)} · <Timer class="w-3 h-3 -mt-px" /> {formatDuration(selectedExecution.duration)}
 				</span>
 			{/if}

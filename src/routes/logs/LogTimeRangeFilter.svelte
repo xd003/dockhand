@@ -90,13 +90,13 @@
 
 <Popover.Root bind:open onOpenChange={(v) => { if (v) picking = sinceDate && !untilDate ? 'to' : 'from'; }}>
 	<Popover.Trigger
-		class="flex items-center gap-1.5 px-2 py-1 rounded text-xs transition-colors {hasFilter ? (darkMode ? 'bg-amber-500/20 ring-1 ring-amber-500/50 text-amber-400' : 'bg-amber-500/30 ring-1 ring-amber-600/50 text-amber-700') : darkMode ? 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-300'}"
+		class="flex min-h-9 max-sm:min-h-11 max-w-full items-center gap-1.5 px-2 max-sm:px-3 py-1 max-sm:py-2 rounded text-xs transition-colors {hasFilter ? (darkMode ? 'bg-amber-500/20 ring-1 ring-amber-500/50 text-amber-400' : 'bg-amber-500/30 ring-1 ring-amber-600/50 text-amber-700') : darkMode ? 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-300'}"
 		title={hasFilter ? `Time range: ${formatLabel()}` : 'Filter logs by time range'}
 	>
 		<CalendarClock class="w-3 h-3" />
-		{#if hasFilter}<span class="tabular-nums">{formatLabel()}</span>{/if}
+		{#if hasFilter}<span class="tabular-nums truncate max-w-[12rem]">{formatLabel()}</span>{/if}
 	</Popover.Trigger>
-	<Popover.Content class="w-auto p-0 z-[200]" align="start">
+	<Popover.Content class="w-auto max-w-[calc(100vw-1rem)] max-h-[calc(100dvh-1rem)] overflow-auto p-0 z-[200]" align="start">
 		<div class="flex flex-col">
 			<!-- From/To tabs -->
 			<div class="flex border-b border-border">

@@ -225,7 +225,7 @@
 								{#if layer.CreatedBy}
 									<div class="space-y-1">
 										<p class="text-xs font-medium text-muted-foreground">Command</p>
-										<code class="block text-xs bg-muted p-2 rounded overflow-x-auto whitespace-pre-wrap break-all">
+										<code class="block text-xs bg-muted p-2 rounded whitespace-pre-wrap break-all">
 											{@html highlightCommand(layer.CreatedBy)}
 										</code>
 									</div>

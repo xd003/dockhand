@@ -36,9 +36,10 @@
 			failed: FailedCheckItem[];
 			newerVersions: NewerVersionItem[];
 		}) => void;
+		menuItem?: boolean;
 	}
 
-	let { envId, hasPendingUpdates = false, onComplete }: Props = $props();
+	let { envId, hasPendingUpdates = false, onComplete, menuItem = false }: Props = $props();
 
 	type Status = 'idle' | 'checking' | 'found' | 'none' | 'error';
 	let status = $state<Status>('idle');
@@ -174,11 +175,11 @@
 <Button
 	bind:ref={btnEl}
 	size="sm"
-	variant="outline"
+	variant={menuItem ? 'ghost' : 'outline'}
 	onclick={checkForUpdates}
 	disabled={status === 'checking'}
 	title="Check for available updates"
-	class="relative overflow-hidden"
+	class={menuItem ? 'relative h-11 w-full justify-start overflow-hidden rounded-sm px-2 shadow-none' : 'relative overflow-hidden'}
 >
 	{#if displayStatus === 'checking'}
 		<CircleArrowUp class="w-3.5 h-3.5 animate-spin" />

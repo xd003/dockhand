@@ -380,21 +380,21 @@
 
 <!-- Environments Tab Content -->
 <div class="space-y-4">
-	<div class="flex justify-between items-center">
-		<div class="flex items-center gap-3">
+	<div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+		<div class="flex items-center gap-3 max-sm:hidden">
 			<Badge variant="secondary" class="text-xs">{environments.length} total</Badge>
 		</div>
-		<div class="flex gap-2">
+		<div class="grid grid-flow-col auto-cols-fr gap-2 sm:flex">
 			{#if $canAccess('environments', 'create')}
-				<Button size="sm" onclick={openAddEnvModal}>
+				<Button size="sm" class="h-11 sm:h-8" onclick={openAddEnvModal}>
 					<Plus class="w-4 h-4 mr-1" />
-					Add environment
+					<span class="sm:hidden">Add</span><span class="max-sm:hidden">Add environment</span>
 				</Button>
 			{/if}
 			<Button
 				size="sm"
 				variant="outline"
-				class="min-w-[100px]"
+				class="h-11 sm:h-8 sm:min-w-[100px]"
 				onclick={testAllConnections}
 				disabled={testingAll || environments.length === 0}
 			>
@@ -405,7 +405,7 @@
 				{/if}
 				<span class="w-14">Test all</span>
 			</Button>
-			<Button size="sm" variant="outline" onclick={fetchEnvironments}>Refresh</Button>
+			<Button size="sm" variant="outline" class="h-11 sm:h-8" onclick={fetchEnvironments}>Refresh</Button>
 		</div>
 	</div>
 
@@ -415,7 +415,7 @@
 		<p class="text-muted-foreground text-sm">No environments found</p>
 	{:else}
 		<div class="border rounded-lg overflow-hidden">
-			<Table.Root>
+			<Table.Root class="responsive-table">
 				<Table.Header>
 					<Table.Row>
 						<Table.Head class="w-[200px]">Name</Table.Head>
@@ -436,7 +436,7 @@
 						{@const hasScannerEnabled = envScannerStatus[env.id]}
 						<Table.Row>
 							<!-- Name Column -->
-							<Table.Cell>
+							<Table.Cell data-label="Name">
 								<div class="flex items-center gap-2">
 									<EnvironmentIcon icon={env.icon || 'globe'} envId={env.id} class="w-4 h-4 text-muted-foreground shrink-0" />
 									{#if env.connectionType === 'socket' || !env.connectionType}
@@ -461,7 +461,7 @@
 							</Table.Cell>
 
 							<!-- Connection Column -->
-							<Table.Cell>
+							<Table.Cell data-label="Connection">
 								<span class="text-sm text-muted-foreground">
 									{#if env.connectionType === 'socket' || !env.connectionType}
 										{env.socketPath || '/var/run/docker.sock'}
@@ -474,7 +474,7 @@
 							</Table.Cell>
 
 							<!-- Labels Column -->
-							<Table.Cell>
+							<Table.Cell data-label="Labels">
 								{#if env.labels && env.labels.length > 0}
 									<div class="flex flex-wrap gap-1">
 										{#each env.labels as label}
@@ -493,7 +493,7 @@
 							</Table.Cell>
 
 							<!-- Timezone Column -->
-							<Table.Cell>
+							<Table.Cell data-label="Timezone">
 								{#if env.timezone}
 									<div class="flex items-center gap-1.5">
 										<Clock class="w-3.5 h-3.5 text-muted-foreground" />
@@ -505,7 +505,7 @@
 							</Table.Cell>
 
 							<!-- Features Column -->
-							<Table.Cell>
+							<Table.Cell data-label="Features">
 								<div class="flex items-center gap-1.5">
 									{#if env.updateCheckEnabled}
 										<span title={env.updateCheckAutoUpdate ? "Auto-update enabled" : "Update check enabled (notify only)"}>
@@ -543,7 +543,7 @@
 							</Table.Cell>
 
 							<!-- Status Column -->
-							<Table.Cell>
+							<Table.Cell data-label="Status">
 								{#if testResult}
 									{#if testResult.success}
 										<div class="flex items-center gap-1.5 text-green-600 dark:text-green-400 text-sm">
@@ -575,7 +575,7 @@
 							</Table.Cell>
 
 							<!-- Docker Version Column -->
-							<Table.Cell>
+							<Table.Cell data-label="Docker">
 								{#if testResult?.info?.serverVersion}
 									<div class="flex items-center gap-1.5">
 										<span class="text-sm text-muted-foreground">{testResult.info.serverVersion}</span>
@@ -589,7 +589,7 @@
 							</Table.Cell>
 
 							<!-- Hawser Version Column -->
-							<Table.Cell>
+							<Table.Cell data-label="Hawser">
 								{#if testResult?.hawser?.hawserVersion}
 									<span class="text-sm text-muted-foreground">{testResult.hawser.hawserVersion}</span>
 								{:else if env.hawserVersion}
@@ -600,12 +600,12 @@
 							</Table.Cell>
 
 							<!-- Actions Column -->
-							<Table.Cell class="text-right">
-								<div class="flex items-center justify-end gap-1">
+							<Table.Cell class="environment-actions text-right" data-label="Actions">
+								<div class="grid grid-cols-2 gap-2 md:flex md:items-center md:justify-end md:gap-1">
 									<Button
 										variant="ghost"
 										size="sm"
-										class="h-7 px-2"
+										class="h-11 gap-1.5 px-2 md:h-7"
 										onclick={() => testConnection(env.id)}
 										disabled={isTesting}
 										title="Test connection"
@@ -615,16 +615,18 @@
 										{:else}
 											<Wifi class="w-3.5 h-3.5" />
 										{/if}
+										<span class="text-xs md:hidden">Test</span>
 									</Button>
 									{#if $canAccess('environments', 'edit')}
 										<Button
 											variant="ghost"
 											size="sm"
-											class="h-7 px-2"
+											class="h-11 gap-1.5 px-2 md:h-7"
 											onclick={() => openEditEnvModal(env)}
 											title="Edit environment"
 										>
 											<Pencil class="w-3.5 h-3.5" />
+											<span class="text-xs md:hidden">Edit</span>
 										</Button>
 									{/if}
 									{#if $canAccess('containers', 'remove') && $canAccess('images', 'remove') && $canAccess('volumes', 'remove') && $canAccess('networks', 'remove')}
@@ -642,7 +644,7 @@
 												<Button
 													variant="ghost"
 													size="sm"
-													class="h-7 px-2"
+													class="h-11 gap-1.5 px-2 md:h-7"
 													disabled={pruneStatus[env.id] === 'pruning'}
 													title="Prune system"
 												>
@@ -655,6 +657,7 @@
 													{:else}
 														<Icon iconNode={broom} class="w-3.5 h-3.5" />
 													{/if}
+													<span class="text-xs md:hidden">Prune</span>
 												</Button>
 											{/snippet}
 										</ConfirmPopover>
@@ -663,11 +666,12 @@
 										<Button
 											variant="ghost"
 											size="sm"
-											class="h-7 px-2 text-muted-foreground hover:text-destructive"
+											class="h-11 gap-1.5 px-2 text-muted-foreground hover:text-destructive md:h-7"
 											title="Delete environment"
 											onclick={() => requestDeleteEnvironment(env.id)}
 										>
 											<Trash2 class="w-3.5 h-3.5" />
+											<span class="text-xs md:hidden">Delete</span>
 										</Button>
 									{/if}
 								</div>
@@ -708,7 +712,7 @@
 						<code class="text-xs bg-muted px-1 py-0.5 rounded">{deleteEnvTarget.name}</code>
 						and the following directories will be permanently removed from the Dockhand host:
 					</p>
-					<div class="space-y-1 text-xs font-mono bg-muted/40 rounded-md p-3 border overflow-x-auto">
+					<div class="space-y-1 text-xs font-mono bg-muted/40 rounded-md p-3 border break-all">
 						<div class="flex items-center gap-2 whitespace-nowrap">
 							<Trash2 class="w-3.5 h-3.5 shrink-0 text-destructive" />
 							<code class="whitespace-nowrap">$DATA_DIR/stacks/{deleteEnvTarget.name}/</code>

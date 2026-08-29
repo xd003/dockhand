@@ -78,8 +78,8 @@
 		<p class="mt-1 text-xs text-muted-foreground">Run a backup — its history appears here.</p>
 	</div>
 {:else}
-	<div class="overflow-x-auto">
-		<table class="w-full text-xs">
+	<div class="overflow-hidden">
+		<table class="responsive-table w-full text-xs">
 			<thead>
 				<tr class="border-b text-left text-muted-foreground">
 					<th class="py-1.5 pl-2 font-medium">Run</th>
@@ -99,19 +99,19 @@
 					{@const isFail = exec.status === 'failed'}
 					{@const isOpen = expanded.has(exec.id)}
 					<tr class="border-b text-xs last:border-0 hover:bg-muted/30">
-						<td class="py-1.5 pl-2">{#if exec.triggeredAt}{formatDateTime(exec.triggeredAt, true)} <span class="text-muted-foreground opacity-60">({formatRelativeTime(exec.triggeredAt)})</span>{:else}—{/if}</td>
-						<td class="py-1.5 pl-2 text-center">
+						<td data-label="Run" class="py-1.5 pl-2">{#if exec.triggeredAt}{formatDateTime(exec.triggeredAt, true)} <span class="text-muted-foreground opacity-60">({formatRelativeTime(exec.triggeredAt)})</span>{:else}—{/if}</td>
+						<td data-label="Trigger" class="py-1.5 pl-2 text-center">
 							<span class="inline-flex h-5 w-5 items-center justify-center rounded bg-muted text-muted-foreground" title={triggerLabel(exec.triggeredBy)}>
 								<TrigIcon class="h-3 w-3" />
 							</span>
 						</td>
-						<td class="py-1.5 pl-2 text-muted-foreground">{formatDuration(exec.duration)}</td>
-						<td class="py-1.5 pl-2 text-center">
+						<td data-label="Duration" class="py-1.5 pl-2 text-muted-foreground">{formatDuration(exec.duration)}</td>
+						<td data-label="Status" class="py-1.5 pl-2 text-center">
 							<span class="inline-flex h-5 w-5 items-center justify-center rounded {badge.cls}" title={exec.status}>
 								<BadgeIcon class="h-3 w-3 {exec.status === 'running' ? 'animate-spin' : ''}" />
 							</span>
 						</td>
-						<td class="max-w-[360px] truncate py-1.5 pl-2" title={exec.errorMessage || ''}>
+						<td data-label="Detail" class="max-w-[360px] truncate py-1.5 pl-2" title={exec.errorMessage || ''}>
 							{#if exec.errorMessage}
 								<span class="text-destructive">{cleanError(exec.errorMessage)}</span>
 							{:else if exec.status === 'success' && exec.details?.dataAdded !== undefined}
@@ -122,7 +122,7 @@
 						</td>
 						{#if showRepo}
 							{@const RepoIcon = getRepoTypeIcon(exec._repository || "")}
-							<td class="max-w-[180px] truncate py-1.5 pl-2 text-muted-foreground" title={exec._repository || exec._destinationName || ""}>
+							<td data-label="Repo" class="max-w-[180px] truncate py-1.5 pl-2 text-muted-foreground" title={exec._repository || exec._destinationName || ""}>
 								{#if exec._repository || exec._destinationName}
 									<span class="inline-flex items-center gap-1.5"><RepoIcon class="h-3 w-3 shrink-0" /><span class="truncate">{exec._destinationName || exec._repository}</span></span>
 								{:else}
@@ -130,7 +130,7 @@
 								{/if}
 							</td>
 						{/if}
-						<td class="py-1.5 pr-2 text-right">
+						<td data-label="Actions" class="py-1.5 pr-2 text-right">
 							<div class="flex items-center justify-end gap-0.5">
 								{#if onViewLog}
 									<button type="button" class="rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" onclick={() => onViewLog?.(exec.id)} title="View log">

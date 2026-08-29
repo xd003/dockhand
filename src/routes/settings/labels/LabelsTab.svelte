@@ -229,15 +229,15 @@
 <div class="p-4 space-y-4">
 	<Card.Root>
 		<Card.Header class="pb-3">
-			<div class="flex items-center justify-between">
-				<div class="flex items-center gap-2">
-					<Tags class="w-5 h-5 text-muted-foreground" />
-					<div>
+			<div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+				<div class="flex items-center gap-2 min-w-0">
+					<Tags class="w-5 h-5 text-muted-foreground shrink-0" />
+					<div class="min-w-0">
 						<Card.Title class="text-base">Environment labels</Card.Title>
 						<Card.Description>Manage labels across all environments. Renaming or deleting a label applies to every environment using it.</Card.Description>
 					</div>
 				</div>
-				<div class="flex items-center gap-2">
+				<div class="flex items-center gap-2 shrink-0">
 					{#if !loading}
 						<Badge variant="secondary" class="text-xs">{labels.length} label{labels.length !== 1 ? 's' : ''}</Badge>
 					{/if}
@@ -246,7 +246,7 @@
 						variant="outline"
 						onclick={openAddDialog}
 						disabled={!$canAccess('environments', 'edit')}
-						class="h-7 text-xs"
+						class="h-9 text-xs sm:h-7"
 					>
 						<Plus class="w-3.5 h-3.5" />
 						Add label
@@ -267,7 +267,7 @@
 					<p class="text-xs">Click "Add label" to create one and assign it to environments</p>
 				</div>
 			{:else}
-				<Table.Root>
+				<Table.Root class="min-w-[560px]">
 					<Table.Header>
 						<Table.Row>
 							<Table.Head class="w-[200px]">Label</Table.Head>

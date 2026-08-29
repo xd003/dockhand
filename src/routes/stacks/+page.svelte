@@ -13,8 +13,9 @@
 	import { Checkbox } from '$lib/components/ui/checkbox';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import * as Popover from '$lib/components/ui/popover';
+	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
 	import MultiSelectFilter from '$lib/components/MultiSelectFilter.svelte';
-import { Play, Square, Trash2, Plus, ArrowBigDown, Search, Pencil, ExternalLink, GitBranch, RefreshCw, Loader2, FileCode, FileText, FileOutput, Box, RotateCcw, ScrollText, Terminal, Eye, Network, HardDrive, Heart, HeartPulse, HeartOff, ChevronsUpDown, ChevronsDownUp, Rocket, AlertTriangle, X, Layers, Pause, CircleDashed, Skull, FolderOpen, Variable, Clock, RotateCw, Import, Ship, Cable, LayoutPanelLeft, Rows3, GripVertical, Globe, CircleArrowUp, NotepadText, Tag, Copy, Check, ArrowRightCircle } from 'lucide-svelte';
+import { Play, Square, Trash2, Plus, ArrowBigDown, Search, SearchX, Pencil, ExternalLink, GitBranch, RefreshCw, Loader2, FileCode, FileText, FileOutput, Box, RotateCcw, ScrollText, Terminal, Eye, Network, HardDrive, Heart, HeartPulse, HeartOff, ChevronsUpDown, ChevronsDownUp, Rocket, AlertTriangle, X, Layers, Pause, CircleDashed, Skull, FolderOpen, Variable, Clock, RotateCw, Import, Ship, Cable, LayoutPanelLeft, Rows3, GripVertical, Globe, CircleArrowUp, NotepadText, Tag, Copy, Check, ArrowRightCircle, EllipsisVertical, SlidersHorizontal, ChevronDown } from 'lucide-svelte';
 	import { formatPorts } from '$lib/utils/port-format';
 	import { parseCustomUrl } from '$lib/utils/custom-url';
 	import { extractTraefikUrls } from '$lib/utils/traefik-urls';
@@ -48,6 +49,7 @@ import { Play, Square, Trash2, Plus, ArrowBigDown, Search, Pencil, ExternalLink,
 	import { readJobResponse } from '$lib/utils/sse-fetch';
 	import { EmptyState, NoEnvironment } from '$lib/components/ui/empty-state';
 	import PageHeader from '$lib/components/PageHeader.svelte';
+	import SelectionToolbar from '$lib/components/SelectionToolbar.svelte';
 	import { DataGrid } from '$lib/components/data-grid';
 	import type { DataGridSortState } from '$lib/components/data-grid/types';
 	import { ErrorDialog } from '$lib/components/ui/error-dialog';
@@ -381,6 +383,49 @@ let stackSources = $state<Record<string, { sourceType: string; composePath?: str
 	let searchQuery = $state(initialSearch);
 	let sortField = $state<SortField>('name');
 	let sortDirection = $state<SortDirection>('asc');
+	let swipedStack = $state<string | null>(null);
+	let draggingStack: string | null = null;
+	let dragStartX = 0;
+	let dragOffset = $state(0);
+	let suppressStackTap = false;
+
+	function startStackSwipe(event: PointerEvent, stackName: string) {
+		draggingStack = stackName;
+		dragStartX = event.clientX;
+		dragOffset = swipedStack === stackName ? -144 : 0;
+		(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+	}
+
+	function moveStackSwipe(event: PointerEvent, stackName: string) {
+		if (draggingStack !== stackName) return;
+		const startOffset = swipedStack === stackName ? -144 : 0;
+		dragOffset = Math.max(-144, Math.min(0, startOffset + event.clientX - dragStartX));
+		if (Math.abs(event.clientX - dragStartX) > 8) suppressStackTap = true;
+	}
+
+	function endStackSwipe(stackName: string) {
+		if (draggingStack !== stackName) return;
+		swipedStack = dragOffset <= -50 ? stackName : null;
+		dragOffset = 0;
+		draggingStack = null;
+	}
+
+	function mobileStackOffset(stackName: string): number {
+		if (draggingStack === stackName) return dragOffset;
+		return swipedStack === stackName ? -144 : 0;
+	}
+
+	function handleMobileStackTap(stackName: string) {
+		if (suppressStackTap) {
+			suppressStackTap = false;
+			return;
+		}
+		if (swipedStack) {
+			swipedStack = null;
+			return;
+		}
+		toggleExpand(stackName);
+	}
 
 	// Status filter state
 	const STATUS_FILTER_STORAGE_KEY = 'dockhand-stacks-status-filter';
@@ -1202,6 +1247,24 @@ let gitMigratingStackId = $state<number | null>(null);
 		}
 	}
 
+	function getMobileStatusClasses(status: string): string {
+		const base = 'inline-flex min-w-[5.75rem] items-center justify-center gap-1 rounded-full border px-2 py-1 text-xs font-semibold capitalize whitespace-nowrap';
+		switch (status.toLowerCase()) {
+			case 'running':
+				return `${base} border-emerald-500/30 bg-emerald-500/15 text-emerald-400`;
+			case 'stopped':
+				return `${base} border-destructive/30 bg-destructive/15 text-destructive`;
+			case 'partial':
+				return `${base} border-amber-500/30 bg-amber-500/15 text-amber-400`;
+			case 'restarting':
+				return `${base} border-orange-500/30 bg-orange-500/15 text-orange-400`;
+			case 'not deployed':
+				return `${base} border-violet-500/30 bg-violet-500/15 text-violet-400`;
+			default:
+				return `${base} border-border bg-muted/60 text-muted-foreground`;
+		}
+	}
+
 	function toggleSort(field: SortField) {
 		if (sortField === field) {
 			sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
@@ -1497,7 +1560,37 @@ let gitMigratingStackId = $state<number | null>(null);
 </script>
 
 <div class="flex-1 min-h-0 flex flex-col gap-3 overflow-hidden">
-	<div class="shrink-0 flex flex-wrap justify-between items-center gap-3 min-h-8">
+	<div class="flex shrink-0 items-center justify-between gap-2 md:hidden">
+		<PageHeader icon={Layers} title="Compose stacks" count={stacks.length} showConnection={false} class="gap-2" countClass="min-w-7" />
+		<DropdownMenu.Root>
+			<DropdownMenu.Trigger>
+				{#snippet child({ props })}
+					<button {...props} type="button" class="flex size-11 shrink-0 items-center justify-center rounded-lg hover:bg-muted" aria-label="Stack actions">
+						<EllipsisVertical class="size-5" />
+					</button>
+				{/snippet}
+			</DropdownMenu.Trigger>
+			<DropdownMenu.Content align="end" class="w-56 p-1">
+				<DropdownMenu.Item onclick={fetchStacks} class="min-h-11">
+					<RefreshCw />
+					Refresh
+				</DropdownMenu.Item>
+				<CheckUpdatesButton
+					menuItem
+					{envId}
+					hasPendingUpdates={stacks.some((s) => s.updatesAvailable)}
+					onComplete={(result) => {
+						const failed = result.failed ?? [];
+						failedUpdateCheckIds = new Set(failed.map((f) => f.containerId));
+						failedUpdateCheckErrors = new Map(failed.map((f) => [f.containerId, f.error]));
+						fetchStacks();
+					}}
+				/>
+			</DropdownMenu.Content>
+		</DropdownMenu.Root>
+	</div>
+
+	<div class="hidden shrink-0 flex-wrap items-center justify-between gap-3 min-h-8 min-w-0 md:flex">
 		<PageHeader icon={Layers} title="Compose stacks" count={stacks.length}>
 			{#if stacks.length > 0}
 				<button
@@ -1521,6 +1614,7 @@ let gitMigratingStackId = $state<number | null>(null);
 				<Search class="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
 				<Input
 					type="text"
+					aria-label="Search stacks"
 					placeholder="Search stacks..."
 					bind:value={searchInput}
 					onkeydown={(e) => e.key === 'Escape' && (searchInput = '')}
@@ -1588,17 +1682,9 @@ let gitMigratingStackId = $state<number | null>(null);
 	</div>
 
 	<!-- Selection bar - always reserve space to prevent layout shift -->
-	<div class="h-4 shrink-0">
+	<div class="hidden h-4 shrink-0 flex-wrap items-center gap-1 md:flex">
 		{#if selectedStacks.size > 0}
-			<div class="flex items-center gap-1 text-xs text-muted-foreground h-full">
-			<span>{selectedInFilter.length} selected</span>
-			<button
-				type="button"
-				class="inline-flex items-center gap-1 px-1.5 py-0 rounded border border-border hover:border-foreground/30 hover:shadow transition-all"
-				onclick={selectNone}
-			>
-				Clear
-			</button>
+			<SelectionToolbar count={selectedInFilter.length} onClear={selectNone} />
 			{#if selectedStopped.length > 0 && $canAccess('stacks', 'start')}
 				<ConfirmPopover
 					open={confirmBulkStart}
@@ -1696,7 +1782,6 @@ let gitMigratingStackId = $state<number | null>(null);
 				{/snippet}
 			</ConfirmPopover>
 			{/if}
-			</div>
 		{/if}
 	</div>
 
@@ -1709,16 +1794,222 @@ let gitMigratingStackId = $state<number | null>(null);
 			description="Create a stack or deploy from Git to get started"
 		/>
 	{:else}
+		<div class="min-h-0 min-w-0 flex-1 overflow-y-auto md:hidden">
+			<div class="sticky top-0 z-20 flex w-full min-w-0 gap-2 bg-background pb-3">
+				<div class="relative min-w-0 flex-1 basis-0">
+					<Search class="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+					<Input
+						type="search"
+						aria-label="Search stacks"
+						placeholder="Search stacks..."
+						bind:value={searchInput}
+						onkeydown={(e) => e.key === 'Escape' && (searchInput = '')}
+						class="h-11 rounded-lg pl-10"
+					/>
+				</div>
+				<div class="min-w-0 flex-1 basis-0">
+					<MultiSelectFilter
+						bind:value={statusFilter}
+						options={stackStatusTypes}
+						placeholder="All statuses"
+						pluralLabel="statuses"
+						width="w-full data-[size=sm]:h-11"
+						defaultIcon={SlidersHorizontal}
+					/>
+				</div>
+			</div>
+
+			{#if filteredStacks.length === 0}
+				<div class="flex min-h-48 flex-col items-center justify-center gap-3 rounded-xl border border-dashed px-6 text-center">
+					<SearchX class="size-6 text-muted-foreground" />
+					<div>
+						<p class="text-sm font-medium">No stacks match your filters</p>
+						<p class="mt-1 text-xs text-muted-foreground">Try another search or clear the active filters.</p>
+					</div>
+					<Button variant="outline" size="sm" class="min-h-11" onclick={() => { searchInput = ''; statusFilter = []; }}>Clear filters</Button>
+				</div>
+			{:else}
+			<div class="space-y-2 pb-[calc(6rem+env(safe-area-inset-bottom))]">
+				{#each filteredStacks as stack (stack.name)}
+					{@const source = getStackSource(stack.name)}
+					{@const stats = getStackStats(stack)}
+					{@const displayStatus = getDisplayStatus(stack)}
+					{@const StatusIcon = getStackStatusIcon(displayStatus)}
+					<div class="overflow-hidden rounded-xl border bg-card/60 shadow-sm">
+						<div class="relative overflow-hidden">
+							<div
+								class="absolute inset-y-0 right-0 flex w-36 {swipedStack === stack.name ? '' : 'pointer-events-none'}"
+								aria-hidden={swipedStack !== stack.name}
+								inert={swipedStack !== stack.name}
+							>
+								{#if displayStatus === 'running' || displayStatus === 'partial' || displayStatus === 'restarting'}
+									{#if $canAccess('stacks', 'restart')}
+										<button type="button" onclick={() => { swipedStack = null; restartStack(stack.name); }} class="flex min-h-11 flex-1 flex-col items-center justify-center gap-1 bg-amber-500/15 text-xs font-medium text-amber-400">
+											<RotateCcw class="size-4" />
+											Restart
+										</button>
+									{/if}
+									{#if $canAccess('stacks', 'stop')}
+										<div class="flex flex-1 [&>button]:w-full">
+											<ConfirmPopover action="Stop" itemType="stack" itemName={stack.name} title="Stop" unstyled onConfirm={() => { swipedStack = null; stopStack(stack.name); }}>
+												{#snippet children()}
+													<span class="flex h-full w-full flex-col items-center justify-center gap-1 bg-destructive/15 text-xs font-medium text-destructive">
+														<Square class="size-4" />
+														Stop
+													</span>
+												{/snippet}
+											</ConfirmPopover>
+										</div>
+									{/if}
+								{:else if displayStatus !== 'not deployed' && $canAccess('stacks', 'start')}
+									<button type="button" onclick={() => { swipedStack = null; startStack(stack.name); }} class="flex min-h-11 w-full flex-col items-center justify-center gap-1 bg-emerald-500/15 text-xs font-medium text-emerald-400">
+										<Play class="size-4" />
+										Start
+									</button>
+								{/if}
+							</div>
+							<button
+								type="button"
+								class="relative flex min-h-16 w-full touch-pan-y items-start gap-2.5 bg-card px-3 py-2.5 text-left transition-transform"
+								style={`transform: translateX(${mobileStackOffset(stack.name)}px)`}
+								onpointerdown={(event) => startStackSwipe(event, stack.name)}
+								onpointermove={(event) => moveStackSwipe(event, stack.name)}
+								onpointerup={() => endStackSwipe(stack.name)}
+								onpointercancel={() => endStackSwipe(stack.name)}
+								onclick={() => handleMobileStackTap(stack.name)}
+								aria-expanded={expandedStacks.has(stack.name)}
+							>
+								{#if source.icon}
+									<StackIcon icon={source.icon} stackName={stack.name} envId={$currentEnvironment?.id ?? null} class="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+								{/if}
+								<div class="min-w-0 flex-1">
+									<span class="block truncate text-sm font-semibold">{stack.name}</span>
+									<div class="mt-1.5 grid min-w-0 grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-1.5">
+										<div class="min-w-0 justify-self-start truncate">
+											{#if source.sourceType === 'git'}
+												<GitSourceBadge {source} compact showTooltip={false} />
+											{:else if source.sourceType === 'internal'}
+												<span class="inline-flex max-w-full items-center gap-1 truncate rounded-md border border-primary/25 bg-primary/10 px-1.5 py-0.5 text-xs text-primary"><FileCode class="size-3 shrink-0" />Internal</span>
+											{:else}
+												<span class="inline-flex max-w-full items-center gap-1 truncate rounded-md border border-border bg-muted/60 px-1.5 py-0.5 text-xs text-muted-foreground"><ExternalLink class="size-3 shrink-0" />Untracked</span>
+											{/if}
+										</div>
+										<span class={getMobileStatusClasses(displayStatus)}><StatusIcon class="size-3" />{displayStatus}</span>
+										<span class="inline-flex shrink-0 items-center gap-1 text-xs tabular-nums text-muted-foreground">
+											<Box class="size-3" />
+											{stack.containers.length}
+										</span>
+								</div>
+								</div>
+								<ChevronDown class="mt-0.5 size-4 shrink-0 text-muted-foreground transition-transform {expandedStacks.has(stack.name) ? 'rotate-180' : ''}" />
+							</button>
+						</div>
+
+						{#if expandedStacks.has(stack.name)}
+							<div class="space-y-3 border-t bg-muted/20 p-3">
+								<p class="text-xs font-medium text-muted-foreground">Resources</p>
+								<div class="grid grid-cols-2 gap-2">
+									<div class="rounded-lg bg-background/80 p-2.5"><div class="text-xs text-muted-foreground">CPU</div><div class="mt-0.5 truncate font-mono text-xs font-semibold">{stats ? `${stats.cpuPercent.toFixed(1)}%` : '-'}</div></div>
+									<div class="rounded-lg bg-background/80 p-2.5"><div class="text-xs text-muted-foreground">Memory</div><div class="mt-0.5 truncate font-mono text-xs font-semibold">{stats ? `${formatBytesCompact(stats.memoryUsage)} / ${formatBytesCompact(stats.memoryLimit, 0)}` : '-'}</div></div>
+									<div class="rounded-lg bg-background/80 p-2.5"><div class="text-xs text-muted-foreground">Net I/O</div><div class="mt-0.5 truncate font-mono text-xs font-semibold">{stats ? `↓${formatBytesCompact(stats.networkRx, 0)} ↑${formatBytesCompact(stats.networkTx, 0)}` : '-'}</div></div>
+									<div class="rounded-lg bg-background/80 p-2.5"><div class="text-xs text-muted-foreground">Disk I/O</div><div class="mt-0.5 truncate font-mono text-xs font-semibold">{stats ? `r${formatBytesCompact(stats.blockRead, 0)} w${formatBytesCompact(stats.blockWrite, 0)}` : '-'}</div></div>
+									<div class="rounded-lg bg-background/80 p-2.5"><div class="text-xs text-muted-foreground">Networks</div><div class="mt-0.5 font-mono text-xs font-semibold">{getStackNetworkCount(stack)}</div></div>
+									<div class="rounded-lg bg-background/80 p-2.5"><div class="text-xs text-muted-foreground">Volumes</div><div class="mt-0.5 font-mono text-xs font-semibold">{getStackVolumeCount(stack)}</div></div>
+								</div>
+
+								<p class="pt-1 text-xs font-medium text-muted-foreground">Actions</p>
+								<div class="grid grid-cols-2 gap-2">
+									{#if (stack.status === 'not deployed' || stack.status === 'created') && source.gitStack}
+										{#if $canAccess('stacks', 'edit')}
+											<button type="button" onclick={() => openGitModal(source.gitStack)} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><Pencil class="size-4" />Edit Git stack</button>
+										{/if}
+										<GitDeployProgressPopover stackId={source.gitStack.id} stackName={stack.name} onComplete={fetchStacks}>
+											{#snippet children()}
+												<button type="button" class="flex min-h-11 w-full items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><Rocket class="size-4" />Deploy</button>
+											{/snippet}
+										</GitDeployProgressPopover>
+									{:else}
+										{#if source.sourceType === 'git' && source.gitStack}
+											<GitDeployProgressPopover stackId={source.gitStack.id} stackName={stack.name} onComplete={fetchStacks}>
+												{#snippet children()}
+													<button type="button" class="flex min-h-11 w-full items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><RefreshCw class="size-4" />Sync from Git</button>
+												{/snippet}
+											</GitDeployProgressPopover>
+										{/if}
+										{#if source.sourceType === 'git' && source.gitStack?.engine === 'stack' && $canAccess('stacks', 'edit')}
+											<button type="button" onclick={() => migrateGitStackFromList(source.gitStack)} disabled={gitMigratingStackId === source.gitStack.id} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted disabled:opacity-50"><ArrowRightCircle class="size-4" />Migrate Git mode</button>
+										{/if}
+										{#if $canAccess('stacks', 'edit')}
+											<button type="button" onclick={() => source.sourceType === 'git' && source.gitStack ? openGitModal(source.gitStack) : editStack(stack.name)} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><Pencil class="size-4" />Edit</button>
+										{/if}
+										{#if stack.containers.length > 0}
+											<button type="button" onclick={() => viewStackLogs(stack)} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><ScrollText class="size-4" />View logs</button>
+										{/if}
+										{#if source.sourceType !== 'git' && source.sourceType !== 'external' && $canAccess('stacks', 'start')}
+											<div class="[&>button]:w-full [&>button]:p-0 [&>button]:opacity-100">
+												<RedeployPopover stackName={stack.name} {envId} disabled={stackActionLoading === stack.name} onDeploy={(options) => redeployStack(stack.name, options)}>
+													{#snippet children()}
+														<span class="flex min-h-11 w-full items-center justify-center gap-2 rounded-lg border bg-background px-3 text-xs font-medium hover:bg-muted"><Rocket class="size-4" />Redeploy</span>
+													{/snippet}
+												</RedeployPopover>
+											</div>
+										{/if}
+										{#if stack.status !== 'running' && stack.status !== 'partial' && stack.status !== 'restarting'}
+											{#if $canAccess('stacks', 'start')}
+												<button type="button" onclick={() => startStack(stack.name)} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><Play class="size-4" />Start</button>
+											{/if}
+										{:else}
+											{#if $canAccess('stacks', 'restart')}
+												<button type="button" onclick={() => restartStack(stack.name)} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><RotateCcw class="size-4" />Restart</button>
+											{/if}
+										{#if $canAccess('stacks', 'stop')}
+											<div class="[&>button]:w-full">
+												<ConfirmPopover action="Stop" itemType="stack" itemName={stack.name} title="Stop" unstyled onConfirm={() => stopStack(stack.name)}>
+													{#snippet children()}
+														<span class="flex min-h-11 w-full items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><Square class="size-4" />Stop</span>
+													{/snippet}
+												</ConfirmPopover>
+											</div>
+										{/if}
+										{/if}
+									{/if}
+								</div>
+
+								{#if $canAccess('stacks', 'stop') || $canAccess('stacks', 'remove')}
+									<div class="grid grid-cols-2 gap-2 border-t pt-3">
+										{#if $canAccess('stacks', 'stop') && stack.status !== 'created' && stack.status !== 'not deployed'}
+											<div class="[&>button]:w-full">
+												<ConfirmPopover action="Down" itemType="stack" itemName={stack.name} title="Down (remove containers)" unstyled onConfirm={() => downStack(stack.name)}>
+													{#snippet children()}
+														<span class="flex min-h-11 w-full items-center justify-center gap-2 rounded-lg border border-red-500/50 px-2 text-xs font-medium text-red-400"><ArrowBigDown class="size-4" />Down containers</span>
+													{/snippet}
+												</ConfirmPopover>
+											</div>
+										{/if}
+										{#if $canAccess('stacks', 'remove')}
+											<button type="button" onclick={() => { deleteStackName = stack.name; showDeleteModal = true; }} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border border-red-500/50 px-2 text-xs font-medium text-red-400"><Trash2 class="size-4" />Remove</button>
+										{/if}
+									</div>
+								{/if}
+							</div>
+						{/if}
+					</div>
+				{/each}
+			</div>
+			{/if}
+		</div>
+
 		<!-- Main content area - changes layout based on mode -->
 		<div
 			bind:this={mainContentRef}
-			class="flex-1 min-h-0 {layoutMode === 'vertical' ? 'flex gap-3' : 'flex flex-col gap-3'}"
+			class="hidden flex-1 min-h-0 md:flex {layoutMode === 'vertical' ? 'gap-3' : 'flex-col gap-3'}"
 		>
 		<DataGrid
 			data={filteredStacks}
 			keyField="name"
 			gridId="stacks"
 			loading={loading}
+			wrapperClass="border bg-card/40 shadow-sm"
 			selectable
 			bind:selectedKeys={selectedStacks}
 			expandable
@@ -1936,10 +2227,10 @@ let gitMigratingStackId = $state<number | null>(null);
 									{/if}
 								</span>
 							</Tooltip.Trigger>
-							<Tooltip.Content class="max-w-none p-2">
+							<Tooltip.Content class="max-w-[min(32rem,calc(100vw-1rem))] p-2">
 								<div class="space-y-1">
 									{#each paths as path}
-										<p class="font-mono text-xs leading-snug whitespace-nowrap">{path}</p>
+										<p class="font-mono text-xs leading-snug break-all">{path}</p>
 									{/each}
 								</div>
 							</Tooltip.Content>
@@ -2276,7 +2567,7 @@ let gitMigratingStackId = $state<number | null>(null);
 								onOpenChange={(open) => confirmDownName = open ? stack.name : null}
 							>
 								{#snippet children({ open })}
-									<ArrowBigDown class="grid-action-icon grid-action-stop {stackDownLoading === stack.name ? 'animate-bounce text-orange-500' : open ? 'text-orange-500' : 'text-muted-foreground hover:text-orange-500'}" />
+									<ArrowBigDown class="grid-action-icon grid-action-stop {stackDownLoading === stack.name ? 'animate-pulse text-orange-500' : open ? 'text-orange-500' : 'text-muted-foreground hover:text-orange-500'}" />
 								{/snippet}
 							</ConfirmPopover>
 						{/if}
@@ -2296,11 +2587,11 @@ let gitMigratingStackId = $state<number | null>(null);
 
 			{#snippet expandedRow(stack, rowState)}
 				{#if stack.containerDetails?.length > 0}
-					<div class="p-4 pl-12 shadow-inner bg-muted/30">
+					<div class="stack-expanded-content p-2 sm:p-4 sm:pl-12 shadow-inner bg-muted/30">
 						<div class="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3">
 							{#each stack.containerDetails as container (container.id)}
 								{@const isLoading = containerActionLoading === container.id}
-								<div class="p-3 rounded-lg bg-background border text-xs">
+								<div class="stack-container-card min-w-0 p-3 rounded-lg bg-background border text-xs">
 									<div class="flex items-center gap-2 mb-2">
 										{#if $appSettings.useSelfhstIcons || iconOverrides[container.name]}
 											<!-- override + its custom-icon key use the real container.name; name=
@@ -2591,7 +2882,7 @@ let gitMigratingStackId = $state<number | null>(null);
 											</span>
 										{/if}
 									</div>
-									<div class="flex items-center justify-between pt-2 border-t border-muted">
+									<div class="stack-container-actions flex items-center justify-between pt-2 border-t border-muted">
 										<div class="flex gap-1">
 											<button
 												type="button"
@@ -2788,17 +3079,53 @@ let gitMigratingStackId = $state<number | null>(null);
 		{#if layoutMode === 'horizontal' && currentLogsContainerId}
 			{@const activeLog = activeLogs.find(l => l.containerId === currentLogsContainerId)}
 			{#if activeLog}
-				<LogsPanel
-					containerId={activeLog.containerId}
-					containerName={activeLog.containerName}
-					visible={true}
-					envId={envId}
-					onClose={() => closeLogs(activeLog.containerId)}
-				/>
+				<div class="hidden md:block">
+					<LogsPanel
+						containerId={activeLog.containerId}
+						containerName={activeLog.containerName}
+						visible={true}
+						envId={envId}
+						onClose={() => closeLogs(activeLog.containerId)}
+					/>
+				</div>
 			{/if}
 		{/if}
 	{/if}
 </div>
+
+{#if $canAccess('stacks', 'create') && $currentEnvironment}
+	<div class="fixed bottom-[max(1rem,env(safe-area-inset-bottom))] right-4 z-40 md:hidden">
+		<DropdownMenu.Root>
+			<DropdownMenu.Trigger>
+				{#snippet child({ props })}
+					<button
+						{...props}
+						type="button"
+						class="flex size-14 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg transition-transform hover:scale-105 active:scale-95"
+						aria-label="Create stack"
+						title="Create stack"
+					>
+						<Plus class="size-6" />
+					</button>
+				{/snippet}
+			</DropdownMenu.Trigger>
+			<DropdownMenu.Content align="end" side="top" sideOffset={8} class="w-48 p-1">
+				<DropdownMenu.Item onclick={() => showCreateModal = true} class="min-h-11">
+					<Plus />
+					Create stack
+				</DropdownMenu.Item>
+				<DropdownMenu.Item onclick={() => openGitModal()} class="min-h-11">
+					<GitBranch />
+					From Git
+				</DropdownMenu.Item>
+				<DropdownMenu.Item onclick={() => showImportModal = true} class="min-h-11">
+					<Import />
+					Adopt
+				</DropdownMenu.Item>
+			</DropdownMenu.Content>
+		</DropdownMenu.Root>
+	</div>
+{/if}
 
 <!-- Create Stack Modal -->
 <StackModal

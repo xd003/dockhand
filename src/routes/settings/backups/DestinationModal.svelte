@@ -552,7 +552,7 @@
 </script>
 
 <Dialog.Root bind:open onOpenChange={(o) => { if (o) { formError = ''; repoConflictName = null; focusFirstInput(); } }}>
-	<Dialog.Content class="max-w-4xl max-h-[90vh] flex flex-col overflow-hidden">
+	<Dialog.Content class="max-w-4xl max-h-[calc(100dvh-1rem)] flex flex-col overflow-hidden">
 		<Dialog.Header>
 			<Dialog.Title>{isEditing ? 'Edit backup destination' : 'Add backup destination'}</Dialog.Title>
 			<Dialog.Description>{isEditing ? 'Update backup destination settings' : 'Configure a restic backup repository'}</Dialog.Description>
@@ -560,14 +560,14 @@
 
 		{#if formError}<p class="text-sm text-destructive">{formError}</p>{/if}
 
-		<div class="flex-1 overflow-y-auto pr-3">
+		<div class="min-h-0 flex-1 overflow-y-auto pr-3">
 		{#if selectedBackend.value === 'local'}
 			<div class="flex items-start gap-2 p-2.5 mt-4 rounded-md bg-amber-500/10 border border-amber-500/20 text-xs text-amber-600 dark:text-amber-400">
 				<HardDrive class="w-3.5 h-3.5 shrink-0 mt-0.5" />
 				<span>Enter the path as Dockhand sees it inside its own container (the container side of your backup volume mount, e.g. <code>/app/local-backups/...</code>), not the host path. Local path repositories work on the local Docker host, or a co-located socket-proxy on that same host. For remote hosts, use S3, REST, or another remote backend.</span>
 			</div>
 		{/if}
-		<div class="grid grid-cols-2 gap-6 py-4">
+		<div class="grid grid-cols-1 sm:grid-cols-2 gap-6 py-4">
 			<!-- Left column: connection -->
 			<div class="space-y-4">
 				<div class="space-y-2">
@@ -618,7 +618,7 @@
 									formFields.region = v;
 									formFields.endpoint = regionalEndpoint(v);
 								}}>
-									<Select.Trigger class="w-36 shrink-0" aria-label="AWS regions quick pick">AWS regions</Select.Trigger>
+									<Select.Trigger class="w-full sm:w-36 shrink-0" aria-label="AWS regions quick pick">AWS regions</Select.Trigger>
 									<Select.Content class="max-h-64">
 										{#each AWS_REGIONS as r}
 											<Select.Item value={r}>{r}</Select.Item>
@@ -744,7 +744,7 @@
 			<p class="text-xs text-muted-foreground -mt-1">
 				For a backend served over HTTPS with a private/self-signed CA. Leave blank to use the system trust store.
 			</p>
-			<div class="grid grid-cols-2 gap-6">
+			<div class="grid grid-cols-1 sm:grid-cols-2 gap-6">
 				<div class="space-y-1">
 					<div class="flex items-center justify-between">
 						<Label for="dest-cacert">CA certificate</Label>
@@ -904,7 +904,7 @@
 					{/if}
 				</div>
 				{#if repoStats}
-					<div class="grid grid-cols-3 gap-2">
+					<div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
 						<div class="bg-muted/30 rounded px-2 py-1.5 text-center border border-border/30">
 							<div class="text-sm font-semibold">{formatBytes(repoStats.totalSize)}</div>
 							<div class="text-[9px] text-muted-foreground">Size</div>

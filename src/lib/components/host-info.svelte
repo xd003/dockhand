@@ -378,30 +378,31 @@
 
 </script>
 
-<div class="flex items-center gap-3 min-w-0 {textSizeClass()} text-muted-foreground">
+<div class="flex items-center gap-3 min-w-0 max-md:flex-1 {textSizeClass()} text-muted-foreground">
 	<!-- Environment Selector - always show -->
-	<div class="relative env-dropdown">
+	<div class="relative env-dropdown min-w-0 max-md:flex-1 max-w-[min(55vw,28rem)] md:max-w-none md:shrink-0">
 		<button
+			type="button"
 			onclick={() => (showDropdown = !showDropdown)}
-			class="flex items-center gap-1.5 -ml-1 px-1 py-1 rounded-md hover:bg-muted transition-colors cursor-pointer"
+			class="flex max-md:w-full items-center gap-1.5 -ml-1 px-1 py-1 rounded-md hover:bg-muted transition-colors cursor-pointer min-w-0"
 		>
 			{#if hostInfo?.environment && Number(hostInfo.environment.id) === Number(currentEnvId)}
 				<EnvironmentIcon icon={hostInfo.environment.icon || 'globe'} envId={hostInfo.environment.id} class="{iconSizeLargeClass()} text-primary" />
-				<span class="font-medium text-foreground">{hostInfo.environment.name}</span>
+					<span class="font-medium text-foreground truncate min-w-0">{hostInfo.environment.name}</span>
 			{:else if currentEnvId && envList.length > 0}
 				{@const currentEnv = envList.find(e => Number(e.id) === Number(currentEnvId))}
 				{#if currentEnv}
 					<EnvironmentIcon icon={currentEnv.icon || 'globe'} envId={currentEnv.id} class="{iconSizeLargeClass()} text-primary" />
-					<span class="font-medium text-foreground">{currentEnv.name}</span>
+					<span class="font-medium text-foreground truncate min-w-0">{currentEnv.name}</span>
 				{:else}
 					<Globe class="{iconSizeLargeClass()} text-muted-foreground" />
-					<span class="font-medium text-foreground">Select environment</span>
+					<span class="font-medium text-foreground truncate min-w-0">Select environment</span>
 				{/if}
 			{:else}
 				<Globe class="{iconSizeLargeClass()} text-muted-foreground" />
-				<span class="font-medium text-foreground">No environments</span>
+					<span class="font-medium text-foreground truncate min-w-0">No environments</span>
 			{/if}
-			<ChevronDown class="{iconSizeClass()}" />
+			<ChevronDown class="{iconSizeClass()} shrink-0" />
 		</button>
 
 		{#if showDropdown && envList.length > 0}
@@ -473,89 +474,91 @@
 	</div>
 
 	{#if hostInfo}
-		<span class="text-border">|</span>
+		<span class="shrink-0 text-border">|</span>
 
 		<!-- Hostname / IP (#962) — first info segment after the env dropdown.
 		     Hidden on narrow viewports to keep the strip readable. -->
 		{#if hostLabel}
-			<div class="hidden xl:flex items-center gap-1" title="Daemon hostname / IP">
-				<Server class="{iconSizeClass()}" />
+			<div class="hidden xl:flex items-center gap-1.5 shrink-0 whitespace-nowrap" title="Daemon hostname / IP">
+				<Server class="{iconSizeClass()} shrink-0" />
 				<span>{hostLabel}</span>
 			</div>
-			<span class="hidden xl:inline text-border">|</span>
+			<span class="hidden xl:inline shrink-0 text-border">|</span>
 		{/if}
 
 		<!-- Platform/OS -->
-		<span class="hidden md:inline">{hostInfo.platform} {hostInfo.arch}</span>
+		<span class="hidden md:inline shrink-0 whitespace-nowrap">{hostInfo.platform} {hostInfo.arch}</span>
 
-		<span class="hidden md:inline text-border">|</span>
+		<span class="hidden md:inline shrink-0 text-border">|</span>
 
 		<!-- Docker version -->
-		<span class="hidden md:inline">Docker {hostInfo.dockerVersion}</span>
+		<span class="hidden md:inline shrink-0 whitespace-nowrap">Docker {hostInfo.dockerVersion}</span>
 
-		<span class="hidden md:inline text-border">|</span>
+		<span class="hidden md:inline shrink-0 text-border">|</span>
 
 		<!-- Connection type -->
-		<div class="hidden md:flex items-center gap-1">
+		<div class="hidden md:flex items-center gap-1.5 shrink-0 whitespace-nowrap">
 			{#if hostInfo.environment?.connectionType === 'hawser-standard'}
-				<Route class="{iconSizeClass()}" />
+				<Route class="{iconSizeClass()} shrink-0" />
 				<span>Hawser (standard){hostInfo.environment.hawserVersion ? ` ${hostInfo.environment.hawserVersion}` : ''}</span>
 			{:else if hostInfo.environment?.connectionType === 'hawser-edge'}
-				<UndoDot class="{iconSizeClass()}" />
+				<UndoDot class="{iconSizeClass()} shrink-0" />
 				<span>Hawser (edge){hostInfo.environment.hawserVersion ? ` ${hostInfo.environment.hawserVersion}` : ''}</span>
 			{:else}
-				<Icon iconNode={whale} class="{iconSizeClass()}" />
+				<Icon iconNode={whale} class="{iconSizeClass()} shrink-0" />
 				<span>Socket</span>
 			{/if}
 		</div>
 
-		<span class="hidden md:inline text-border">|</span>
+		<span class="hidden md:inline shrink-0 text-border">|</span>
 
 		<!-- CPU cores -->
 		{#if hostInfo.cpus > 0}
-			<span class="hidden lg:inline">{hostInfo.cpus} cores</span>
-			<span class="hidden lg:inline text-border">|</span>
+			<span class="hidden lg:inline shrink-0 whitespace-nowrap">{hostInfo.cpus} cores</span>
+			<span class="hidden lg:inline shrink-0 text-border">|</span>
 		{/if}
 
 		<!-- Memory -->
 		{#if hostInfo.totalMemory > 0}
-			<span class="hidden lg:inline">{formatBytes(hostInfo.totalMemory)} RAM</span>
-			<span class="hidden lg:inline text-border">|</span>
+			<span class="hidden lg:inline shrink-0 whitespace-nowrap">{formatBytes(hostInfo.totalMemory)} RAM</span>
+			<span class="hidden lg:inline shrink-0 text-border">|</span>
 		{/if}
 
 		<!-- Disk usage - only show when data is available (hide on timeout/error) -->
 		{#if diskUsage && !diskUsageLoading}
-			<div class="hidden xl:flex items-center gap-1">
-				<HardDrive class="{iconSizeClass()}" />
+			<div class="hidden xl:flex items-center gap-1.5 shrink-0 whitespace-nowrap">
+				<HardDrive class="{iconSizeClass()} shrink-0" />
 				<span>{formatBytes(totalDiskUsage())}</span>
 			</div>
-			<span class="hidden xl:inline text-border">|</span>
+			<span class="hidden xl:inline shrink-0 text-border">|</span>
 		{/if}
 
 		<!-- Uptime - hidden for direct remote connections without Hawser -->
 		{#if hostInfo.uptime > 0}
-			<div class="hidden xl:flex items-center gap-1">
-				<Clock class="{iconSizeClass()}" />
+			<div class="hidden xl:flex items-center gap-1.5 shrink-0 whitespace-nowrap">
+				<Clock class="{iconSizeClass()} shrink-0" />
 				<span>{formatUptime(hostInfo.uptime)}</span>
 			</div>
-			<span class="hidden xl:inline text-border">|</span>
+			<span class="hidden xl:inline shrink-0 text-border">|</span>
 		{/if}
 
-		<!-- Live indicator with timestamp -->
-		<div
-			class="flex items-center gap-2 {isConnected ? 'text-emerald-500' : 'text-muted-foreground'}"
-			title={isConnected ? 'Live updates connected' : 'Live updates disconnected'}
-		>
-			<span
-				class="text-muted-foreground tabular-nums"
-				title={`${currentTimezone} - data refreshed at ${formatClock(lastUpdated, currentTimezone)}`}
-			>{formatClock(now, currentTimezone)}</span>
-			{#if isConnected}
-				<Wifi class="{iconSizeLargeClass()}" />
-				<span class="font-medium">Live</span>
-			{:else}
-				<WifiOff class="{iconSizeLargeClass()}" />
-			{/if}
-		</div>
 	{/if}
+
+	<!-- Keep connection status visible while host details are still loading. -->
+	<div
+		class="flex items-center gap-2 shrink-0 whitespace-nowrap {isConnected ? 'text-emerald-500' : 'text-muted-foreground'}"
+		title={isConnected ? 'Live updates connected' : 'Live updates disconnected'}
+		aria-label={isConnected ? 'Live updates connected' : 'Live updates disconnected'}
+	>
+		<span
+			class="text-muted-foreground tabular-nums"
+			title={`${currentTimezone} - data refreshed at ${formatClock(lastUpdated, currentTimezone)}`}
+		>{formatClock(now, currentTimezone)}</span>
+		{#if isConnected}
+			<Wifi class="{iconSizeLargeClass()} shrink-0" />
+			<span class="font-medium">Live</span>
+		{:else}
+			<WifiOff class="{iconSizeLargeClass()} shrink-0" />
+		{/if}
+	</div>
 </div>

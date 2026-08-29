@@ -11,6 +11,7 @@
 	import type { GridId, ColumnConfig, ColumnPreference } from '$lib/types';
 	import type { DataGridSortState, DataGridRowState } from './types';
 	import { setDataGridContext } from './context';
+	import { IsMobile } from '$lib/hooks/is-mobile.svelte';
 
 	// Props
 	interface Props {
@@ -127,6 +128,7 @@
 
 	// Column configuration
 	const columnConfigs = getAllColumnConfigs(gridId);
+	const isMobile = new IsMobile();
 	const columnConfigMap = new Map(columnConfigs.map((c) => [c.id, c]));
 	const fixedStartCols = columnConfigs.filter((c) => c.fixed === 'start').map((c) => c.id);
 	const fixedEndCols = columnConfigs.filter((c) => c.fixed === 'end').map((c) => c.id);
@@ -145,6 +147,10 @@
 		const fixedIds = new Set([...fixedStartCols, ...fixedEndCols]);
 		return prefs.columns.filter((c) => c.visible && !fixedIds.has(c.id)).map((c) => c.id);
 	});
+	const mobileSummaryColumn = $derived(
+		['status', 'state', 'driver', 'tags', 'image'].find((id) => id !== orderedColumns[0] && orderedColumns.includes(id))
+			?? orderedColumns[1]
+	);
 
 	// Identify visible grow columns (columns with grow: true that are currently visible)
 	const visibleGrowCols = $derived(
@@ -182,9 +188,9 @@
 
 	// Helper to get base width for a column (without grow calculation)
 	function getBaseWidth(colId: string): number {
-		if (localWidths.has(colId)) return localWidths.get(colId)!;
-		if (savedWidths.has(colId)) return savedWidths.get(colId)!;
-		return columnConfigMap.get(colId)?.width ?? 100;
+		const config = columnConfigMap.get(colId);
+		const width = localWidths.get(colId) ?? savedWidths.get(colId) ?? config?.width ?? 100;
+		return Math.max(config?.minWidth ?? 0, width);
 	}
 
 	// Calculate width for grow columns (distributes remaining space equally)
@@ -247,8 +253,7 @@
 		}
 
 		// For grow columns: if user has resized, use their width
-		if (localWidths.has(colId)) return localWidths.get(colId)!;
-		if (savedWidths.has(colId)) return savedWidths.get(colId)!;
+		if (localWidths.has(colId) || savedWidths.has(colId)) return getBaseWidth(colId);
 
 		// Otherwise use calculated grow width
 		if (growColumnWidth) {
@@ -256,6 +261,27 @@
 		}
 
 		return columnConfigMap.get(colId)?.width ?? 100;
+	}
+
+	function columnStyle(colId: string): string {
+		const width = `width: ${getDisplayWidth(colId)}px`;
+		const startIndex = fixedStartCols.indexOf(colId);
+		if (startIndex >= 0) {
+			const left = fixedStartCols
+				.slice(0, startIndex)
+				.reduce((total, id) => total + getDisplayWidth(id), 0);
+			return `${width}; left: ${left}px`;
+		}
+
+		const endIndex = fixedEndCols.indexOf(colId);
+		if (endIndex >= 0) {
+			const right = fixedEndCols
+				.slice(endIndex + 1)
+				.reduce((total, id) => total + getDisplayWidth(id), 0);
+			return `${width}; right: ${right}px`;
+		}
+
+		return width;
 	}
 
 	// Get column config by ID
@@ -347,6 +373,15 @@
 		}
 		expandedKeys = newKeys;
 		onExpandChange?.(key, nowExpanded);
+	}
+
+	let mobileExpandedKeys = $state(new Set<unknown>());
+
+	function toggleMobileCard(key: unknown) {
+		const next = new Set(mobileExpandedKeys);
+		if (next.has(key)) next.delete(key);
+		else next.add(key);
+		mobileExpandedKeys = next;
 	}
 
 	// Sort persistence
@@ -586,6 +621,7 @@
 		if (scrollContainer) {
 			// Track width for grow column calculation (always needed)
 			scrollContainerWidth = scrollContainer.clientWidth;
+			if (scrollContainerWidth < 768) scrollContainer.scrollLeft = 0;
 
 			// Track height for virtual scroll
 			if (virtualScroll) {
@@ -599,6 +635,7 @@
 					containerResizeRAF = null;
 					for (const entry of entries) {
 						scrollContainerWidth = entry.contentRect.width;
+						if (scrollContainerWidth < 768 && scrollContainer) scrollContainer.scrollLeft = 0;
 						if (virtualScroll) {
 							containerHeight = entry.contentRect.height;
 						}
@@ -717,7 +754,7 @@
 			<tr>
 				<!-- Fixed start columns -->
 				{#each fixedStartCols as colId (colId)}
-					<th class="py-2 px-1 font-medium {colId === 'select' ? 'select-col' : ''} {colId === 'expand' ? 'expand-col' : ''}" style="width: {getDisplayWidth(colId)}px"></th>
+					<th class="py-2 px-1 font-medium fixed-start-col {colId === 'select' ? 'select-col' : ''} {colId === 'expand' ? 'expand-col' : ''}" style={columnStyle(colId)}></th>
 				{/each}
 
 				<!-- Configurable columns -->
@@ -732,7 +769,7 @@
 
 				<!-- Fixed end columns (actions) -->
 				{#each fixedEndCols as colId (colId)}
-					<th class="text-right py-2 px-2 font-medium actions-col" style="width: {getDisplayWidth(colId)}px">
+					<th class="text-right py-2 px-2 font-medium fixed-end-col actions-col" style={columnStyle(colId)}>
 						{#if colId === 'actions'}
 							<div class="flex items-center justify-end gap-1">
 								<span>Actions</span>
@@ -748,7 +785,7 @@
 				<tr class="border-b border-muted">
 					<!-- Fixed start columns -->
 					{#each fixedStartCols as colId (colId)}
-						<td class="py-1.5 px-1 {colId === 'select' ? 'select-col' : ''} {colId === 'expand' ? 'expand-col' : ''}" style="width: {getDisplayWidth(colId)}px">
+						<td class="py-1.5 px-1 font-medium fixed-start-col {colId === 'select' ? 'select-col' : ''} {colId === 'expand' ? 'expand-col' : ''}" style={columnStyle(colId)}>
 							<Skeleton class="h-4 w-4" />
 						</td>
 					{/each}
@@ -766,7 +803,7 @@
 
 					<!-- Fixed end columns -->
 					{#each fixedEndCols as colId (colId)}
-						<td class="py-1.5 px-2 actions-col" style="width: {getDisplayWidth(colId)}px">
+						<td class="py-1.5 px-2 fixed-end-col actions-col" style={columnStyle(colId)}>
 							<Skeleton class="h-4 w-12" />
 						</td>
 					{/each}
@@ -782,7 +819,7 @@
 			<!-- Fixed start columns (select checkbox, expand chevron) -->
 			{#each fixedStartCols as colId (colId)}
 				{@const colConfig = columnConfigMap.get(colId)}
-				<th class="py-2 px-1 font-medium {colId === 'select' ? 'select-col' : ''} {colId === 'expand' ? 'expand-col' : ''}" style="width: {getDisplayWidth(colId)}px">
+				<th class="py-2 px-1 font-medium fixed-start-col {colId === 'select' ? 'select-col' : ''} {colId === 'expand' ? 'expand-col' : ''}" style={columnStyle(colId)}>
 					{#if colId === 'select' && selectable}
 						<button
 							type="button"
@@ -854,8 +891,15 @@
 
 						<!-- Resize handle -->
 						{#if isResizable(colId)}
+							<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 							<div
 								class="resize-handle"
+								role="separator"
+								tabindex="0"
+								aria-orientation="vertical"
+								aria-valuemin={colConfig.minWidth ?? 0}
+								aria-valuenow={getDisplayWidth(colId)}
+								aria-label={`Resize ${colConfig.label || colId} column`}
 								use:columnResize={{
 									onResize: (w) => handleResize(colId, w),
 									onResizeEnd: (w) => handleResizeEnd(colId, w),
@@ -870,7 +914,7 @@
 			<!-- Fixed end columns (actions) -->
 			{#each fixedEndCols as colId (colId)}
 				{@const colConfig = columnConfigMap.get(colId)}
-				<th class="text-right py-2 px-2 font-medium actions-col" style="width: {getDisplayWidth(colId)}px">
+				<th class="text-right py-2 px-2 font-medium fixed-end-col actions-col" style={columnStyle(colId)}>
 					{#if colId === 'actions'}
 						<div class="flex items-center justify-end gap-1">
 							<span>Actions</span>
@@ -884,8 +928,15 @@
 
 					<!-- Resize handle for fixed end columns -->
 					{#if isResizable(colId)}
+						<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 						<div
 							class="resize-handle resize-handle-left"
+							role="separator"
+							tabindex="0"
+							aria-orientation="vertical"
+							aria-valuemin={colConfig?.minWidth ?? 0}
+							aria-valuenow={getDisplayWidth(colId)}
+							aria-label={`Resize ${colConfig?.label || colId} column`}
 							use:columnResize={{
 								onResize: (w) => handleResize(colId, w),
 								onResizeEnd: (w) => handleResizeEnd(colId, w),
@@ -908,13 +959,24 @@
 {#snippet dataRow(item: T, rowState: ReturnType<typeof getRowState>)}
 	<tr
 		data-grid-row
-		class="group cursor-pointer {rowState.isHighlighted ? 'selected' : ''} {rowState.isSelected ? 'checkbox-selected' : ''} {rowState.isExpanded ? 'row-expanded' : ''} {rowClass?.(item) ?? ''}"
-		onclick={(e) => onRowClick?.(item, e)}
+		tabindex={onRowClick ? 0 : undefined}
+		role={onRowClick ? 'button' : undefined}
+		class="group cursor-pointer {rowState.isHighlighted ? 'selected' : ''} {rowState.isSelected ? 'checkbox-selected' : ''} {rowState.isExpanded ? 'row-expanded' : ''} {mobileExpandedKeys.has(item[keyField]) ? 'mobile-card-expanded' : ''} {rowClass?.(item) ?? ''}"
+		onclick={(e) => {
+			if (isMobile.current && onExpandChange) toggleMobileCard(item[keyField]);
+			onRowClick?.(item, e);
+		}}
+		onkeydown={(e) => {
+			if (onRowClick && (e.key === 'Enter' || e.key === ' ')) {
+				e.preventDefault();
+				onRowClick(item, e as unknown as MouseEvent);
+			}
+		}}
 	>
 		<!-- Fixed start columns (select checkbox, expand chevron) -->
 		{#each fixedStartCols as colId (colId)}
 			{@const colConfig = columnConfigMap.get(colId)}
-			<td class="py-1.5 px-1 {colId === 'select' ? 'select-col' : ''} {colId === 'expand' ? 'expand-col' : ''}" style="width: {getDisplayWidth(colId)}px">
+			<td class="py-1.5 px-1 fixed-start-col {colId === 'select' ? 'select-col' : ''} {colId === 'expand' ? 'expand-col' : ''}" style={columnStyle(colId)}>
 				{#if colId === 'select' && selectable}
 					{#if rowState.isSelectable}
 						<button
@@ -938,6 +1000,7 @@
 						onclick={(e) => {
 							e.stopPropagation();
 							toggleExpand(item[keyField]);
+							toggleMobileCard(item[keyField]);
 						}}
 						class="flex items-center justify-center transition-colors cursor-pointer opacity-50 hover:opacity-100"
 						title={rowState.isExpanded ? 'Collapse' : 'Expand'}
@@ -954,17 +1017,55 @@
 			</td>
 		{/each}
 
+		{#if !fixedStartCols.includes('expand') || !expandable}
+		<td class="mobile-card-toggle-cell">
+			<button
+				type="button"
+				aria-expanded={mobileExpandedKeys.has(item[keyField])}
+				aria-label={mobileExpandedKeys.has(item[keyField]) ? 'Hide row details' : 'Show row details'}
+				onclick={(event) => {
+					event.stopPropagation();
+					toggleMobileCard(item[keyField]);
+					if (onExpandChange) toggleExpand(item[keyField]);
+				}}
+			>
+				{#if mobileExpandedKeys.has(item[keyField])}
+					<ChevronDown class="size-4" />
+				{:else}
+					<ChevronRight class="size-4" />
+				{/if}
+			</button>
+		</td>
+		{/if}
+
 		<!-- Configurable columns -->
-		{#each orderedColumns as colId (colId)}
+		{#each orderedColumns as colId, columnIndex (colId)}
 			{@const colConfig = columnConfigMap.get(colId)}
 			{#if colConfig}
-				<td class="py-1.5 px-2 {colConfig.noTruncate ? 'no-truncate' : ''}" style="width: {getDisplayWidth(colId)}px">
-					{#if cell}
-						{@render cell(colConfig, item, rowState)}
+				<td class="py-1.5 px-2 {columnIndex === 0 ? 'mobile-primary-cell' : colId === mobileSummaryColumn ? 'mobile-summary-cell' : ''} {colConfig.noTruncate ? 'no-truncate' : ''}" style="width: {getDisplayWidth(colId)}px">
+					{#if isSortable(colId)}
+						<button
+							type="button"
+							class="mobile-grid-label"
+							onclick={(event) => {
+								event.stopPropagation();
+								toggleSort(colId);
+							}}
+						>
+							{colConfig.label}
+							<ArrowUpDown class="size-3 opacity-50" />
+						</button>
 					{:else}
-						<!-- Default: render as text -->
-						{String(item[colId as keyof T] ?? '')}
+						<span class="mobile-grid-label">{colConfig.label}</span>
 					{/if}
+					<div class="mobile-grid-value">
+						{#if cell}
+							{@render cell(colConfig, item, rowState)}
+						{:else}
+							<!-- Default: render as text -->
+							{String(item[colId as keyof T] ?? '')}
+						{/if}
+					</div>
 				</td>
 			{/if}
 		{/each}
@@ -972,19 +1073,24 @@
 		<!-- Fixed end columns (actions) -->
 		{#each fixedEndCols as colId (colId)}
 			{@const colConfig = columnConfigMap.get(colId)}
-			<td class="py-1.5 px-2 text-right actions-col" style="width: {getDisplayWidth(colId)}px" onclick={(e) => e.stopPropagation()}>
-				{#if cell}
-					{@render cell(colConfig!, item, rowState)}
-				{/if}
+			<td class="py-1.5 px-2 text-right fixed-end-col actions-col" style={columnStyle(colId)} onclick={(e) => e.stopPropagation()}>
+				<span class="mobile-grid-label">{colConfig?.label ?? 'Actions'}</span>
+				<div class="mobile-grid-value">
+					{#if cell}
+						{@render cell(colConfig!, item, rowState)}
+					{/if}
+				</div>
 			</td>
 		{/each}
 	</tr>
 
 	<!-- Expanded row content -->
 	{#if rowState.isExpanded && expandedRow}
-		<tr class="expanded-row" data-grid-row>
+		<tr class="expanded-row" data-grid-row style={`--expanded-grid-width: ${scrollContainerWidth}px`}>
 			<td colspan={fixedStartCols.length + orderedColumns.length + fixedEndCols.length}>
-				{@render expandedRow(item, rowState)}
+				<div class="data-grid-expanded-content">
+					{@render expandedRow(item, rowState)}
+				</div>
 			</td>
 		</tr>
 	{/if}
@@ -1005,7 +1111,17 @@
 	</table>
 {/snippet}
 
-<div class="flex-1 min-h-0 overflow-auto rounded-lg data-grid-wrapper {wrapperClass}" bind:this={scrollContainer} onscroll={handleScroll} onpointerover={handleRowPointerOver} onpointerout={handleRowPointerOut} onpointerleave={() => onRowPointerChange?.(false)} onpointercancel={() => onRowPointerChange?.(false)}>
+<div class="mobile-grid-toolbar">
+	{#if selectable}
+		<button type="button" onclick={toggleSelectAll}>
+			{#if allSelected || someSelected}<CheckSquare class="size-4" />{:else}<SquareIcon class="size-4" />{/if}
+			{allSelected ? 'Deselect all' : 'Select all'}
+		</button>
+	{/if}
+	<ColumnSettingsPopover {gridId} />
+</div>
+
+<div data-grid-id={gridId} class="flex-1 min-h-0 min-w-0 overflow-auto rounded-lg data-grid-wrapper {wrapperClass}" bind:this={scrollContainer} role="region" aria-label={`${gridId} data table`} onscroll={handleScroll} onpointerover={handleRowPointerOver} onpointerout={handleRowPointerOut} onpointerleave={() => onRowPointerChange?.(false)} onpointercancel={() => onRowPointerChange?.(false)}>
 	{#if loading && data.length === 0}
 		{#if loadingState}
 			{@render loadingState()}
@@ -1050,4 +1166,5 @@
 		<!-- Standard mode -->
 		{@render tableContent()}
 	{/if}
+	<div class="data-grid-scroll-hint" role="status">Scroll horizontally for more columns</div>
 </div>

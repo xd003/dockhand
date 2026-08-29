@@ -477,7 +477,7 @@
 </script>
 
 <Dialog.Root bind:open onOpenChange={(isOpen) => { if (!isOpen) handleClose(); }}>
-	<Dialog.Content class="max-w-3xl h-[70vh] overflow-hidden flex flex-col" onInteractOutside={(e) => { if (!canClose) e.preventDefault(); }}>
+	<Dialog.Content class="max-w-3xl max-h-[calc(100dvh-1rem)] overflow-hidden flex flex-col" onInteractOutside={(e) => { if (!canClose) e.preventDefault(); }}>
 		<Dialog.Header class="shrink-0">
 			<Dialog.Title class="flex items-center gap-2">
 				<CircleArrowUp class="w-5 h-5 text-amber-500" />

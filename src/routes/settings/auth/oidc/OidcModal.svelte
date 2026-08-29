@@ -208,7 +208,7 @@
 </script>
 
 <Dialog.Root bind:open onOpenChange={(o) => { if (o) { formError = ''; formErrors = {}; focusFirstInput(); } }}>
-	<Dialog.Content class="max-w-2xl h-[80vh] flex flex-col overflow-hidden">
+	<Dialog.Content class="max-w-2xl max-h-[calc(100dvh-1rem)] flex flex-col overflow-hidden">
 		<Dialog.Header class="flex-shrink-0">
 			<Dialog.Title class="flex items-center gap-2">
 				{#if isEditing}
@@ -241,7 +241,7 @@
 				<!-- Basic Settings -->
 				<div class="space-y-4">
 					<h4 class="text-sm font-medium text-muted-foreground">Basic settings</h4>
-					<div class="grid grid-cols-2 gap-4">
+					<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
 						<div class="space-y-2">
 							<Label>Name <span class="text-destructive">*</span></Label>
 							<Input
@@ -282,7 +282,7 @@
 				<div class="space-y-4">
 					<h4 class="text-sm font-medium text-muted-foreground">Client credentials</h4>
 					<p class="text-xs text-muted-foreground">Get these from your identity provider's application settings.</p>
-					<div class="grid grid-cols-2 gap-4">
+					<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
 						<div class="space-y-2">
 							<Label>Client ID <span class="text-destructive">*</span></Label>
 							<Input
@@ -341,7 +341,7 @@
 				<div class="space-y-4">
 					<h4 class="text-sm font-medium text-muted-foreground">Claim mapping</h4>
 					<p class="text-xs text-muted-foreground">Map OIDC claims to user attributes.</p>
-					<div class="grid grid-cols-3 gap-4">
+					<div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
 						<div class="space-y-2">
 							<Label>Username claim</Label>
 							<Input
@@ -392,7 +392,7 @@
 					<div class="space-y-4">
 						<h4 class="text-sm font-medium text-muted-foreground">Groups/roles claim</h4>
 						<p class="text-xs text-muted-foreground">Grant admin access based on claim values from your identity provider.</p>
-						<div class="grid grid-cols-2 gap-4">
+						<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
 							<div class="space-y-2">
 								<Label>Claim name</Label>
 								<Input
@@ -437,7 +437,7 @@
 							<div class="space-y-2">
 								{#each formRoleMappings as mapping, index}
 									<div class="flex items-center gap-3 p-3 bg-muted/50 rounded-lg">
-										<div class="flex-1 grid grid-cols-2 gap-3">
+									<div class="flex-1 grid grid-cols-1 sm:grid-cols-2 gap-3">
 											<div class="space-y-1">
 												<Label class="text-xs">Claim value</Label>
 												<Input

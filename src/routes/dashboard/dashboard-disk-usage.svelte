@@ -155,7 +155,7 @@
 		</div>
 
 		<!-- Legend with values -->
-		<div class="grid {categoryCount > 2 ? 'grid-cols-2' : 'grid-cols-' + categoryCount} gap-x-3 gap-y-1.5 text-xs">
+		<div class="grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
 			{#if imagesSize > 0}
 				<div class="flex items-center gap-1.5">
 					<div class="w-2 h-2 rounded-full bg-sky-500 shrink-0"></div>

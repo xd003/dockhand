@@ -8,11 +8,12 @@
 	interface Props {
 		source: { repository?: { url?: string; branch?: string } | null; gitStack?: { lastCommit?: string | null; branch?: string | null } | null };
 		showTooltip?: boolean;
+		compact?: boolean;
 	}
-	let { source, showTooltip = true }: Props = $props();
+	let { source, showTooltip = true, compact = false }: Props = $props();
 
 	const ForgeIcon = $derived(forgeIcon(source.repository?.url));
-	const showHash = $derived(!!source.gitStack?.lastCommit && $appSettings.showGitCommitHash);
+	const showHash = $derived(!compact && !!source.gitStack?.lastCommit && $appSettings.showGitCommitHash);
 	// Effective branch: per-stack override wins, else repository default
 	// (shared with the server-side resolver in src/lib/git-stack-branch.ts).
 	const eff = $derived(
@@ -26,7 +27,7 @@
 
 {#snippet badge()}
 	<span
-		class="inline-flex max-w-full items-center justify-center gap-1 overflow-hidden text-xs px-1.5 py-0.5 rounded-sm bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200 shadow-sm {showHash ? '' : 'min-w-[5.5rem]'}"
+		class="inline-flex max-w-full items-center justify-center gap-1 overflow-hidden rounded-md border border-primary/25 bg-primary/10 px-1.5 py-0.5 text-xs text-primary {showHash || compact ? '' : 'min-w-[5.5rem]'}"
 	>
 		<ForgeIcon class="w-3 h-3 shrink-0" />
 		<span class="shrink-0">Git</span>

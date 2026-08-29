@@ -308,7 +308,7 @@
 			{/if}
 		</Dialog.Header>
 
-		<div class="flex-1 overflow-hidden flex {isAdoptMode ? 'min-h-0' : ''}">
+		<div class="flex-1 overflow-hidden flex flex-col sm:flex-row {isAdoptMode ? 'min-h-0' : ''}">
 			<!-- Recent locations sidebar -->
 			<RecentLocationsPanel
 				bind:this={recentLocationsPanel}
@@ -319,7 +319,7 @@
 			<!-- Main browser area -->
 			<div class="flex-1 flex flex-col min-h-0">
 				<!-- Path bar -->
-				<div class="flex items-center gap-2 px-4 py-2 border-b bg-muted/30">
+				<div class="flex flex-wrap items-center gap-2 px-4 py-2 border-b bg-muted/30">
 					<button
 						type="button"
 						class="p-1 rounded hover:bg-muted disabled:opacity-40 disabled:cursor-not-allowed"

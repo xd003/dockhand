@@ -1045,6 +1045,8 @@ import * as Tabs from '$lib/components/ui/tabs';
 
 	// Resizable split panel state
 	let splitRatio = $state(60); // percentage for compose panel
+	// Mobile-only: which editor pane is shown (desktop uses the resizable split instead).
+	let mobilePane: 'compose' | 'vars' = $state('compose');
 	let isDraggingSplit = $state(false);
 	let containerRef: HTMLDivElement | null = $state(null);
 
@@ -2081,18 +2083,19 @@ import * as Tabs from '$lib/components/ui/tabs';
 	}}
 >
 	<Dialog.Content
-		class="max-w-none w-[calc(100vw-4rem)] h-[95vh] flex flex-col p-0 gap-0 shadow-xl border-zinc-200 dark:border-zinc-700"
+		class="max-w-none w-[calc(100vw-4rem)] h-[95vh] flex flex-col p-0 gap-0 shadow-xl border-zinc-200 dark:border-zinc-700 max-md:w-[calc(100vw-1rem)]! max-md:h-[calc(100dvh-1rem)]! max-md:max-w-none! max-md:max-h-[calc(100dvh-1rem)]! max-md:rounded-2xl! max-md:border! max-md:border-border!"
 		showCloseButton={false}
 	>
-<Dialog.Header class="px-8 py-5 border-b border-zinc-200 dark:border-zinc-700 flex-shrink-0">
+		<Dialog.Header class="px-4 py-3 text-left sm:px-8 sm:py-5 border-b border-zinc-200 dark:border-zinc-700 flex-shrink-0 max-md:pt-[max(0.75rem,env(safe-area-inset-top))]">
 			<div class="flex items-start justify-between gap-4">
 				<div class="flex items-start gap-3.5 min-w-0">
 					{#if !readonly}
 						<button
 							type="button"
+							aria-label="Change stack icon"
 							title="Change stack icon"
 							onclick={() => (showIconPicker = true)}
-							class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-zinc-300 bg-zinc-100 text-primary dark:border-zinc-600 dark:bg-zinc-800 hover:ring-2 hover:ring-primary transition-shadow"
+							class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-zinc-300 bg-zinc-100 text-primary dark:border-zinc-600 dark:bg-zinc-800 max-md:h-11 max-md:w-11 hover:ring-2 hover:ring-primary transition-shadow"
 						>
 							{#if pendingUploadImage}
 								<img src={pendingUploadImage} alt="" class="h-5 w-5 rounded object-cover" />
@@ -2103,12 +2106,12 @@ import * as Tabs from '$lib/components/ui/tabs';
 							{/if}
 						</button>
 					{:else}
-						<div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-zinc-300 bg-zinc-100 text-primary dark:border-zinc-600 dark:bg-zinc-800">
+						<div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-zinc-300 bg-zinc-100 text-primary dark:border-zinc-600 dark:bg-zinc-800 max-md:h-11 max-md:w-11">
 							<Layers class="h-5 w-5" />
 						</div>
 					{/if}
 					<div class="min-w-0">
-						<Dialog.Title class="flex flex-wrap items-center gap-2 text-base font-semibold text-zinc-800 dark:text-zinc-100">
+						<Dialog.Title class="truncate text-base font-semibold text-zinc-800 dark:text-zinc-100" title={displayName}>
 							{displayName}
 						</Dialog.Title>
 						<Dialog.Description class="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
@@ -2164,8 +2167,9 @@ import * as Tabs from '$lib/components/ui/tabs';
 					{#if activeTab === 'editor'}
 						<button
 							type="button"
+							aria-label={editorTheme === 'light' ? 'Switch to dark editor theme' : 'Switch to light editor theme'}
 							onclick={toggleEditorTheme}
-							class="flex h-8 w-8 items-center justify-center rounded-md border border-zinc-200 bg-zinc-50 text-zinc-500 transition-colors hover:border-zinc-300 hover:text-zinc-700 dark:border-zinc-700 dark:bg-zinc-800 dark:hover:text-zinc-300"
+							class="flex h-8 w-8 items-center justify-center rounded-md border border-zinc-200 bg-zinc-50 text-zinc-500 transition-colors hover:border-zinc-300 hover:text-zinc-700 dark:border-zinc-700 dark:bg-zinc-800 dark:hover:text-zinc-300 max-md:hidden"
 							title={editorTheme === 'light' ? 'Switch to dark theme' : 'Switch to light theme'}
 						>
 							{#if editorTheme === 'light'}
@@ -2177,8 +2181,9 @@ import * as Tabs from '$lib/components/ui/tabs';
 					{/if}
 					<button
 						type="button"
+						aria-label="Close stack editor"
 						onclick={tryClose}
-						class="flex h-8 w-8 items-center justify-center rounded-md border border-zinc-200 bg-zinc-50 text-zinc-500 transition-colors hover:border-zinc-300 hover:text-zinc-700 dark:border-zinc-700 dark:bg-zinc-800 dark:hover:text-zinc-300"
+						class="flex h-8 w-8 items-center justify-center rounded-md border border-zinc-200 bg-zinc-50 text-zinc-500 transition-colors hover:border-zinc-300 hover:text-zinc-700 dark:border-zinc-700 dark:bg-zinc-800 dark:hover:text-zinc-300 max-md:h-11 max-md:w-11"
 						title="Close"
 					>
 						<X class="h-4 w-4" />
@@ -2189,17 +2194,17 @@ import * as Tabs from '$lib/components/ui/tabs';
 
 		<!-- View tabs — left-aligned underline bar under the header, matched to
 		     GitStackModal for a consistent look across the stack modals. -->
-		<div class="flex items-center gap-1 border-b border-zinc-200 px-5 dark:border-zinc-700 flex-shrink-0">
+		<div class="flex items-center gap-1 border-b border-zinc-200 px-5 max-md:px-4 dark:border-zinc-700 flex-shrink-0">
 			<button
 				type="button"
-				class="relative -mb-px flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm transition-colors {activeTab === 'editor' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
+				class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 px-3 max-md:px-2 py-2 max-md:py-3 text-sm transition-colors {activeTab === 'editor' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
 				onclick={() => activeTab = 'editor'}
 			>
 				<Code class="h-3.5 w-3.5" /> Editor
 			</button>
 			<button
 				type="button"
-				class="relative -mb-px flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm transition-colors {activeTab === 'graph' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
+				class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 px-3 max-md:px-2 py-2 max-md:py-3 text-sm transition-colors {activeTab === 'graph' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
 				onclick={() => activeTab = 'graph'}
 			>
 				<GitGraph class="h-3.5 w-3.5" /> Graph
@@ -2211,13 +2216,13 @@ import * as Tabs from '$lib/components/ui/tabs';
 			{#if mode === 'edit' && $page.data.backupsEnabled && !needsFileLocation}
 				<button
 					type="button"
-					class="relative -mb-px flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm transition-colors {activeTab === 'backups' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
+					class="relative -mb-px flex max-md:min-w-0 max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 px-3 max-md:px-1 py-2 max-md:py-3 text-sm transition-colors {activeTab === 'backups' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
 					onclick={() => activeTab = 'backups'}
 				>
 					<Archive class="h-3.5 w-3.5" /> Backups
-					{#if backupCount > 0}<span class="bg-primary/15 text-primary text-[10px] px-1.5 rounded-full font-medium">{backupCount}</span>{/if}
-					{#if backupTally.ok > 0}<span class="inline-flex items-center gap-0.5 rounded-full bg-emerald-500/15 px-1.5 text-[10px] font-medium text-emerald-500"><Check class="w-2.5 h-2.5" />{backupTally.ok}</span>{/if}
-					{#if backupTally.failed > 0}<span class="inline-flex items-center gap-0.5 rounded-full bg-red-500/15 px-1.5 text-[10px] font-semibold text-red-500"><X class="w-2.5 h-2.5" />{backupTally.failed}</span>{/if}
+					{#if backupCount > 0}<span class="bg-primary/15 text-primary text-[10px] px-1.5 rounded-full font-medium max-sm:hidden">{backupCount}</span>{/if}
+					{#if backupTally.ok > 0}<span class="inline-flex items-center gap-0.5 rounded-full bg-emerald-500/15 px-1.5 text-[10px] font-medium text-emerald-500 max-sm:hidden"><Check class="w-2.5 h-2.5" />{backupTally.ok}</span>{/if}
+					{#if backupTally.failed > 0}<span class="inline-flex items-center gap-0.5 rounded-full bg-red-500/15 px-1.5 text-[10px] font-semibold text-red-500 max-sm:hidden"><X class="w-2.5 h-2.5" />{backupTally.failed}</span>{/if}
 				</button>
 			{/if}
 		</div>
@@ -2240,7 +2245,7 @@ import * as Tabs from '$lib/components/ui/tabs';
 			{:else}
 				<!-- Stack name and location inputs (create mode only) -->
 				{#if mode === 'create'}
-					<div class="px-6 py-4 border-b border-zinc-200 dark:border-zinc-700">
+					<div class="px-4 py-4 sm:px-6 border-b border-zinc-200 dark:border-zinc-700">
 						<div class="flex gap-4 items-start">
 							<div class="flex-1 max-w-xs space-y-1">
 								<Label for="stack-name">Stack name</Label>
@@ -2248,7 +2253,7 @@ import * as Tabs from '$lib/components/ui/tabs';
 									id="stack-name"
 									bind:value={newStackName}
 									placeholder="my-stack"
-									class={errors.stackName ? 'border-destructive focus-visible:ring-destructive' : ''}
+									class="max-md:h-11 {errors.stackName ? 'border-destructive focus-visible:ring-destructive' : ''}"
 									oninput={() => {
 										stackNameUserEdited = true;
 										errors.stackName = undefined;
@@ -2296,10 +2301,28 @@ import * as Tabs from '$lib/components/ui/tabs';
 				<!-- Content area -->
 				<div bind:this={containerRef} class="flex-1 min-h-0 flex flex-col {isDraggingSplit ? 'select-none' : ''}">
 					{#if activeTab === 'editor'}
-						<div class="flex flex-1 min-h-0">
+						<!-- Mobile: one pane at a time; desktop keeps the resizable split below. -->
+						<div class="flex items-center gap-1 border-b border-zinc-200 px-4 dark:border-zinc-700 flex-shrink-0 md:hidden">
+							<button
+								type="button"
+								class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 px-2 py-2.5 max-md:py-3 text-sm transition-colors {mobilePane === 'compose' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
+								onclick={() => mobilePane = 'compose'}
+							>
+								<Code class="h-3.5 w-3.5" /><span class="max-md:hidden">Compose files</span><span class="md:hidden">Compose</span>
+							</button>
+							<button
+								type="button"
+								class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 px-2 py-2.5 max-md:py-3 text-sm transition-colors {mobilePane === 'vars' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
+								onclick={() => mobilePane = 'vars'}
+							>
+								<FileText class="h-3.5 w-3.5" /><span class="max-md:hidden">Environment variables</span><span class="md:hidden">Variables</span>
+							</button>
+						</div>
+						<!-- Horizontal compose/vars split on desktop; one pane at a time on mobile. -->
+						<div class="flex flex-1 min-h-0 max-md:flex-col">
 							<!-- Compose panel -->
-							<div class="flex min-h-0 min-w-0 flex-shrink-0 flex-col" style="width: {splitRatio}%">
-								<div class="flex min-h-0 flex-1 flex-col px-8 py-6">
+							<div class="flex min-h-0 min-w-0 flex-shrink-0 flex-col max-md:w-full! {mobilePane === 'compose' ? 'max-md:flex-1' : 'max-md:hidden'}" style="width: {splitRatio}%">
+								<div class="flex min-h-0 flex-1 flex-col px-4 py-4 sm:px-8 sm:py-6">
 									<div class="mb-3.5 flex flex-wrap items-center justify-between gap-3">
 										<div class="flex items-center gap-2 text-sm font-semibold text-zinc-800 dark:text-zinc-100">
 											<Code class="h-4 w-4 text-muted-foreground" />
@@ -2330,41 +2353,42 @@ import * as Tabs from '$lib/components/ui/tabs';
 												>
 													{#if total > 1}
 														<div class="flex shrink-0 flex-col -space-y-0.5">
-															<button type="button" title="Move up" disabled={i === 0} onclick={() => movePathUp(i)} class="p-0 hover:text-muted-foreground disabled:cursor-default disabled:opacity-30">
+															<button type="button" title="Move up" disabled={i === 0} onclick={() => movePathUp(i)} class="p-0 max-md:p-2 hover:text-muted-foreground disabled:cursor-default disabled:opacity-30">
 																<ArrowUp class="h-3 w-3" />
 															</button>
-															<button type="button" title="Move down" disabled={i === total - 1} onclick={() => movePathDown(i)} class="p-0 hover:text-muted-foreground disabled:cursor-default disabled:opacity-30">
+															<button type="button" title="Move down" disabled={i === total - 1} onclick={() => movePathDown(i)} class="p-0 max-md:p-2 hover:text-muted-foreground disabled:cursor-default disabled:opacity-30">
 																<ArrowDown class="h-3 w-3" />
 															</button>
 														</div>
 														<GripVertical class="h-3.5 w-3.5 shrink-0 cursor-grab text-muted-foreground/40" />
 													{/if}
-													<input
-														type="text"
-														value={workingComposePaths[i]}
+															<input
+																type="text"
+																value={workingComposePaths[i]}
+																aria-label={`Compose file path ${i + 1}`}
 														placeholder={i === 0 ? '/path/to/compose.yaml' : 'compose.override.yaml'}
-														class="min-w-0 flex-1 rounded border bg-background px-2 py-1 text-xs"
+														class="min-w-0 flex-1 rounded border bg-background px-2 py-1 text-xs max-md:h-11 max-md:text-sm"
 														oninput={(e) => renameComposePathAt(i, e.currentTarget.value)}
 													/>
-													<button type="button" onclick={() => browseForRow(i)} class="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted" title="Browse for file">
+													<button type="button" onclick={() => browseForRow(i)} class="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted max-md:flex max-md:h-11 max-md:w-11 max-md:items-center max-md:justify-center" title="Browse for file">
 														<FolderOpen class="h-3.5 w-3.5" />
 													</button>
 													{#if total > 1}
-														<button type="button" onclick={() => removeComposePath(i)} class="shrink-0 rounded p-1 text-muted-foreground hover:bg-red-100 hover:text-red-500 dark:hover:bg-red-900/30" title="Remove">
+														<button type="button" onclick={() => removeComposePath(i)} class="shrink-0 rounded p-1 text-muted-foreground hover:bg-red-100 hover:text-red-500 dark:hover:bg-red-900/30 max-md:flex max-md:h-11 max-md:w-11 max-md:items-center max-md:justify-center" title="Remove">
 															<X class="h-3.5 w-3.5" />
 														</button>
 													{/if}
 												</div>
 											{:else}
 												<div class="flex items-center gap-1">
-													<input type="text" readonly placeholder={mode === 'create' ? 'Enter stack name above' : 'Not specified'} class="min-w-0 flex-1 rounded border bg-muted/50 px-2 py-1 text-xs text-muted-foreground" />
-													<button type="button" onclick={openComposeBrowser} class="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted" title="Browse for file">
+													<input type="text" readonly placeholder={mode === 'create' ? 'Enter stack name above' : 'Not specified'} class="min-w-0 flex-1 rounded border bg-muted/50 px-2 py-1 text-xs text-muted-foreground max-md:h-11 max-md:text-sm" />
+													<button type="button" onclick={openComposeBrowser} class="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted max-md:flex max-md:h-11 max-md:w-11 max-md:items-center max-md:justify-center" title="Browse for file">
 														<FolderOpen class="h-3.5 w-3.5" />
 													</button>
 												</div>
 											{/each}
 											{#if workingComposePaths.length > 0}
-												<button type="button" onclick={() => addComposePath()} class="inline-flex items-center gap-1 rounded border bg-muted px-2 py-0.5 text-xs text-muted-foreground hover:bg-muted/80">
+												<button type="button" onclick={() => addComposePath()} class="inline-flex items-center gap-1 rounded border bg-muted px-2 py-0.5 text-xs text-muted-foreground hover:bg-muted/80 max-md:h-11">
 													+ Add compose file
 												</button>
 											{/if}
@@ -2382,13 +2406,13 @@ import * as Tabs from '$lib/components/ui/tabs';
 													<div class="group flex min-w-0 items-center">
 														<Tabs.Trigger
 															value={path}
-															class="min-w-0 cursor-pointer break-all rounded-t-md border-b-2 px-3.5 py-2.5 font-mono text-xs rounded-none border-x-0 border-t-0 shadow-none transition-colors data-[state=active]:rounded-none data-[state=active]:border-primary data-[state=active]:bg-zinc-50 data-[state=active]:text-foreground data-[state=active]:shadow-none data-[state=active]:dark:bg-zinc-800/50"
+															class="min-w-0 cursor-pointer break-all rounded-t-md border-b-2 px-3.5 py-2.5 max-md:py-3 font-mono text-xs rounded-none border-x-0 border-t-0 shadow-none transition-colors data-[state=active]:rounded-none data-[state=active]:border-primary data-[state=active]:bg-zinc-50 data-[state=active]:text-foreground data-[state=active]:shadow-none data-[state=active]:dark:bg-zinc-800/50"
 														>
 															{composeFileName(path)}
 														</Tabs.Trigger>
 														<button
 															type="button"
-															class="rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 {path === (activeComposePath || workingComposePaths[0]) ? 'opacity-100' : ''}"
+															class="rounded p-0.5 max-md:p-2 text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 {path === (activeComposePath || workingComposePaths[0]) ? 'opacity-100' : ''}"
 															title="Copy path"
 															onclick={() => copyComposePathAtIndex(path, i)}
 														>
@@ -2435,7 +2459,7 @@ import * as Tabs from '$lib/components/ui/tabs';
 													<p class="mb-4 max-w-sm text-xs text-zinc-500 dark:text-zinc-400">
 														Browse to locate the compose file for this stack.
 													</p>
-													<Button variant="outline" size="sm" onclick={openComposeBrowser}>
+													<Button variant="outline" size="sm" class="max-md:h-11" onclick={openComposeBrowser}>
 														<FolderOpen class="h-4 w-4" />
 														Browse for compose file
 													</Button>
@@ -2449,7 +2473,7 @@ import * as Tabs from '$lib/components/ui/tabs';
 														<Button
 															variant="ghost"
 															size="sm"
-															class="h-7 shrink-0 px-2 text-xs text-muted-foreground"
+															class="h-7 max-md:h-11 shrink-0 px-2 text-xs text-muted-foreground"
 															onclick={runComposeValidate}
 															disabled={!composeContent}
 															title="Check this compose for problems before deploy"
@@ -2464,7 +2488,7 @@ import * as Tabs from '$lib/components/ui/tabs';
 														<Button
 															variant="ghost"
 															size="sm"
-															class="h-7 shrink-0 px-2 text-xs text-muted-foreground"
+															class="h-7 max-md:h-11 shrink-0 px-2 text-xs text-muted-foreground"
 															onclick={() => copyText(composeContent, (v) => composeContentCopied = v)}
 															disabled={!composeContent}
 														>
@@ -2486,7 +2510,7 @@ import * as Tabs from '$lib/components/ui/tabs';
 														</Button>
 													</div>
 												</div>
-												<div bind:this={editorRowRef} class="flex-1 min-h-0 flex">
+												<div bind:this={editorRowRef} class="flex-1 min-h-0 flex relative">
 													<CodeEditor
 														bind:this={codeEditorRef}
 														value={composeContent}
@@ -2502,7 +2526,7 @@ import * as Tabs from '$lib/components/ui/tabs';
 													{#if validatePanelOpen}
 														<!-- Resize handle -->
 														<div
-															class="w-1 mx-1 flex-shrink-0 rounded bg-zinc-200 dark:bg-zinc-700 hover:bg-blue-400 dark:hover:bg-blue-500 cursor-col-resize transition-colors flex items-center justify-center group {isDraggingValidate ? 'bg-blue-500 dark:bg-blue-400' : ''}"
+															class="w-1 mx-1 flex-shrink-0 rounded bg-zinc-200 dark:bg-zinc-700 hover:bg-blue-400 dark:hover:bg-blue-500 cursor-col-resize transition-colors flex items-center justify-center group max-md:hidden {isDraggingValidate ? 'bg-blue-500 dark:bg-blue-400' : ''}"
 															onmousedown={startValidateDrag}
 															role="separator"
 															aria-orientation="vertical"
@@ -2512,7 +2536,8 @@ import * as Tabs from '$lib/components/ui/tabs';
 																<GripVertical class="w-3 h-3 text-white" />
 															</div>
 														</div>
-														<div class="shrink-0 min-h-0" style="width: {validatePanelWidth}px">
+														<!-- Fixed-width docked panel on desktop; full-height overlay on mobile. -->
+												<div class="shrink-0 min-h-0 max-w-full max-md:absolute max-md:inset-y-0 max-md:right-0 max-md:z-20 max-md:w-full max-md:shadow-xl" style="width: {validatePanelWidth}px">
 															<ComposeValidatePanel
 																bind:this={validatePanelRef}
 																report={validateReport}
@@ -2535,7 +2560,7 @@ import * as Tabs from '$lib/components/ui/tabs';
 
 							<!-- Resizable divider -->
 							<div
-								class="w-1 flex-shrink-0 bg-zinc-200 dark:bg-zinc-700 hover:bg-blue-400 dark:hover:bg-blue-500 cursor-col-resize transition-colors flex items-center justify-center group {isDraggingSplit ? 'bg-blue-500 dark:bg-blue-400' : ''}"
+								class="w-1 flex-shrink-0 bg-zinc-200 dark:bg-zinc-700 hover:bg-blue-400 dark:hover:bg-blue-500 cursor-col-resize transition-colors flex items-center justify-center group max-md:hidden {isDraggingSplit ? 'bg-blue-500 dark:bg-blue-400' : ''}"
 								onmousedown={startSplitDrag}
 								role="separator"
 								aria-orientation="vertical"
@@ -2547,8 +2572,8 @@ import * as Tabs from '$lib/components/ui/tabs';
 							</div>
 
 							<!-- Environment variables panel -->
-							<div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-								<div class="flex min-h-0 flex-1 flex-col px-8 py-6">
+							<div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden {mobilePane === 'vars' ? 'max-md:flex-1' : 'max-md:hidden'}">
+								<div class="flex min-h-0 flex-1 flex-col px-4 py-4 sm:px-8 sm:py-6">
 									<div class="mb-3.5 flex items-center justify-between gap-3">
 										<div class="flex items-center gap-2 text-sm font-semibold text-zinc-800 dark:text-zinc-100">
 											<FileText class="h-4 w-4 text-muted-foreground" />
@@ -2572,14 +2597,15 @@ import * as Tabs from '$lib/components/ui/tabs';
 											</div>
 										</div>
 										{#if !readonly}
-											<button type="button" onclick={openEnvBrowser} class="shrink-0 rounded p-1.5 text-muted-foreground hover:bg-zinc-200 dark:hover:bg-zinc-700" title="Browse for env file">
+											<button type="button" onclick={openEnvBrowser} class="shrink-0 rounded p-1.5 text-muted-foreground hover:bg-zinc-200 dark:hover:bg-zinc-700 max-md:flex max-md:h-11 max-md:w-11 max-md:items-center max-md:justify-center" title="Browse for env file">
 												<FolderOpen class="h-3.5 w-3.5" />
 											</button>
 										{/if}
 										<button
 											type="button"
 											onclick={() => copyText(displayEnvPath, (v) => envPathCopied = v)}
-											class="shrink-0 rounded p-1.5 text-muted-foreground hover:bg-zinc-200 dark:hover:bg-zinc-700 {!displayEnvPath ? 'cursor-not-allowed opacity-40' : ''}"
+															class="shrink-0 rounded p-1.5 text-muted-foreground hover:bg-zinc-200 dark:hover:bg-zinc-700 max-md:flex max-md:h-11 max-md:w-11 max-md:items-center max-md:justify-center {!displayEnvPath ? 'cursor-not-allowed opacity-40' : ''}"
+															aria-label="Copy environment file path"
 											title="Copy path"
 											disabled={!displayEnvPath}
 										>
@@ -2638,8 +2664,8 @@ import * as Tabs from '$lib/components/ui/tabs';
 		</div>
 
 		<!-- Footer -->
-		<div class="flex flex-shrink-0 items-center justify-between border-t border-zinc-200 px-8 py-3 dark:border-zinc-700">
-			<div class="flex min-w-0 items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
+		<div class="flex flex-shrink-0 items-center justify-between gap-2 border-t border-zinc-200 px-4 py-3 sm:px-8 dark:border-zinc-700 max-md:pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+			<div class="flex min-w-0 items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400 max-sm:hidden">
 				{#if readonly}
 					<Lock class="h-3.5 w-3.5 shrink-0" />
 					{#if isGitView}
@@ -2656,18 +2682,18 @@ import * as Tabs from '$lib/components/ui/tabs';
 				{/if}
 			</div>
 
-			<div class="flex items-center gap-2">
+			<div class="flex flex-wrap items-center justify-end gap-2 max-md:grid max-md:w-full max-md:grid-cols-2 max-md:gap-2">
 				{#if readonly}
-					<Button onclick={tryClose}>Close</Button>
+					<Button class="max-md:order-1 max-md:col-span-2 max-md:w-full max-md:min-h-11" onclick={tryClose}>Close</Button>
 				{:else}
-					<Button variant="outline" onclick={tryClose} disabled={saving}>
+					<Button variant="outline" class="max-md:min-h-11" onclick={tryClose} disabled={saving}>
 						Cancel
 					</Button>
 				{/if}
 
 				{#if !readonly && mode === 'create'}
 					<!-- Create mode buttons -->
-					<Button variant="outline" onclick={() => handleCreate(false)} disabled={saving}>
+					<Button variant="outline" class="max-md:min-h-11" onclick={() => handleCreate(false)} disabled={saving}>
 						{#if saving}
 							<Loader2 class="w-4 h-4 animate-spin" />
 							Creating...
@@ -2676,7 +2702,7 @@ import * as Tabs from '$lib/components/ui/tabs';
 							Create
 						{/if}
 					</Button>
-					<Button onclick={() => handleCreate(true)} disabled={saving}>
+					<Button class="max-md:col-span-2 max-md:w-full max-md:min-h-11" onclick={() => handleCreate(true)} disabled={saving}>
 						{#if saving}
 							<Loader2 class="w-4 h-4 animate-spin" />
 							Starting...
@@ -2687,7 +2713,7 @@ import * as Tabs from '$lib/components/ui/tabs';
 					</Button>
 				{:else if !readonly}
 					<!-- Edit mode buttons -->
-					<Button variant="outline" class="w-24" onclick={() => handleSave(false)} disabled={saving || loading || (needsFileLocation && !workingComposePath.trim())}>
+					<Button variant="outline" class="max-md:min-h-11 max-md:w-full w-24" onclick={() => handleSave(false)} disabled={saving || loading || (needsFileLocation && !workingComposePath.trim())}>
 						{#if saving && !savingWithRestart}
 							<Loader2 class="w-4 h-4 animate-spin" />
 							Saving...
@@ -2696,7 +2722,7 @@ import * as Tabs from '$lib/components/ui/tabs';
 							Save
 						{/if}
 					</Button>
-					<Button class="w-36" onclick={() => handleSave(true)} disabled={saving || loading || (needsFileLocation && !workingComposePath.trim())}>
+					<Button class="max-md:col-span-2 max-md:w-full max-md:min-h-11 w-36" onclick={() => handleSave(true)} disabled={saving || loading || (needsFileLocation && !workingComposePath.trim())}>
 						{#if saving && savingWithRestart}
 							<Loader2 class="w-4 h-4 animate-spin" />
 							Deploying...

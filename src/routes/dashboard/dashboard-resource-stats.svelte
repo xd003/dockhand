@@ -27,7 +27,7 @@
 	const showNetworksSkeleton = $derived(loading?.networks && networks.total === 0);
 </script>
 
-<div class="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+<div class="grid grid-cols-2 gap-x-4 gap-y-2 text-xs min-w-0">
 	<div class="flex items-center justify-between">
 		<span class="flex items-center gap-1 text-muted-foreground">
 			<Image class="w-3 h-3" /> Images
@@ -35,20 +35,22 @@
 		{#if showImagesSkeleton}
 			<div class="skeleton w-4 h-3.5 rounded"></div>
 		{:else}
-			<span class="font-medium">{images.total}</span>
+			<span class="font-medium tabular-nums">{images.total}</span>
 		{/if}
 	</div>
-	<div class="flex items-center justify-between">
-		<span class="flex items-center gap-1 text-muted-foreground">
+	<div class="flex items-center justify-between gap-2 min-w-0">
+		<span class="flex items-center gap-1 text-muted-foreground shrink-0">
 			<Layers class="w-3 h-3" /> Stacks
 		</span>
 		{#if showStacksSkeleton}
 			<div class="skeleton w-12 h-3.5 rounded"></div>
 		{:else}
-			<span class="font-medium">
+			<span class="font-medium tabular-nums flex items-center gap-1 min-w-0">
 				{stacks.total}
 				{#if showStacksBreakdown && stacks.total > 0}
-					<span class="text-emerald-500">{stacks.running}</span>/<span class="text-amber-500">{stacks.partial}</span>/<span class="text-red-500">{stacks.stopped}</span>
+					<span class="font-normal truncate">
+						<span class="text-emerald-500">{stacks.running}</span>/<span class="text-amber-500">{stacks.partial}</span>/<span class="text-red-500">{stacks.stopped}</span>
+					</span>
 				{/if}
 			</span>
 		{/if}

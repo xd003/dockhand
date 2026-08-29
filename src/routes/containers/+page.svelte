@@ -11,12 +11,14 @@
 	import * as Popover from '$lib/components/ui/popover';
 	import * as Select from '$lib/components/ui/select';
 	import * as Tooltip from '$lib/components/ui/tooltip';
+	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
 	import ConfirmPopover from '$lib/components/ConfirmPopover.svelte';
 	import ContainerIcon from '$lib/components/ContainerIcon.svelte';
 	import { formatPorts, formatExposedPorts } from '$lib/utils/port-format';
 	import { formatBytes, formatBytesCompact } from '$lib/utils/format';
 	import MultiSelectFilter from '$lib/components/MultiSelectFilter.svelte';
 	import PageHeader from '$lib/components/PageHeader.svelte';
+	import SelectionToolbar from '$lib/components/SelectionToolbar.svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import { Switch } from '$lib/components/ui/switch';
@@ -67,7 +69,10 @@
 		Copy,
 		Loader2,
 		AlertCircle,
-		Tag
+		Tag,
+		EllipsisVertical,
+		ChevronDown,
+		SlidersHorizontal
 	} from 'lucide-svelte';
 	import { broom } from '@lucide/lab';
 	import { copyToClipboard } from '$lib/utils/clipboard';
@@ -777,6 +782,66 @@
 		}
 	}
 
+	// Mobile card list state — swipe-to-reveal actions and tap-to-expand,
+	// mirroring the stacks page mobile view.
+	let expandedContainers = $state<Set<string>>(new Set());
+	let swipedContainerId = $state<string | null>(null);
+	let draggingContainerId: string | null = null;
+	let dragStartX = 0;
+	let dragOffset = $state(0);
+	let suppressContainerTap = false;
+
+	function toggleExpanded(id: string) {
+		if (expandedContainers.has(id)) {
+			expandedContainers.delete(id);
+		} else {
+			expandedContainers.add(id);
+		}
+		expandedContainers = new Set(expandedContainers);
+	}
+
+	function startContainerSwipe(event: PointerEvent, id: string) {
+		draggingContainerId = id;
+		dragStartX = event.clientX;
+		dragOffset = swipedContainerId === id ? -144 : 0;
+		(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+	}
+
+	function moveContainerSwipe(event: PointerEvent, id: string) {
+		if (draggingContainerId !== id) return;
+		const startOffset = swipedContainerId === id ? -144 : 0;
+		dragOffset = Math.max(-144, Math.min(0, startOffset + event.clientX - dragStartX));
+		if (Math.abs(event.clientX - dragStartX) > 8) suppressContainerTap = true;
+	}
+
+	function endContainerSwipe(id: string) {
+		if (draggingContainerId !== id) return;
+		swipedContainerId = dragOffset <= -50 ? id : null;
+		dragOffset = 0;
+		draggingContainerId = null;
+	}
+
+	function mobileContainerOffset(id: string): number {
+		if (draggingContainerId === id) return dragOffset;
+		return swipedContainerId === id ? -144 : 0;
+	}
+
+	function handleMobileContainerTap(id: string) {
+		if (suppressContainerTap) {
+			suppressContainerTap = false;
+			return;
+		}
+		if (swipedContainerId) {
+			swipedContainerId = null;
+			return;
+		}
+		toggleExpanded(id);
+	}
+
+	function getMobileStatusClasses(state: string): string {
+		return getStatusClasses(state).replace('rounded-sm', 'rounded-full');
+	}
+
 	let scrollContainer: HTMLDivElement | undefined;
 
 	// Filtered and sorted containers - use $derived.by for complex logic
@@ -1459,13 +1524,52 @@
 </script>
 
 <div class="flex-1 min-h-0 flex flex-col gap-3 overflow-hidden">
-	<div class="shrink-0 flex flex-wrap justify-between items-center gap-3 min-h-8">
+	<!-- Mobile header: compact title + overflow menu -->
+	<div class="flex shrink-0 items-center justify-between gap-2 md:hidden">
+		<PageHeader icon={Box} title="Containers" count={containers.length} showConnection={false} class="gap-2" countClass="min-w-7" />
+		<DropdownMenu.Root>
+			<DropdownMenu.Trigger>
+				{#snippet child({ props })}
+					<button {...props} type="button" class="flex size-11 shrink-0 items-center justify-center rounded-lg hover:bg-muted" aria-label="Container actions">
+						<EllipsisVertical class="size-5" />
+					</button>
+				{/snippet}
+			</DropdownMenu.Trigger>
+			<DropdownMenu.Content align="end" class="w-56 p-1">
+				<DropdownMenu.Item onclick={fetchContainers} class="min-h-11">
+					<RefreshCw />
+					Refresh
+				</DropdownMenu.Item>
+				<CheckUpdatesButton
+					menuItem
+					{envId}
+					hasPendingUpdates={updatableContainersCount > 0}
+					onComplete={handleUpdateCheckComplete}
+				/>
+				{#if updatableContainersCount > 0}
+					<DropdownMenu.Item onclick={updateAllContainers} class="min-h-11">
+						<CircleArrowUp />
+						Update all ({updatableContainersCount})
+					</DropdownMenu.Item>
+				{/if}
+				{#if hasUpdateIndicators}
+					<DropdownMenu.Item onclick={dismissPendingUpdates} class="min-h-11">
+						<X />
+						Dismiss indicators
+					</DropdownMenu.Item>
+				{/if}
+			</DropdownMenu.Content>
+		</DropdownMenu.Root>
+	</div>
+
+	<div class="hidden shrink-0 flex-wrap justify-between items-center gap-3 min-h-8 min-w-0 md:flex">
 		<PageHeader icon={Box} title="Containers" count={containers.length} />
-		<div class="flex flex-wrap items-center gap-2">
-			<div class="relative">
+		<div class="flex w-full sm:w-auto flex-wrap items-center gap-2 min-w-0">
+			<div class="relative shrink-0">
 				<Search class="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
 				<Input
 					type="text"
+					aria-label="Search containers"
 					placeholder="Search containers..."
 					bind:value={searchQuery}
 					onkeydown={(e) => e.key === 'Escape' && (searchQuery = '')}
@@ -1483,7 +1587,7 @@
 				width="w-44"
 				defaultIcon={Box}
 			/>
-			<div class="flex gap-2">
+			<div class="flex max-w-full flex-wrap gap-2">
 				{#if $canAccess('containers', 'create')}
 				<Button size="sm" variant="secondary" onclick={() => (showCreateModal = true)}>
 					<Plus class="w-3.5 h-3.5" />
@@ -1572,19 +1676,10 @@
 		</div>
 	</div>
 
-	<!-- Selection bar - always reserve space to prevent layout shift -->
-	<div class="h-4 shrink-0">
+	<!-- Selection bar - always reserve space to prevent layout shift (desktop only; mobile cards have no checkboxes) -->
+	<div class="hidden h-4 shrink-0 flex-wrap items-center gap-1 md:flex">
 		{#if selectedContainers.size > 0}
-			<div class="flex items-center gap-1 text-xs text-muted-foreground h-full">
-			<span>{selectedInFilter.length} selected</span>
-			<button
-				type="button"
-				class="inline-flex items-center gap-1 px-1.5 py-0 rounded border border-border hover:border-foreground/30 hover:shadow transition-all"
-				onclick={selectNone}
-				disabled={bulkActionInProgress}
-			>
-				Clear
-			</button>
+			<SelectionToolbar count={selectedInFilter.length} onClear={selectNone} />
 			{#if selectedStopped.length > 0 && $canAccess('containers', 'start')}
 				<ConfirmPopover
 					open={confirmBulkStart}
@@ -1720,7 +1815,6 @@
 			{#if bulkActionInProgress}
 				<CircleArrowUp class="w-3 h-3 animate-spin ml-1" />
 			{/if}
-			</div>
 		{/if}
 	</div>
 
@@ -1733,10 +1827,166 @@
 			description="Create a new container to get started"
 		/>
 	{:else}
+		<!-- Mobile card list: sticky search/filter, swipe actions, tap to expand -->
+		<div class="min-h-0 min-w-0 flex-1 overflow-y-auto md:hidden">
+			<div class="sticky top-0 z-20 flex w-full min-w-0 gap-2 bg-background pb-3">
+				<div class="relative min-w-0 flex-1 basis-0">
+					<Search class="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+					<Input
+						type="search"
+						aria-label="Search containers"
+						placeholder="Search containers..."
+						bind:value={searchQuery}
+						onkeydown={(e) => e.key === 'Escape' && (searchQuery = '')}
+						class="h-11 rounded-lg pl-10"
+					/>
+				</div>
+				<div class="min-w-0 flex-1 basis-0">
+					<MultiSelectFilter
+						bind:value={statusFilter}
+						options={filterOptions}
+						placeholder="All statuses"
+						pluralLabel="filters"
+						width="w-full data-[size=sm]:h-11"
+						defaultIcon={SlidersHorizontal}
+					/>
+				</div>
+			</div>
+
+			<div class="space-y-2 pb-24">
+				{#each filteredContainers as container (container.id)}
+					{@const stats = containerStats.get(container.id)}
+					{@const stack = getComposeProject(container.labels)}
+					<div class="overflow-hidden rounded-xl border bg-card/60 shadow-sm">
+						<div class="relative overflow-hidden">
+							<div class="absolute inset-y-0 right-0 flex w-36">
+								{#if container.state === 'running' || container.state === 'restarting'}
+									{#if $canAccess('containers', 'restart')}
+										<button type="button" onclick={() => { swipedContainerId = null; restartContainer(container.id); }} class="flex min-h-11 flex-1 flex-col items-center justify-center gap-1 bg-amber-500/15 text-xs font-medium text-amber-500">
+											<RotateCw class="size-4" />
+											Restart
+										</button>
+									{/if}
+									{#if $canAccess('containers', 'stop')}
+										<button type="button" onclick={() => { swipedContainerId = null; stopContainer(container.id); }} class="flex min-h-11 flex-1 flex-col items-center justify-center gap-1 bg-red-500/15 text-xs font-medium text-red-400">
+											<Square class="size-4" />
+											Stop
+										</button>
+									{/if}
+								{:else if container.state === 'paused'}
+									<button type="button" onclick={() => { swipedContainerId = null; unpauseContainer(container.id); }} class="flex min-h-11 flex-1 flex-col items-center justify-center gap-1 bg-emerald-500/15 text-xs font-medium text-emerald-500">
+										<Play class="size-4" />
+										Unpause
+									</button>
+									{#if $canAccess('containers', 'stop')}
+										<button type="button" onclick={() => { swipedContainerId = null; stopContainer(container.id); }} class="flex min-h-11 flex-1 flex-col items-center justify-center gap-1 bg-red-500/15 text-xs font-medium text-red-400">
+											<Square class="size-4" />
+											Stop
+										</button>
+									{/if}
+								{:else if $canAccess('containers', 'start')}
+									<button type="button" onclick={() => { swipedContainerId = null; startContainer(container.id); }} class="flex min-h-11 flex-1 flex-col items-center justify-center gap-1 bg-emerald-500/15 text-xs font-medium text-emerald-500">
+										<Play class="size-4" />
+										Start
+									</button>
+								{/if}
+							</div>
+							<button
+								type="button"
+								class="relative flex min-h-11 w-full touch-pan-y items-center gap-2 bg-card px-3 py-2.5 text-left transition-transform"
+								style={`transform: translateX(${mobileContainerOffset(container.id)}px)`}
+								onpointerdown={(event) => startContainerSwipe(event, container.id)}
+								onpointermove={(event) => moveContainerSwipe(event, container.id)}
+								onpointerup={() => endContainerSwipe(container.id)}
+								onpointercancel={() => endContainerSwipe(container.id)}
+								onclick={() => handleMobileContainerTap(container.id)}
+								aria-expanded={expandedContainers.has(container.id)}
+							>
+								<ContainerIcon image={container.image} name={container.name} override={iconOverrides[container.name]} {envId} class="size-4 shrink-0" />
+								<span class="min-w-0 flex-1 truncate text-sm font-semibold" title={container.name}>{container.name}</span>
+								{#if containersWithUpdatesSet.has(container.id)}
+									<CircleArrowUp class="size-4 shrink-0 text-amber-500" />
+								{/if}
+								<span class={getMobileStatusClasses(container.state)}>{container.state}</span>
+								<ChevronDown class="size-4 shrink-0 text-muted-foreground transition-transform {expandedContainers.has(container.id) ? 'rotate-180' : ''}" />
+							</button>
+						</div>
+
+						{#if expandedContainers.has(container.id)}
+							<div class="space-y-3 border-t bg-muted/20 p-3">
+								<div class="grid grid-cols-2 gap-2">
+									<div class="rounded-lg bg-background/80 p-2.5"><div class="text-[10px] text-muted-foreground">CPU</div><div class="mt-0.5 truncate font-mono text-xs font-semibold">{stats ? `${stats.cpuPercent.toFixed(1)}%` : '-'}</div></div>
+									<div class="rounded-lg bg-background/80 p-2.5"><div class="text-[10px] text-muted-foreground">Memory</div><div class="mt-0.5 truncate font-mono text-xs font-semibold">{stats ? `${formatBytesCompact(stats.memoryUsage)} / ${formatBytesCompact(stats.memoryLimit, 0)}` : '-'}</div></div>
+									<div class="rounded-lg bg-background/80 p-2.5"><div class="text-[10px] text-muted-foreground">Net I/O</div><div class="mt-0.5 truncate font-mono text-xs font-semibold">{stats ? `↓${formatBytesCompact(stats.networkRx, 0)} ↑${formatBytesCompact(stats.networkTx, 0)}` : '-'}</div></div>
+									<div class="rounded-lg bg-background/80 p-2.5"><div class="text-[10px] text-muted-foreground">Disk I/O</div><div class="mt-0.5 truncate font-mono text-xs font-semibold">{stats ? `r${formatBytesCompact(stats.blockRead, 0)} w${formatBytesCompact(stats.blockWrite, 0)}` : '-'}</div></div>
+									<div class="rounded-lg bg-background/80 p-2.5"><div class="text-[10px] text-muted-foreground">Uptime</div><div class="mt-0.5 truncate font-mono text-xs font-semibold">{formatUptime(container.status)}</div></div>
+									<div class="rounded-lg bg-background/80 p-2.5"><div class="text-[10px] text-muted-foreground">Stack</div><div class="mt-0.5 truncate font-mono text-xs font-semibold">{stack ?? '-'}</div></div>
+								</div>
+								<div class="truncate rounded-lg bg-background/80 px-2.5 py-2 font-mono text-xs text-muted-foreground" title={container.image}>{container.image}</div>
+
+								<div class="grid grid-cols-2 gap-2">
+									{#if $canAccess('containers', 'logs')}
+										<button type="button" onclick={() => goto(appendEnvParam(`/logs?containers=${container.id}`, envId))} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><FileText class="size-4" />Logs</button>
+									{/if}
+									<button type="button" onclick={() => inspectContainer(container)} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><Eye class="size-4" />Inspect</button>
+									{#if container.state === 'running' && $canAccess('containers', 'exec')}
+										<button type="button" onclick={() => browseFiles(container)} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><FolderOpen class="size-4" />Files</button>
+									{/if}
+									{#if $canAccess('containers', 'create')}
+										<button type="button" onclick={() => editContainer(container.id)} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><Pencil class="size-4" />Edit</button>
+									{/if}
+									{#if containersWithUpdatesSet.has(container.id) && !container.systemContainer}
+										<button type="button" onclick={() => updateSingleContainer(container.id, container.name)} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border border-amber-500/50 bg-background text-xs font-medium text-amber-600 hover:bg-muted"><CircleArrowUp class="size-4" />Update</button>
+									{/if}
+									{#if !container.systemContainer}
+										{#if container.state === 'paused'}
+											{#if $canAccess('containers', 'start')}
+												<button type="button" onclick={() => unpauseContainer(container.id)} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><Play class="size-4" />Unpause</button>
+											{/if}
+										{:else if container.state !== 'running' && container.state !== 'restarting'}
+											{#if $canAccess('containers', 'start')}
+												<button type="button" onclick={() => startContainer(container.id)} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><Play class="size-4" />Start</button>
+											{/if}
+										{:else}
+											{#if $canAccess('containers', 'restart')}
+												<button type="button" onclick={() => restartContainer(container.id)} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><RotateCw class="size-4" />Restart</button>
+											{/if}
+											{#if container.state === 'running'}
+												<button type="button" onclick={() => pauseContainer(container.id)} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><Pause class="size-4" />Pause</button>
+											{/if}
+											{#if $canAccess('containers', 'stop')}
+												<button type="button" onclick={() => stopContainer(container.id)} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><Square class="size-4" />Stop</button>
+											{/if}
+										{/if}
+										{#if $canAccess('containers', 'remove')}
+											<ConfirmPopover
+												open={confirmDeleteId === container.id}
+												action="Delete"
+												itemType="container"
+												itemName={container.name}
+												title="Remove"
+												unstyled
+												onConfirm={() => removeContainer(container.id)}
+												onOpenChange={(open) => confirmDeleteId = open ? container.id : null}
+											>
+												{#snippet children({ open })}
+													<span class="flex min-h-11 w-full items-center justify-center gap-2 rounded-lg border border-red-500/50 px-2 text-xs font-medium text-red-400"><Trash2 class="size-4" />Remove</span>
+												{/snippet}
+											</ConfirmPopover>
+										{/if}
+									{/if}
+								</div>
+							</div>
+						{/if}
+					</div>
+				{/each}
+			</div>
+		</div>
+
 		<!-- Main content area - changes based on layout mode -->
 		<div
 			bind:this={mainContentRef}
-			class="flex-1 min-h-0 {layoutMode === 'vertical' ? 'flex gap-3' : 'flex flex-col gap-3'}"
+			class="hidden flex-1 min-h-0 md:flex {layoutMode === 'vertical' ? 'gap-3' : 'flex-col gap-3'}"
 		>
 <!-- Table section -->
 			<DataGrid
@@ -2526,6 +2776,20 @@
 	{/if}
 </div>
 
+{#if $canAccess('containers', 'create') && $currentEnvironment}
+	<div class="fixed bottom-[max(1rem,env(safe-area-inset-bottom))] right-4 z-40 md:hidden">
+		<button
+			type="button"
+			onclick={() => showCreateModal = true}
+			class="flex size-14 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg transition-transform hover:scale-105 active:scale-95"
+			aria-label="Create container"
+			title="Create container"
+		>
+			<Plus class="size-6" />
+		</button>
+	</div>
+{/if}
+
 <CreateContainerModal
 	bind:open={showCreateModal}
 	onClose={() => (showCreateModal = false)}
@@ -2630,4 +2894,3 @@
 	}
 
 </style>
-

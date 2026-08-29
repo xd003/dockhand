@@ -74,14 +74,15 @@
 	}
 </script>
 
-<div class="w-56 border-r p-3 overflow-y-auto shrink-0">
+<!-- Sidebar column on desktop; horizontal chip strip above the file list on mobile. -->
+<div class="shrink-0 w-full sm:w-56 border-b sm:border-b-0 sm:border-r p-3 overflow-y-auto">
 	<h3 class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">Locations</h3>
-	<div class="space-y-1">
+	<div class="flex sm:flex-col gap-1 sm:gap-0 sm:space-y-1 overflow-x-auto">
 		<!-- Default Dockhand location (always shown, not removable) -->
 		{#if defaultBasePath}
 			<button
 				type="button"
-				class="w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs hover:bg-muted text-left {currentPath === defaultBasePath ? 'bg-muted' : ''}"
+				class="shrink-0 w-full sm:w-auto flex items-center gap-2 px-2 py-1.5 rounded text-xs hover:bg-muted text-left {currentPath === defaultBasePath ? 'bg-muted' : ''}"
 				onclick={() => onSelect(defaultBasePath!)}
 			>
 				<Home class="w-4 h-4 shrink-0 text-sky-500" />
@@ -91,7 +92,7 @@
 
 		<!-- Recent locations -->
 		{#each locations.filter(l => l !== defaultBasePath) as location}
-			<div class="group flex items-center gap-1">
+			<div class="group shrink-0 flex items-center gap-1">
 				<button
 					type="button"
 					class="flex-1 flex items-center gap-2 px-2 py-1.5 rounded text-xs hover:bg-muted text-left truncate {currentPath === location ? 'bg-muted' : ''}"
@@ -102,7 +103,7 @@
 				</button>
 				<button
 					type="button"
-					class="p-1 opacity-0 group-hover:opacity-100 hover:bg-muted rounded transition-opacity"
+					class="p-1 sm:opacity-0 sm:group-hover:opacity-100 hover:bg-muted rounded transition-opacity"
 					onclick={() => handleRemove(location)}
 					title="Remove from recent"
 				>

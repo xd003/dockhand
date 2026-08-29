@@ -9,7 +9,7 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
-	import { Trash2, Search, Plus, Eye, Check, XCircle, RefreshCw, Icon, AlertTriangle, X, HardDrive, Stamp, FolderOpen, Download, Database, Server, CircleDot, Circle } from 'lucide-svelte';
+	import { Trash2, Search, Plus, Eye, Check, XCircle, RefreshCw, Icon, AlertTriangle, X, HardDrive, Stamp, FolderOpen, Download, Database, Server, CircleDot, Circle, EllipsisVertical, ChevronDown } from 'lucide-svelte';
 	import { broom } from '@lucide/lab';
 	import ConfirmPopover from '$lib/components/ConfirmPopover.svelte';
 	import BatchOperationModal from '$lib/components/BatchOperationModal.svelte';
@@ -23,7 +23,9 @@
 	import type { VolumeInfo } from '$lib/types';
 	import { currentEnvironment, environments, appendEnvParam, clearStaleEnvironment } from '$lib/stores/environment';
 	import MultiSelectFilter from '$lib/components/MultiSelectFilter.svelte';
+	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
 	import PageHeader from '$lib/components/PageHeader.svelte';
+	import SelectionToolbar from '$lib/components/SelectionToolbar.svelte';
 	import { onDockerEvent, isVolumeListChange } from '$lib/stores/events';
 	import { canAccess } from '$lib/stores/auth';
 	import { formatDateTime } from '$lib/stores/settings';
@@ -89,22 +91,22 @@
 	// Row highlighting state
 	let highlightedRowId = $state<string | null>(null);
 
+	// Mobile card list: tap to expand (no swipe — volumes have no quick toggle actions)
+	let expandedVolumes = $state<Set<string>>(new Set());
+	function toggleVolumeExpand(name: string) {
+		if (expandedVolumes.has(name)) {
+			expandedVolumes.delete(name);
+		} else {
+			expandedVolumes.add(name);
+		}
+		expandedVolumes = new Set(expandedVolumes);
+	}
+
 	// Batch operation modal state
 	let showBatchOpModal = $state(false);
 	let batchOpTitle = $state('');
 	let batchOpOperation = $state('');
 	let batchOpItems = $state<Array<{ id: string; name: string }>>([]);
-
-	// Check if all filtered volumes are selected
-	const allFilteredSelected = $derived(
-		filteredVolumes.length > 0 && filteredVolumes.every(v => selectedVolumes.has(v.name))
-	);
-	const someFilteredSelected = $derived(
-		filteredVolumes.some(v => selectedVolumes.has(v.name)) && !allFilteredSelected
-	);
-	const selectedInFilter = $derived(
-		filteredVolumes.filter(v => selectedVolumes.has(v.name))
-	);
 
 	function selectNone() {
 		selectedVolumes = new Set();
@@ -244,6 +246,17 @@
 		return result;
 	});
 
+	// Check if all filtered volumes are selected
+	const allFilteredSelected = $derived(
+		filteredVolumes.length > 0 && filteredVolumes.every(v => selectedVolumes.has(v.name))
+	);
+	const someFilteredSelected = $derived(
+		filteredVolumes.some(v => selectedVolumes.has(v.name)) && !allFilteredSelected
+	);
+	const selectedInFilter = $derived(
+		filteredVolumes.filter(v => selectedVolumes.has(v.name))
+	);
+
 
 	async function fetchVolumes() {
 		loading = true;
@@ -370,6 +383,12 @@
 		}, 3000));
 	}
 
+	function requestPrune() {
+		if (!$appSettings.confirmDestructive || window.confirm('Prune all unused volumes?')) {
+			pruneVolumes();
+		}
+	}
+
 
 	// Handle tab visibility changes (e.g., user switches back from another tab)
 	function handleVisibilityChange() {
@@ -421,13 +440,40 @@
 </script>
 
 <div class="flex-1 min-h-0 flex flex-col gap-3 overflow-hidden">
-	<div class="shrink-0 flex flex-wrap justify-between items-center gap-3 min-h-8">
+	<!-- Mobile header: compact title + overflow menu -->
+	<div class="flex shrink-0 items-center justify-between gap-2 md:hidden">
+		<PageHeader icon={HardDrive} title="Volumes" count={volumes.length} showConnection={false} class="gap-2" countClass="min-w-7" />
+		<DropdownMenu.Root>
+			<DropdownMenu.Trigger>
+				{#snippet child({ props })}
+					<button {...props} type="button" class="flex size-11 shrink-0 items-center justify-center rounded-lg hover:bg-muted" aria-label="Volume actions">
+						<EllipsisVertical class="size-5" />
+					</button>
+				{/snippet}
+			</DropdownMenu.Trigger>
+			<DropdownMenu.Content align="end" class="w-56 p-1">
+				<DropdownMenu.Item onclick={fetchVolumes} class="min-h-11">
+					<RefreshCw />
+					Refresh
+				</DropdownMenu.Item>
+				{#if $canAccess('volumes', 'remove')}
+					<DropdownMenu.Item onclick={requestPrune} disabled={pruneStatus === 'pruning'} variant="destructive" class="min-h-11">
+						<Icon iconNode={broom} />
+						Prune unused
+					</DropdownMenu.Item>
+				{/if}
+			</DropdownMenu.Content>
+		</DropdownMenu.Root>
+	</div>
+
+	<div class="hidden shrink-0 flex-wrap justify-between items-center gap-3 min-h-8 min-w-0 md:flex">
 		<PageHeader icon={HardDrive} title="Volumes" count={volumes.length} />
-		<div class="flex flex-wrap items-center gap-2">
+		<div class="flex w-full sm:w-auto flex-wrap items-center gap-2 min-w-0">
 			<div class="relative">
 				<Search class="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
 				<Input
 					type="text"
+					aria-label="Search volumes"
 					placeholder="Search volumes..."
 					bind:value={searchInput}
 					onkeydown={(e) => e.key === 'Escape' && (searchInput = '')}
@@ -487,18 +533,10 @@
 		</div>
 	</div>
 
-	<!-- Selection bar - always reserve space to prevent layout shift -->
-	<div class="h-4 shrink-0">
+	<!-- Selection bar - desktop only; mobile cards have no checkboxes -->
+	<div class="hidden h-4 shrink-0 flex-wrap items-center gap-1 md:flex">
 		{#if selectedVolumes.size > 0}
-			<div class="flex items-center gap-1 text-xs text-muted-foreground h-full">
-			<span>{selectedInFilter.length} selected</span>
-			<button
-				type="button"
-				class="inline-flex items-center gap-1 px-1.5 py-0 rounded border border-border hover:border-foreground/30 hover:shadow transition-all"
-				onclick={selectNone}
-			>
-				Clear
-			</button>
+			<SelectionToolbar count={selectedInFilter.length} onClear={selectNone} />
 			{#if $canAccess('volumes', 'remove')}
 			<ConfirmPopover
 				open={confirmBulkRemove}
@@ -517,7 +555,6 @@
 				{/snippet}
 			</ConfirmPopover>
 			{/if}
-			</div>
 		{/if}
 	</div>
 
@@ -530,6 +567,123 @@
 			description="Create a volume to persist container data"
 		/>
 	{:else}
+		<!-- Mobile card list: sticky search/filters, tap to expand -->
+		<div class="min-h-0 min-w-0 flex-1 overflow-y-auto md:hidden">
+			<div class="sticky top-0 z-20 grid w-full min-w-0 grid-cols-3 gap-2 bg-background pb-3">
+				<div class="relative min-w-0">
+					<Search class="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+					<Input
+						type="search"
+						aria-label="Search volumes"
+						placeholder="Search volumes..."
+						bind:value={searchInput}
+						onkeydown={(e) => e.key === 'Escape' && (searchInput = '')}
+						class="h-11 rounded-lg pl-10"
+					/>
+				</div>
+				<div class="min-w-0">
+					<MultiSelectFilter
+						bind:value={driverFilter}
+						options={driverOptions}
+						placeholder="All drivers"
+						pluralLabel="drivers"
+						width="w-full data-[size=sm]:h-11"
+						defaultIcon={Database}
+					/>
+				</div>
+				<div class="min-w-0">
+					<MultiSelectFilter
+						bind:value={usageFilter}
+						options={usageOptions}
+						placeholder="All usage"
+						pluralLabel="usages"
+						width="w-full data-[size=sm]:h-11"
+						defaultIcon={CircleDot}
+					/>
+				</div>
+			</div>
+
+			<div class="space-y-2 pb-24">
+				{#each filteredVolumes as volume (volume.name)}
+					{@const stack = volume.labels['com.docker.compose.project']}
+					{@const usedCount = volume.usedBy?.length ?? 0}
+					<div class="overflow-hidden rounded-xl border bg-card/60 shadow-sm">
+						<button
+							type="button"
+							class="flex min-h-11 w-full touch-pan-y items-center gap-2 px-3 py-2.5 text-left"
+							onclick={() => toggleVolumeExpand(volume.name)}
+							aria-expanded={expandedVolumes.has(volume.name)}
+						>
+							<code class="min-w-0 flex-1 truncate text-sm font-semibold" title={volume.name}>{volume.name}</code>
+							{#if usedCount > 0}
+								<span class="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs font-medium text-emerald-600 dark:text-emerald-400"><CircleDot class="size-3" />{usedCount}</span>
+							{:else}
+								<span class="shrink-0 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">Unused</span>
+							{/if}
+							<ChevronDown class="size-4 shrink-0 text-muted-foreground transition-transform {expandedVolumes.has(volume.name) ? 'rotate-180' : ''}" />
+						</button>
+
+						{#if expandedVolumes.has(volume.name)}
+							<div class="space-y-3 border-t bg-muted/20 p-3">
+								<div class="grid grid-cols-2 gap-2">
+									<div class="rounded-lg bg-background/80 p-2.5"><div class="text-[10px] text-muted-foreground">Driver</div><div class="mt-0.5 truncate font-mono text-xs font-semibold">{volume.driver}</div></div>
+									<div class="rounded-lg bg-background/80 p-2.5"><div class="text-[10px] text-muted-foreground">Type</div><div class="mt-0.5 truncate font-mono text-xs font-semibold">{volume.options?.type ?? '-'}</div></div>
+									<div class="rounded-lg bg-background/80 p-2.5"><div class="text-[10px] text-muted-foreground">Stack</div><div class="mt-0.5 truncate font-mono text-xs font-semibold">{stack ?? '-'}</div></div>
+									<div class="rounded-lg bg-background/80 p-2.5"><div class="text-[10px] text-muted-foreground">Created</div><div class="mt-0.5 truncate font-mono text-xs font-semibold">{formatDate(volume.created)}</div></div>
+								</div>
+								{#if usedCount > 0}
+									<div class="flex flex-wrap gap-1">
+										{#each volume.usedBy?.slice(0, 3) ?? [] as container}
+											<button
+												type="button"
+												onclick={() => openContainerInspect(container.containerId, container.containerName)}
+												class="inline-flex max-w-[140px] items-center gap-1 rounded-full bg-background px-2 py-1 text-xs text-primary hover:underline"
+												title={container.containerName}
+											>
+												<ContainerIcon image="" name={container.containerName} class="size-3" hideWhenNoMatch />
+												<span class="truncate">{container.containerName}</span>
+											</button>
+										{/each}
+										{#if usedCount > 3}
+											<span class="self-center text-xs text-muted-foreground">+{usedCount - 3}</span>
+										{/if}
+									</div>
+								{/if}
+
+								<div class="grid grid-cols-2 gap-2">
+									{#if $canAccess('volumes', 'inspect')}
+										<button type="button" onclick={() => inspectVolume(volume.name)} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><Eye class="size-4" />Inspect</button>
+										<button type="button" onclick={() => browseVolume(volume.name)} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><FolderOpen class="size-4" />Browse</button>
+										<button type="button" onclick={() => exportVolume(volume.name)} disabled={exportingVolume === volume.name} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted disabled:opacity-50"><Download class="size-4" />Export</button>
+									{/if}
+									{#if $canAccess('volumes', 'create')}
+										<button type="button" onclick={() => cloneVolume(volume.name)} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><Stamp class="size-4" />Clone</button>
+									{/if}
+									{#if $canAccess('volumes', 'remove')}
+										<ConfirmPopover
+											open={confirmDeleteName === volume.name}
+											action="Delete"
+											itemType="volume"
+											itemName={volume.name}
+											title="Remove"
+											unstyled
+											onConfirm={() => removeVolume(volume.name)}
+											onOpenChange={(open) => confirmDeleteName = open ? volume.name : null}
+										>
+											{#snippet children({ open })}
+												<span class="flex min-h-11 w-full items-center justify-center gap-2 rounded-lg border border-red-500/50 px-2 text-xs font-medium text-red-400"><Trash2 class="size-4" />Remove</span>
+											{/snippet}
+										</ConfirmPopover>
+									{/if}
+								</div>
+							</div>
+						{/if}
+					</div>
+				{/each}
+			</div>
+		</div>
+
+		<div class="hidden min-h-0 flex-1 md:flex md:flex-col">
 		<DataGrid
 			data={filteredVolumes}
 			keyField="name"
@@ -661,8 +815,23 @@
 				{/if}
 			{/snippet}
 		</DataGrid>
+		</div>
 	{/if}
 </div>
+
+{#if $canAccess('volumes', 'create') && $currentEnvironment}
+	<div class="fixed bottom-[max(1rem,env(safe-area-inset-bottom))] right-4 z-40 md:hidden">
+		<button
+			type="button"
+			onclick={() => showCreateModal = true}
+			class="flex size-14 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg transition-transform hover:scale-105 active:scale-95"
+			aria-label="Create volume"
+			title="Create volume"
+		>
+			<Plus class="size-6" />
+		</button>
+	</div>
+{/if}
 
 <CreateVolumeModal
 	bind:open={showCreateModal}

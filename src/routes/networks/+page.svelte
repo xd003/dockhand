@@ -9,7 +9,8 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import MultiSelectFilter from '$lib/components/MultiSelectFilter.svelte';
-	import { Trash2, Search, Plus, Eye, Check, XCircle, RefreshCw, Icon, AlertTriangle, X, Network, Link, Copy, CopyPlus, Share2, Server, Globe, MonitorSmartphone, Cpu, CircleOff, GitGraph } from 'lucide-svelte';
+	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
+	import { Trash2, Search, Plus, Eye, Check, XCircle, RefreshCw, Icon, AlertTriangle, X, Network, Link, Copy, CopyPlus, Share2, Server, Globe, MonitorSmartphone, Cpu, CircleOff, GitGraph, EllipsisVertical, ChevronDown } from 'lucide-svelte';
 	import { broom } from '@lucide/lab';
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import ConfirmPopover from '$lib/components/ConfirmPopover.svelte';
@@ -21,8 +22,10 @@
 	import { onDockerEvent, isNetworkListChange } from '$lib/stores/events';
 	import CreateNetworkModal from './CreateNetworkModal.svelte';
 	import { canAccess } from '$lib/stores/auth';
+	import { appSettings } from '$lib/stores/settings';
 	import { EmptyState, NoEnvironment } from '$lib/components/ui/empty-state';
 	import PageHeader from '$lib/components/PageHeader.svelte';
+	import SelectionToolbar from '$lib/components/SelectionToolbar.svelte';
 	import { DataGrid } from '$lib/components/data-grid';
 	import { compareIps } from '$lib/utils/ip';
 	import NetworkGraphModal from './NetworkGraphModal.svelte';
@@ -119,6 +122,17 @@
 
 	// Row highlighting state
 	let highlightedRowId = $state<string | null>(null);
+
+	// Mobile card list: tap to expand (no swipe — networks have no quick toggle actions)
+	let expandedNetworks = $state<Set<string>>(new Set());
+	function toggleNetworkExpand(id: string) {
+		if (expandedNetworks.has(id)) {
+			expandedNetworks.delete(id);
+		} else {
+			expandedNetworks.add(id);
+		}
+		expandedNetworks = new Set(expandedNetworks);
+	}
 
 	// Batch operation modal state
 	let showBatchOpModal = $state(false);
@@ -452,6 +466,12 @@
 		}, 3000));
 	}
 
+	function requestPrune() {
+		if (!$appSettings.confirmDestructive || window.confirm('Prune all unused networks?')) {
+			pruneNetworks();
+		}
+	}
+
 	// Handle tab visibility changes (e.g., user switches back from another tab)
 	function handleVisibilityChange() {
 		if (document.visibilityState === 'visible' && envId) {
@@ -502,17 +522,48 @@
 </script>
 
 <div class="flex-1 min-h-0 flex flex-col gap-3 overflow-hidden">
-	<div class="shrink-0 flex flex-wrap justify-between items-center gap-3 min-h-8">
+	<!-- Mobile header: compact title + overflow menu -->
+	<div class="flex shrink-0 items-center justify-between gap-2 md:hidden">
+		<PageHeader icon={Network} title="Networks" count={networks.length} showConnection={false} class="gap-2" countClass="min-w-7" />
+		<DropdownMenu.Root>
+			<DropdownMenu.Trigger>
+				{#snippet child({ props })}
+					<button {...props} type="button" class="flex size-11 shrink-0 items-center justify-center rounded-lg hover:bg-muted" aria-label="Network actions">
+						<EllipsisVertical class="size-5" />
+					</button>
+				{/snippet}
+			</DropdownMenu.Trigger>
+			<DropdownMenu.Content align="end" class="w-56 p-1">
+				<DropdownMenu.Item onclick={fetchNetworks} class="min-h-11">
+					<RefreshCw />
+					Refresh
+				</DropdownMenu.Item>
+				<DropdownMenu.Item onclick={openGraphModal} class="min-h-11">
+					<GitGraph />
+					View graph
+				</DropdownMenu.Item>
+				{#if $canAccess('networks', 'remove')}
+					<DropdownMenu.Item onclick={requestPrune} disabled={pruneStatus === 'pruning'} variant="destructive" class="min-h-11">
+						<Icon iconNode={broom} />
+						Prune unused
+					</DropdownMenu.Item>
+				{/if}
+			</DropdownMenu.Content>
+		</DropdownMenu.Root>
+	</div>
+
+	<div class="hidden shrink-0 flex-wrap justify-between items-center gap-3 min-h-8 min-w-0 md:flex">
 		<PageHeader icon={Network} title="Networks" count={networks.length} />
-		<div class="flex flex-wrap items-center gap-2">
+		<div class="flex w-full sm:w-auto flex-wrap items-center gap-2 min-w-0">
 			<div class="relative">
 				<Search class="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
 				<Input
 					type="text"
+					aria-label="Search networks"
 					placeholder="Search networks..."
 					bind:value={searchInput}
 					onkeydown={(e) => e.key === 'Escape' && (searchInput = '')}
-					class="pl-8 h-8 w-48 text-sm"
+					class="pl-8 h-8 w-full sm:w-48 text-sm"
 				/>
 			</div>
 			<!-- Driver filter -->
@@ -573,18 +624,10 @@
 		</div>
 	</div>
 
-	<!-- Selection bar - always reserve space to prevent layout shift -->
-	<div class="h-4 shrink-0">
+	<!-- Selection bar - desktop only; mobile cards have no checkboxes -->
+	<div class="hidden h-4 shrink-0 flex-wrap items-center gap-1 md:flex">
 		{#if selectedNetworks.size > 0}
-			<div class="flex items-center gap-1 text-xs text-muted-foreground h-full">
-			<span>{selectedInFilter.length} selected</span>
-			<button
-				type="button"
-				class="inline-flex items-center gap-1 px-1.5 py-0 rounded border border-border hover:border-foreground/30 hover:shadow transition-all"
-				onclick={selectNone}
-			>
-				Clear
-			</button>
+			<SelectionToolbar count={selectedInFilter.length} onClear={selectNone} />
 			{#if $canAccess('networks', 'remove')}
 			<ConfirmPopover
 				open={confirmBulkRemove}
@@ -603,7 +646,6 @@
 				{/snippet}
 			</ConfirmPopover>
 			{/if}
-			</div>
 		{/if}
 	</div>
 
@@ -616,6 +658,118 @@
 			description="Create a network to connect containers"
 		/>
 	{:else}
+		<!-- Mobile card list: sticky search/filters, tap to expand -->
+		<div class="min-h-0 min-w-0 flex-1 overflow-y-auto md:hidden">
+			<div class="sticky top-0 z-20 grid w-full min-w-0 grid-cols-3 gap-2 bg-background pb-3">
+				<div class="relative min-w-0">
+					<Search class="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+					<Input
+						type="search"
+						aria-label="Search networks"
+						placeholder="Search networks..."
+						bind:value={searchInput}
+						onkeydown={(e) => e.key === 'Escape' && (searchInput = '')}
+						class="h-11 rounded-lg pl-10"
+					/>
+				</div>
+				<div class="min-w-0">
+					<MultiSelectFilter
+						bind:value={selectedDrivers}
+						options={driverOptions}
+						placeholder="All drivers"
+						pluralLabel="drivers"
+						width="w-full data-[size=sm]:h-11"
+						defaultIcon={Network}
+					/>
+				</div>
+				<div class="min-w-0">
+					<MultiSelectFilter
+						bind:value={selectedScopes}
+						options={scopeOptions}
+						placeholder="All scopes"
+						pluralLabel="scopes"
+						width="w-full data-[size=sm]:h-11"
+						defaultIcon={Globe}
+					/>
+				</div>
+			</div>
+
+			<div class="space-y-2 pb-24">
+				{#each filteredNetworks as network (network.id)}
+					{@const containerCount = getContainerCount(network)}
+					{@const isProtected = protectedNetworks.includes(network.name)}
+					<div class="overflow-hidden rounded-xl border bg-card/60 shadow-sm">
+						<button
+							type="button"
+							class="flex min-h-11 w-full touch-pan-y items-center gap-2 px-3 py-2.5 text-left"
+							onclick={() => toggleNetworkExpand(network.id)}
+							aria-expanded={expandedNetworks.has(network.id)}
+						>
+							<span class="min-w-0 flex-1 truncate text-sm font-semibold" title={network.name}>{network.name}</span>
+							{#if isProtected}
+								<span class="shrink-0 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">built-in</span>
+							{/if}
+							{#if network.internal}
+								<span class="shrink-0 rounded-full bg-blue-500/15 px-2 py-0.5 text-xs font-medium text-blue-600 dark:text-blue-400">internal</span>
+							{/if}
+							<span class="shrink-0 rounded-full bg-muted px-2 py-0.5 font-mono text-xs text-muted-foreground">{containerCount}</span>
+							<ChevronDown class="size-4 shrink-0 text-muted-foreground transition-transform {expandedNetworks.has(network.id) ? 'rotate-180' : ''}" />
+						</button>
+
+						{#if expandedNetworks.has(network.id)}
+							<div class="space-y-3 border-t bg-muted/20 p-3">
+								<div class="grid grid-cols-2 gap-2">
+									<div class="rounded-lg bg-background/80 p-2.5"><div class="text-[10px] text-muted-foreground">Driver</div><div class="mt-0.5 truncate font-mono text-xs font-semibold">{network.driver}</div></div>
+									<div class="rounded-lg bg-background/80 p-2.5"><div class="text-[10px] text-muted-foreground">Scope</div><div class="mt-0.5 truncate font-mono text-xs font-semibold">{network.scope}</div></div>
+									<div class="rounded-lg bg-background/80 p-2.5"><div class="text-[10px] text-muted-foreground">Subnet</div><div class="mt-0.5 truncate font-mono text-xs font-semibold">{getSubnet(network)}</div></div>
+									<div class="rounded-lg bg-background/80 p-2.5"><div class="text-[10px] text-muted-foreground">Gateway</div><div class="mt-0.5 truncate font-mono text-xs font-semibold">{getGateway(network)}</div></div>
+								</div>
+								{#if containerCount > 0}
+									<div class="flex flex-wrap gap-1">
+										{#each Object.values(network.containers || {}) as container}
+											<span class="inline-flex max-w-[140px] items-center gap-1 rounded-full bg-background px-2 py-1 text-xs text-muted-foreground" title={container.name}>
+												<span class="truncate">{container.name}</span>
+											</span>
+										{/each}
+									</div>
+								{/if}
+
+								<div class="grid grid-cols-2 gap-2">
+									{#if $canAccess('networks', 'inspect')}
+										<button type="button" onclick={() => inspectNetwork(network)} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><Eye class="size-4" />Inspect</button>
+									{/if}
+									<button type="button" onclick={() => copyNetworkId(network.id)} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><Copy class="size-4" />Copy ID</button>
+									{#if !isProtected && $canAccess('networks', 'connect')}
+										<button type="button" onclick={() => openConnectModal(network)} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><Link class="size-4" />Connect</button>
+									{/if}
+									{#if !isProtected && $canAccess('networks', 'create')}
+										<button type="button" onclick={() => duplicateNetwork(network)} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><CopyPlus class="size-4" />Duplicate</button>
+									{/if}
+									{#if !isProtected && $canAccess('networks', 'remove')}
+										<ConfirmPopover
+											open={confirmDeleteId === network.id}
+											action="Delete"
+											itemType="network"
+											itemName={network.name}
+											title="Remove"
+											unstyled
+											onConfirm={() => removeNetwork(network.id, network.name)}
+											onOpenChange={(open) => confirmDeleteId = open ? network.id : null}
+										>
+											{#snippet children({ open })}
+												<span class="flex min-h-11 w-full items-center justify-center gap-2 rounded-lg border border-red-500/50 px-2 text-xs font-medium text-red-400"><Trash2 class="size-4" />Remove</span>
+											{/snippet}
+										</ConfirmPopover>
+									{/if}
+								</div>
+							</div>
+						{/if}
+					</div>
+				{/each}
+			</div>
+		</div>
+
+		<div class="hidden min-h-0 flex-1 md:flex md:flex-col">
 		<DataGrid
 			data={filteredNetworks}
 			keyField="id"
@@ -720,8 +874,23 @@
 				{/if}
 			{/snippet}
 		</DataGrid>
+		</div>
 	{/if}
 </div>
+
+{#if $canAccess('networks', 'create') && $currentEnvironment}
+	<div class="fixed bottom-[max(1rem,env(safe-area-inset-bottom))] right-4 z-40 md:hidden">
+		<button
+			type="button"
+			onclick={() => showCreateModal = true}
+			class="flex size-14 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg transition-transform hover:scale-105 active:scale-95"
+			aria-label="Create network"
+			title="Create network"
+		>
+			<Plus class="size-6" />
+		</button>
+	</div>
+{/if}
 
 <CreateNetworkModal
 	bind:open={showCreateModal}

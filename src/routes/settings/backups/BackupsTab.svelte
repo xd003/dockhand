@@ -591,7 +591,7 @@
 		<div class="flex items-center gap-3">
 			<SearchInput bind:value={searchQuery} placeholder="Filter destinations..." class="h-8 w-64 text-sm" />
 			<Select.Root type="single" value={statusFilter} onValueChange={(v) => statusFilter = (v as typeof statusFilter) ?? 'all'}>
-				<Select.Trigger class="h-8 w-40 text-sm">
+				<Select.Trigger class="h-8 w-full sm:w-40 text-sm">
 					{statusFilter === 'success' ? 'Initialized' : statusFilter === 'needs_init' ? 'Needs init' : statusFilter === 'failed' ? 'Failed' : 'All statuses'}
 				</Select.Trigger>
 				<Select.Content>
@@ -810,7 +810,7 @@
 />
 
 <Dialog.Root bind:open={browseOpen}>
-	<Dialog.Content class="max-w-6xl w-[calc(100vw-4rem)] h-[88vh] flex flex-col overflow-hidden">
+	<Dialog.Content class="max-w-6xl w-[calc(100vw-1rem)] sm:w-[calc(100vw-4rem)] max-h-[calc(100dvh-1rem)] flex flex-col overflow-hidden">
 		<Dialog.Header>
 			<Dialog.Title class="flex items-center gap-2">
 				<FolderOpen class="w-5 h-5" />

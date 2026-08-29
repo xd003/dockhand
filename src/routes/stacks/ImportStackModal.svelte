@@ -343,7 +343,7 @@
 	<!-- Scan Results View -->
 	<Dialog.Root bind:open onOpenChange={(o) => !o && handleClose()}>
 		<Dialog.Content class="max-w-4xl h-[80vh] flex flex-col p-0 gap-0">
-			<Dialog.Header class="px-6 py-4 border-b shrink-0">
+			<Dialog.Header class="px-4 py-4 sm:px-6 border-b shrink-0">
 				<Dialog.Title class="flex items-center gap-2">
 					<Import class="w-5 h-5" />
 					Select stacks to adopt to
@@ -414,7 +414,7 @@
 			</div>
 
 			<!-- Footer -->
-			<div class="px-6 py-4 border-t flex items-center justify-between shrink-0">
+			<div class="px-4 py-3 sm:px-6 border-t flex flex-wrap items-center justify-between gap-2 shrink-0">
 				<div class="flex items-center gap-3">
 					<Checkbox
 						checked={allSelected}
@@ -424,7 +424,7 @@
 						<span class="font-medium text-foreground">{selectedCount}</span> of {scanResults.length} selected
 					</span>
 				</div>
-				<div class="flex gap-2">
+				<div class="flex flex-wrap gap-2">
 					<Button variant="outline" onclick={goBackToBrowse}>
 						Back
 					</Button>
@@ -466,12 +466,12 @@
 		{#if previewFile}
 			<div class="flex-1 flex flex-col min-h-0 overflow-hidden">
 				<!-- Stack info bar -->
-				<div class="px-5 py-3 border-b bg-muted/30 flex items-center gap-4 shrink-0">
-					<div class="flex items-center gap-2">
-						<span class="text-sm text-muted-foreground">Stack:</span>
-						<span class="font-medium">{previewComposeName || previewFile.path.replace(/\/[^/]+$/, '').split('/').pop() || 'unknown'}</span>
+				<div class="px-5 py-3 border-b bg-muted/30 flex flex-wrap items-center gap-x-4 gap-y-2 shrink-0">
+					<div class="flex items-center gap-2 min-w-0">
+						<span class="text-sm text-muted-foreground shrink-0">Stack:</span>
+						<span class="font-medium truncate">{previewComposeName || previewFile.path.replace(/\/[^/]+$/, '').split('/').pop() || 'unknown'}</span>
 						{#if previewServiceCount > 0}
-							<Badge variant="outline" class="text-xs">
+							<Badge variant="outline" class="text-xs shrink-0">
 								{previewServiceCount} service{previewServiceCount !== 1 ? 's' : ''}
 							</Badge>
 						{/if}

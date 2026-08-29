@@ -442,11 +442,13 @@
 	<title>{m.profile_page_title()}</title>
 </svelte:head>
 
-<div class="container mx-auto p-6">
-	<div class="flex items-center gap-3 mb-6">
-		<PageHeader icon={User} title={m.profile_title()} showConnection={false}>
-			<p class="text-muted-foreground text-sm">{m.profile_subtitle()}</p>
-		</PageHeader>
+<!-- The layout already supplies py-2 px-3; p-6 on top of it double-padded phones. -->
+<div class="container mx-auto p-6 max-md:p-0">
+	<div class="flex flex-wrap items-center gap-3 mb-6">
+		<PageHeader icon={User} title={m.profile_title()} showConnection={false} />
+		<!-- Sibling rather than a PageHeader slot: inside the header's nowrap row the
+		     subtitle squeezed the title down to "Pro…" on phones. -->
+		<p class="text-muted-foreground text-sm max-md:w-full">{m.profile_subtitle()}</p>
 	</div>
 
 	{#if loading}

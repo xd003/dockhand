@@ -149,8 +149,8 @@
 	<Card.Content class="space-y-4">
 		{#if canEdit}
 			<!-- Create -->
-			<div class="flex items-center gap-2">
-				<Input bind:value={newName} placeholder={m.settings_labels_tags_new_name_placeholder()} class="h-9 max-w-xs"
+			<div class="flex flex-wrap items-center gap-2">
+				<Input bind:value={newName} placeholder={m.settings_labels_tags_new_name_placeholder()} class="h-11 w-full sm:h-9 sm:max-w-xs"
 					onkeydown={(e: KeyboardEvent) => { if (e.key === 'Enter') create(); }} />
 				<Popover.Root>
 					<Popover.Trigger>
@@ -172,7 +172,7 @@
 					</Popover.Content>
 				</Popover.Root>
 				<TagIconPicker icon={newIcon} hex={tagHex(newColor)} onSelect={(i) => (newIcon = i)} />
-				<Button size="sm" onclick={create} disabled={creating || !normalizeTag(newName)}>
+				<Button size="sm" class="max-sm:h-11" onclick={create} disabled={creating || !normalizeTag(newName)}>
 					<Plus class="w-4 h-4" /> {m.settings_labels_tags_add()}
 				</Button>
 			</div>

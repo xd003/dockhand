@@ -231,15 +231,15 @@
 <div class="p-4 space-y-4">
 	<Card.Root>
 		<Card.Header class="pb-3">
-			<div class="flex items-center justify-between">
-				<div class="flex items-center gap-2">
-					<Tags class="w-5 h-5 text-muted-foreground" />
-					<div>
+			<div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+				<div class="flex items-center gap-2 min-w-0">
+					<Tags class="w-5 h-5 text-muted-foreground shrink-0" />
+					<div class="min-w-0">
 						<Card.Title class="text-base">{m.settings_labels_title()}</Card.Title>
 						<Card.Description>{m.settings_labels_description()}</Card.Description>
 					</div>
 				</div>
-				<div class="flex items-center gap-2">
+				<div class="flex items-center gap-2 shrink-0">
 					{#if !loading}
 						<Badge variant="secondary" class="text-xs">{m.settings_labels_count({ count: labels.length })}</Badge>
 					{/if}
@@ -248,7 +248,7 @@
 						variant="outline"
 						onclick={openAddDialog}
 						disabled={!$canAccess('environments', 'edit')}
-						class="h-7 text-xs"
+						class="h-9 text-xs sm:h-7"
 					>
 						<Plus class="w-3.5 h-3.5" />
 						{m.settings_labels_add_label()}
@@ -269,7 +269,7 @@
 					<p class="text-xs">{m.settings_labels_empty_hint()}</p>
 				</div>
 			{:else}
-				<Table.Root>
+				<Table.Root class="responsive-table md:min-w-[560px]">
 					<Table.Header>
 						<Table.Row>
 							<Table.Head class="w-[200px]">{m.settings_labels_col_label()}</Table.Head>
@@ -283,7 +283,7 @@
 						{#each labels as info}
 							{@const colors = getColors(info.label)}
 							<Table.Row>
-								<Table.Cell>
+								<Table.Cell data-label="Label">
 									<span
 										class="px-2 py-0.5 text-xs rounded font-medium"
 										style="background-color: {colors.bgColor}; color: {colors.color}"
@@ -291,7 +291,7 @@
 										{info.label}
 									</span>
 								</Table.Cell>
-								<Table.Cell class="text-center">
+								<Table.Cell class="text-center" data-label="Color">
 									<Popover.Root open={colorPopoverLabel === info.label} onOpenChange={(open) => colorPopoverLabel = open ? info.label : null}>
 										<Popover.Trigger>
 											<button
@@ -328,10 +328,10 @@
 										</Popover.Content>
 									</Popover.Root>
 								</Table.Cell>
-								<Table.Cell class="text-center">
+								<Table.Cell class="text-center" data-label="Environments">
 									<Badge variant="outline" class="text-xs">{info.count}</Badge>
 								</Table.Cell>
-								<Table.Cell>
+								<Table.Cell data-label="Used by">
 									<div class="flex flex-wrap gap-1">
 										{#each info.environments as env}
 											<span class="inline-flex items-center gap-0.5 text-xs text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
@@ -341,7 +341,7 @@
 										{/each}
 									</div>
 								</Table.Cell>
-								<Table.Cell class="text-right">
+								<Table.Cell class="text-right" data-label="Actions">
 									<div class="flex items-center justify-end gap-1">
 										<Tooltip.Root>
 											<Tooltip.Trigger>
@@ -489,7 +489,7 @@
 				{/if}
 			</div>
 			<div class="space-y-2">
-				<div class="flex items-center justify-between">
+				<div class="flex flex-wrap items-center justify-between gap-2">
 					<Label>{m.settings_labels_environments()}</Label>
 					<div class="flex gap-2">
 						<button type="button" class="text-2xs text-primary hover:underline" onclick={selectAllEnvs}>{m.settings_labels_select_all()}</button>

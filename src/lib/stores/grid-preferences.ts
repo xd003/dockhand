@@ -9,9 +9,16 @@
 
 import { writable, get } from 'svelte/store';
 import type { AllGridPreferences, GridId, ColumnPreference, GridColumnPreferences } from '$lib/types';
-import { getDefaultColumnPreferences, getConfigurableColumns } from '$lib/config/grid-columns';
+import { getDefaultColumnPreferences, getAllColumnConfigs } from '$lib/config/grid-columns';
 
 const STORAGE_KEY = 'dockhand-grid-preferences';
+
+function clampColumnWidth(gridId: GridId, column: ColumnPreference): ColumnPreference {
+	const minWidth = getAllColumnConfigs(gridId).find((config) => config.id === column.id)?.minWidth;
+	return minWidth !== undefined && column.width !== undefined
+		? { ...column, width: Math.max(minWidth, column.width) }
+		: column;
+}
 
 // Load initial state from localStorage
 function loadFromStorage(): AllGridPreferences {
@@ -102,7 +109,7 @@ function createGridPreferencesStore() {
 			const savedIds = new Set(gridPrefs.columns.map((c) => c.id));
 
 			// Start with saved columns, then add any new defaults
-			const result = [...gridPrefs.columns];
+			const result = gridPrefs.columns.map((column) => clampColumnWidth(gridId, column));
 			for (const def of defaults) {
 				if (!savedIds.has(def.id)) {
 					result.push(def);
@@ -191,7 +198,7 @@ function createGridPreferencesStore() {
 			const gridPrefs = prefs[gridId];
 			if (!gridPrefs?.columns?.length) return undefined;
 			const col = gridPrefs.columns.find((c) => c.id === columnId);
-			return col?.width;
+			return col?.width === undefined ? undefined : Math.max(getAllColumnConfigs(gridId).find((config) => config.id === columnId)?.minWidth ?? 0, col.width);
 		},
 
 		// Get all saved widths as a Map
@@ -211,6 +218,7 @@ function createGridPreferencesStore() {
 
 		// Set width for a specific column (works for both configurable and fixed columns)
 		async setColumnWidth(gridId: GridId, columnId: string, width: number) {
+			width = Math.max(getAllColumnConfigs(gridId).find((config) => config.id === columnId)?.minWidth ?? 0, width);
 			const allCols = this.getAllColumns(gridId);
 			let found = false;
 			const newColumns = allCols.map((col) => {

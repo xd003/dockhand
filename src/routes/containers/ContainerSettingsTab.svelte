@@ -845,7 +845,7 @@
 			<div class="flex gap-2 items-end">
 				<div class="flex-1">
 					<Select.Root type="single" value={selectedConfigSetId} onValueChange={applyConfigSet}>
-						<Select.Trigger class="w-full h-9">
+						<Select.Trigger class="w-full h-9 max-sm:h-11">
 							<span>{selectedConfigSetId ? configSets.find(c => c.id === parseInt(selectedConfigSetId))?.name : (mode === 'edit' ? m.containers_settings_config_set_merge_placeholder() : m.containers_settings_config_set_prefill_placeholder())}</span>
 						</Select.Trigger>
 						<Select.Content>
@@ -875,7 +875,7 @@
 			<h3 class="text-sm font-semibold text-foreground">{m.containers_settings_basic_settings()}</h3>
 		</div>
 
-		<div class="grid grid-cols-2 gap-3">
+		<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
 			<div class="space-y-1.5">
 				<Label for="name" class="text-xs font-medium">{m.containers_settings_container_name()}</Label>
 				<Input
@@ -927,12 +927,12 @@
 			<Input id="entrypoint" bind:value={entrypoint} placeholder="/docker-entrypoint.sh" class="h-9" />
 		</div>
 
-		<div class="grid grid-cols-2 gap-3">
+		<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
 			<div class="space-y-1.5">
 				<Label class="text-xs font-medium">{m.containers_settings_restart_policy()}</Label>
 				<div class="flex items-center gap-1.5">
 					<Select.Root type="single" bind:value={restartPolicy}>
-						<Select.Trigger id="restartPolicy" tabindex={0} class="w-full h-9">
+						<Select.Trigger id="restartPolicy" tabindex={0} class="w-full h-9 max-sm:h-11">
 							<span class="flex items-center">
 								{#if restartPolicy === 'no'}
 									<Ban class="w-3.5 h-3.5 mr-2 text-muted-foreground" />
@@ -1227,7 +1227,7 @@
 								</div>
 								{#if isExpanded && networkConfigs[networkName]}
 									<div class="px-2.5 pb-2.5 pt-1 border-t space-y-2">
-										<div class="grid grid-cols-2 gap-2">
+								<div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
 											<div class="space-y-1">
 												<Label class="text-2xs font-medium text-muted-foreground">{m.containers_settings_ipv4_address()}</Label>
 												<Input
@@ -1290,7 +1290,7 @@
 	<div class="space-y-2">
 		<div class="flex justify-between items-center pb-2 border-b">
 			<h3 class="text-sm font-semibold text-foreground">{m.containers_settings_port_mappings()}</h3>
-			<Button type="button" size="sm" variant="ghost" onclick={addPortMapping} class="h-7 text-xs">
+			<Button type="button" size="sm" variant="ghost" onclick={addPortMapping} class="h-7 max-sm:min-h-11 max-sm:px-3 text-xs">
 				<Plus class="w-3.5 h-3.5" />
 				{m.containers_settings_add()}
 			</Button>
@@ -1303,13 +1303,13 @@
 				{@const hostIpError = validateIp(parsed.hostIp)}
 				{@const containerPortError = validatePort(mapping.containerPort)}
 				<div class="flex flex-col gap-1">
-					<div class="flex gap-2 items-center">
-						<div class="flex-1 relative group/port">
+					<div class="flex flex-wrap gap-2 items-center">
+						<div class="flex-1 min-w-0 relative group/port max-sm:basis-full">
 							<span class="absolute -top-2 left-2 text-2xs text-muted-foreground bg-background px-1">{m.containers_settings_port_host()}</span>
-							<Input bind:value={mapping.hostPort} type="text" placeholder={m.containers_settings_host_port_placeholder()} class="h-9 {(hostPortError || hostIpError) && mapping.hostPort ? 'border-destructive' : ''}" />
+							<Input bind:value={mapping.hostPort} type="text" placeholder={m.containers_settings_host_port_placeholder()} class="h-9 max-sm:h-11 max-sm:pr-12 {(hostPortError || hostIpError) && mapping.hostPort ? 'border-destructive' : ''}" />
 							<button
 								type="button"
-								class="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground/50 hover:text-primary transition-colors opacity-0 group-hover/port:opacity-100"
+								class="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground/50 hover:text-primary transition-colors opacity-0 group-hover/port:opacity-100 max-sm:opacity-100 max-sm:size-11 max-sm:flex max-sm:items-center max-sm:justify-center"
 								onclick={() => findFreePort(index)}
 								disabled={findingFreePort}
 								title={m.containers_settings_find_free_port()}
@@ -1321,10 +1321,11 @@
 								{/if}
 							</button>
 						</div>
-						<div class="flex-1 relative">
+						<div class="flex-1 min-w-0 relative max-sm:basis-full">
 							<span class="absolute -top-2 left-2 text-2xs text-muted-foreground bg-background px-1">{m.containers_settings_port_container()}</span>
-							<Input bind:value={mapping.containerPort} type="text" placeholder={m.containers_settings_container_port_placeholder()} class="h-9 {containerPortError && mapping.containerPort ? 'border-destructive' : ''}" />
+							<Input bind:value={mapping.containerPort} type="text" placeholder={m.containers_settings_container_port_placeholder()} class="h-9 max-sm:h-11 {containerPortError && mapping.containerPort ? 'border-destructive' : ''}" />
 						</div>
+					<div class="flex items-center gap-2 max-sm:w-full max-sm:[&_button]:min-h-11 max-sm:[&_button]:px-3">
 					<ToggleGroup
 						value={mapping.protocol}
 						options={protocolOptions}
@@ -1336,10 +1337,11 @@
 						variant="ghost"
 						onclick={() => removePortMapping(index)}
 						disabled={portMappings.length === 1}
-						class="h-9 w-9 text-muted-foreground hover:text-destructive"
+						class="h-9 w-9 max-sm:h-11 max-sm:w-11 max-sm:ml-auto text-muted-foreground hover:text-destructive"
 					>
 						<Trash2 class="w-4 h-4" />
 					</Button>
+					</div>
 				</div>
 				{#if (hostPortError && mapping.hostPort) || (hostIpError && mapping.hostPort) || (containerPortError && mapping.containerPort)}
 					<p class="text-xs text-destructive pl-1">{hostIpError || hostPortError || containerPortError}</p>
@@ -1372,7 +1374,7 @@
 	<div class="space-y-2">
 		<div class="flex justify-between items-center pb-2 border-b">
 			<h3 class="text-sm font-semibold text-foreground">{m.containers_settings_volume_mappings()}</h3>
-			<Button type="button" size="sm" variant="ghost" onclick={addVolumeMapping} class="h-7 text-xs">
+			<Button type="button" size="sm" variant="ghost" onclick={addVolumeMapping} class="h-7 max-sm:min-h-11 max-sm:px-3 text-xs">
 				<Plus class="w-3.5 h-3.5" />
 				{m.containers_settings_add()}
 			</Button>
@@ -1380,30 +1382,32 @@
 
 		<div class="space-y-2">
 			{#each volumeMappings as mapping, index}
-				<div class="flex gap-2 items-center">
-					<div class="flex-1 relative">
+				<div class="flex flex-wrap gap-2 items-center">
+					<div class="flex-1 min-w-0 relative max-sm:basis-full">
 						<span class="absolute -top-2 left-2 text-2xs text-muted-foreground bg-background px-1">{m.containers_settings_host_path()}</span>
-						<Input bind:value={mapping.hostPath} class="h-9" />
+						<Input bind:value={mapping.hostPath} class="h-9 max-sm:h-11" />
 					</div>
-					<div class="flex-1 relative">
+					<div class="flex-1 min-w-0 relative max-sm:basis-full">
 						<span class="absolute -top-2 left-2 text-2xs text-muted-foreground bg-background px-1">{m.containers_settings_container_path()}</span>
-						<Input bind:value={mapping.containerPath} class="h-9" />
+						<Input bind:value={mapping.containerPath} class="h-9 max-sm:h-11" />
 					</div>
-					<ToggleGroup
-						value={mapping.mode}
-						options={volumeModeOptions}
-						onchange={(v) => { volumeMappings[index].mode = v; }}
-					/>
-					<Button
-						type="button"
-						size="icon"
-						variant="ghost"
-						onclick={() => removeVolumeMapping(index)}
-						disabled={volumeMappings.length === 1}
-						class="h-9 w-9 text-muted-foreground hover:text-destructive"
-					>
-						<Trash2 class="w-4 h-4" />
-					</Button>
+					<div class="flex items-center gap-2 max-sm:w-full max-sm:[&_button]:min-h-11 max-sm:[&_button]:px-3">
+						<ToggleGroup
+							value={mapping.mode}
+							options={volumeModeOptions}
+							onchange={(v) => { volumeMappings[index].mode = v; }}
+						/>
+						<Button
+							type="button"
+							size="icon"
+							variant="ghost"
+							onclick={() => removeVolumeMapping(index)}
+							disabled={volumeMappings.length === 1}
+							class="h-9 w-9 max-sm:h-11 max-sm:w-11 max-sm:ml-auto text-muted-foreground hover:text-destructive"
+						>
+							<Trash2 class="w-4 h-4" />
+						</Button>
+					</div>
 				</div>
 			{/each}
 		</div>
@@ -1413,7 +1417,7 @@
 	<div class="space-y-2">
 		<div class="flex justify-between items-center pb-2 border-b">
 			<h3 class="text-sm font-semibold text-foreground">{m.containers_settings_environment_variables()}</h3>
-			<Button type="button" size="sm" variant="ghost" onclick={addEnvVar} class="h-7 text-xs">
+			<Button type="button" size="sm" variant="ghost" onclick={addEnvVar} class="h-7 max-sm:min-h-11 max-sm:px-3 text-xs">
 				<Plus class="w-3.5 h-3.5" />
 				{m.containers_settings_add()}
 			</Button>
@@ -1421,14 +1425,14 @@
 
 		<div class="space-y-2">
 			{#each envVars as envVar, index}
-				<div class="flex gap-2 items-center">
-					<div class="flex-1 relative">
+				<div class="flex flex-wrap gap-2 items-center">
+					<div class="flex-1 min-w-0 relative max-sm:basis-full">
 						<span class="absolute -top-2 left-2 text-2xs text-muted-foreground bg-background px-1">{m.containers_settings_key()}</span>
-						<Input bind:value={envVar.key} class="h-9" />
+						<Input bind:value={envVar.key} class="h-9 max-sm:h-11" />
 					</div>
-					<div class="flex-1 relative">
+					<div class="flex-1 min-w-0 relative max-sm:basis-full">
 						<span class="absolute -top-2 left-2 text-2xs text-muted-foreground bg-background px-1">{m.containers_settings_value()}</span>
-						<Input bind:value={envVar.value} class="h-9" />
+						<Input bind:value={envVar.value} class="h-9 max-sm:h-11" />
 					</div>
 					<Button
 						type="button"
@@ -1436,7 +1440,7 @@
 						variant="ghost"
 						onclick={() => removeEnvVar(index)}
 						disabled={envVars.length === 1}
-						class="h-9 w-9 text-muted-foreground hover:text-destructive"
+						class="h-9 w-9 max-sm:h-11 max-sm:w-11 max-sm:ml-auto text-muted-foreground hover:text-destructive"
 					>
 						<Trash2 class="w-4 h-4" />
 					</Button>
@@ -1449,7 +1453,7 @@
 	<div class="space-y-2">
 		<div class="flex justify-between items-center pb-2 border-b">
 			<h3 class="text-sm font-semibold text-foreground">{m.containers_settings_labels()}</h3>
-			<Button type="button" size="sm" variant="ghost" onclick={addLabel} class="h-7 text-xs">
+			<Button type="button" size="sm" variant="ghost" onclick={addLabel} class="h-7 max-sm:min-h-11 max-sm:px-3 text-xs">
 				<Plus class="w-3.5 h-3.5" />
 				{m.containers_settings_add()}
 			</Button>
@@ -1457,14 +1461,14 @@
 
 		<div class="space-y-2">
 			{#each labels as label, index}
-				<div class="flex gap-2 items-center">
-					<div class="flex-1 relative">
+				<div class="flex flex-wrap gap-2 items-center">
+					<div class="flex-1 min-w-0 relative max-sm:basis-full">
 						<span class="absolute -top-2 left-2 text-2xs text-muted-foreground bg-background px-1">{m.containers_settings_key()}</span>
-						<Input bind:value={label.key} class="h-9" />
+						<Input bind:value={label.key} class="h-9 max-sm:h-11" />
 					</div>
-					<div class="flex-1 relative">
+					<div class="flex-1 min-w-0 relative max-sm:basis-full">
 						<span class="absolute -top-2 left-2 text-2xs text-muted-foreground bg-background px-1">{m.containers_settings_value()}</span>
-						<Input bind:value={label.value} class="h-9" />
+						<Input bind:value={label.value} class="h-9 max-sm:h-11" />
 					</div>
 					<Button
 						type="button"
@@ -1472,7 +1476,7 @@
 						variant="ghost"
 						onclick={() => removeLabel(index)}
 						disabled={labels.length <= 1 && !labels[0]?.key}
-						class="h-9 w-9 text-muted-foreground hover:text-destructive"
+						class="h-9 w-9 max-sm:h-11 max-sm:w-11 max-sm:ml-auto text-muted-foreground hover:text-destructive"
 					>
 						<Trash2 class="w-4 h-4" />
 					</Button>
@@ -1527,7 +1531,7 @@
 					{/if}
 				{/snippet}
 
-				<div class="grid grid-cols-2 gap-3">
+				<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
 					<div class="space-y-1.5">
 						<Label for="memoryLimit" class="text-xs font-medium">{m.containers_settings_memory_limit()}</Label>
 						<div class="flex items-center gap-1.5">
@@ -1543,7 +1547,7 @@
 						</div>
 					</div>
 				</div>
-				<div class="grid grid-cols-2 gap-3">
+				<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
 					<div class="space-y-1.5">
 						<Label for="nanoCpus" class="text-xs font-medium">{m.containers_settings_cpu_limit()}</Label>
 						<div class="flex items-center gap-1.5">
@@ -1559,7 +1563,7 @@
 						</div>
 					</div>
 				</div>
-				<div class="grid grid-cols-2 gap-3">
+				<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
 					<div class="space-y-1.5">
 						<Label for="cpuQuota" class="text-xs font-medium">{m.containers_settings_cpu_quota()}</Label>
 						<div class="flex items-center gap-1.5">
@@ -1603,7 +1607,7 @@
 		</button>
 		{#if showSecurity}
 			<div class="px-3 pb-3 space-y-3 border-t">
-				<div class="grid grid-cols-2 gap-3 pt-2">
+				<div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
 					<div class="space-y-1.5">
 						<Label for="containerUser" class="text-xs font-medium">{m.containers_settings_user()}</Label>
 						<Input id="containerUser" bind:value={containerUser} placeholder={m.containers_settings_user_placeholder()} class="h-9" />
@@ -1733,7 +1737,7 @@
 						<Label for="healthcheckCommand" class="text-xs font-medium">{m.containers_settings_command()}</Label>
 						<Input id="healthcheckCommand" bind:value={healthcheckCommand} placeholder={m.containers_settings_example_placeholder({ example: 'curl -f http://localhost/ || exit 1' })} class="h-9" />
 					</div>
-					<div class="grid grid-cols-4 gap-3">
+					<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
 						<div class="space-y-1.5">
 							<Label for="healthcheckInterval" class="text-xs font-medium">{m.containers_settings_interval()}</Label>
 							<Input id="healthcheckInterval" type="number" bind:value={healthcheckInterval} min="1" class="h-9" />
@@ -1887,7 +1891,7 @@
 		{#if showDevices}
 			<div class="px-3 pb-3 space-y-3 border-t">
 				<div class="flex justify-end pt-2">
-					<Button type="button" size="sm" variant="ghost" onclick={addDeviceMapping} class="h-7 text-xs">
+					<Button type="button" size="sm" variant="ghost" onclick={addDeviceMapping} class="h-7 max-sm:min-h-11 max-sm:px-3 text-xs">
 						<Plus class="w-3.5 h-3.5" />
 						{m.containers_settings_add_device()}
 					</Button>
@@ -2074,7 +2078,7 @@
 		{#if showUlimits}
 			<div class="px-3 pb-3 space-y-3 border-t">
 				<div class="flex justify-end pt-2">
-					<Button type="button" size="sm" variant="ghost" onclick={addUlimit} class="h-7 text-xs">
+					<Button type="button" size="sm" variant="ghost" onclick={addUlimit} class="h-7 max-sm:min-h-11 max-sm:px-3 text-xs">
 						<Plus class="w-3.5 h-3.5" />
 						{m.containers_settings_add_ulimit()}
 					</Button>

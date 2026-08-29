@@ -314,7 +314,7 @@
 	<div class="space-y-4">
 		<Card.Root>
 			<Card.Header>
-				<div class="flex items-center justify-between">
+				<div class="flex flex-wrap items-center justify-between gap-2">
 					<div>
 						<Card.Title class="text-sm font-medium flex items-center gap-2">
 							<Shield class="w-4 h-4" />
@@ -325,7 +325,7 @@
 						</p>
 					</div>
 					{#if $canAccess('settings', 'edit')}
-						<Button size="sm" onclick={() => openRoleModal(null)}>
+						<Button size="sm" class="max-sm:h-11" onclick={() => openRoleModal(null)}>
 							<Plus class="w-4 h-4" />
 							{m.settings_roles_add_role()}
 						</Button>
@@ -347,7 +347,7 @@
 					<div class="space-y-2 max-h-96 overflow-y-auto">
 						{#each roles as role}
 							{@const pills = getRolePermissionPills(role.permissions)}
-							<div class="flex items-center justify-between p-3 border rounded-md gap-4">
+							<div class="flex flex-wrap items-center justify-between p-3 border rounded-md gap-4">
 								<div class="flex-1 min-w-0">
 									<div class="flex items-center gap-2 mb-1">
 										<span class="font-medium text-sm">{role.name}</span>
@@ -438,15 +438,15 @@
 									<div class="flex items-center gap-1 flex-shrink-0">
 										{#if role.isSystem}
 											<!-- System roles: only Copy button -->
-											<Button variant="ghost" size="sm" onclick={() => copyRole(role)} title={m.settings_roles_copy_as_new()}>
+											<Button variant="ghost" size="sm" class="max-sm:h-11" onclick={() => copyRole(role)} title={m.settings_roles_copy_as_new()}>
 												<Copy class="w-4 h-4" />
 											</Button>
 										{:else}
 											<!-- Custom roles: Copy, Edit and Delete -->
-											<Button variant="ghost" size="sm" onclick={() => copyRole(role)} title={m.settings_roles_copy_as_new()}>
+											<Button variant="ghost" size="sm" class="max-sm:h-11" onclick={() => copyRole(role)} title={m.settings_roles_copy_as_new()}>
 												<Copy class="w-4 h-4" />
 											</Button>
-											<Button variant="ghost" size="sm" onclick={() => openRoleModal(role)} title={m.settings_roles_edit_role()}>
+											<Button variant="ghost" size="sm" class="max-sm:h-11" onclick={() => openRoleModal(role)} title={m.settings_roles_edit_role()}>
 												<Pencil class="w-4 h-4" />
 											</Button>
 											<ConfirmPopover

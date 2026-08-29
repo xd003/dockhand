@@ -60,19 +60,19 @@
 	</div>
 
 	{#if isFloating}
-		<div class="ml-6 flex items-start gap-2 rounded-md bg-muted/50 p-2 text-xs text-muted-foreground">
+		<div class="ml-0 sm:ml-6 flex items-start gap-2 rounded-md bg-muted/50 p-2 text-xs text-muted-foreground">
 			<Info class="w-3.5 h-3.5 mt-0.5 shrink-0" />
 			<span><code>{floatingTag}</code> {m.semver_floating_hint_before()} <code>1.26</code>{m.semver_floating_hint_after()}</span>
 		</div>
 	{:else if enabled}
 		<!-- Indented under the header so it reads as "all this belongs to the toggle
 		     above"; the boxes inside are full-width of THIS container so they line up. -->
-		<div class="ml-6 space-y-4">
+		<div class="ml-0 sm:ml-6 space-y-4">
 			<!-- max bump -->
 			<div class="space-y-2">
-				<div class="flex items-center gap-4">
+				<div class="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:gap-4">
 					<Label class="flex-1">{m.semver_which_updates()}</Label>
-					<div class="inline-flex shrink-0 gap-0.5 rounded-lg border border-border bg-muted/60 p-0.5">
+					<div class="inline-flex max-w-full flex-wrap gap-0.5 rounded-lg border border-border bg-muted/60 p-0.5">
 						{#each bumps as bump}
 							<button
 								type="button"
@@ -146,7 +146,7 @@
 	{/if}
 
 	{#if enabled && !isFloating}
-		<div class="ml-6 flex items-start gap-2 rounded-md bg-muted/50 p-2 text-xs text-muted-foreground">
+		<div class="ml-0 sm:ml-6 flex items-start gap-2 rounded-md bg-muted/50 p-2 text-xs text-muted-foreground">
 			<Info class="w-3.5 h-3.5 mt-0.5 shrink-0" />
 			<span>{m.semver_badge_note_before()} <strong class="text-foreground font-semibold">{m.semver_badge_note_strong()}</strong>{m.semver_badge_note_after()}</span>
 		</div>

@@ -13312,16 +13312,27 @@
                     "sources": {
                       "type": "object",
                       "properties": {}
+                    },
+                    "composeContent": {
+                      "type": "string"
+                    },
+                    "composeContents": {
+                      "type": "object",
+                      "properties": {}
                     }
                   },
                   "required": [
                     "vars",
-                    "sources"
+                    "sources",
+                    "composeContent",
+                    "composeContents"
                   ]
                 },
                 "example": {
                   "vars": {},
-                  "sources": {}
+                  "sources": {},
+                  "composeContent": "string",
+                  "composeContents": {}
                 }
               }
             }
@@ -13369,6 +13380,12 @@
                   },
                   "composePath": {
                     "type": "string"
+                  },
+                  "composePaths": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
                   },
                   "envFilePath": {
                     "type": "string"

@@ -29,6 +29,7 @@ import { handlePreviewEnv, type PreviewEnvAuthContext, type PreviewEnvCredential
  *   branch?: string,                 // Branch (default: main)
  *   credentialId?: number,           // Credential for auth
  *   composePath: string,             // Path to compose file
+ *   composePaths?: string[],         // Ordered compose files; first is primary
  *   envFilePath?: string             // Optional additional env file
  * }
  *
@@ -37,6 +38,10 @@ import { handlePreviewEnv, type PreviewEnvAuthContext, type PreviewEnvCredential
  *   sources: {                       // Which file each var came from
  *     [key: string]: '.env' | 'envFile'
  *   },
+ *   composeContent: string,           // Primary compose file content
+ *   composeContents: {                // Ordered path-to-content map
+ *     [path: string]: string
+ *   },
  *   error?: string
  * }
  */
@@ -44,9 +49,9 @@ import { handlePreviewEnv, type PreviewEnvAuthContext, type PreviewEnvCredential
  * @openapi
  * summary: Clone a repo to a temp dir and preview its merged env-file variables for the git-stack env editor
  * description: repositoryId from GET /api/git/repositories. credentialId from GET /api/git/credentials. SECURITY: requires the git:edit permission when authentication is enabled (403 otherwise). The repository target is checked against the shared SSRF policy — loopback, link-local/cloud-metadata and other reserved dangerous targets are rejected, while ordinary private-LAN addresses are intentionally allowed so self-hosted Git servers remain supported. The ext::/file:: transports and local paths are rejected; and composePath/envFilePath are constrained to stay inside the cloned repository (path traversal).
- * body: {repositoryId:integer, url:string, branch:string, credentialId:integer, composePath:string!, envFilePath:string}
+ * body: {repositoryId:integer, url:string, branch:string, credentialId:integer, composePath:string!, composePaths:array<string>, envFilePath:string}
  * body-example: {"repositoryId":3,"composePath":"docker-compose.yml","envFilePath":".env.prod"}
- * resp-200: {vars:object!, sources:object!}
+ * resp-200: {vars:object!, sources:object!, composeContent:string!, composeContents:object!}
  * resp-400: composePath missing, neither repositoryId nor url supplied, the URL points at a loopback/link-local/metadata/reserved target, the URL is an unsupported transport (ext::/file::), the compose/env path escapes the repository, or the repo/env-file preview reported an error
  * resp-403: Permission denied (requires the git:edit permission — same model as /api/git/branches; an unauthenticated or read-only user is denied here rather than via a separate 401)
  * resp-404: The referenced repository does not exist
@@ -76,7 +81,12 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
 
 	switch (outcome.kind) {
 		case 'success':
-			return json({ vars: outcome.vars, sources: outcome.sources });
+			return json({
+				vars: outcome.vars,
+				sources: outcome.sources,
+				composeContent: outcome.composeContent,
+				composeContents: outcome.composeContents
+			});
 		case 'permission-denied':
 			return json({ error: 'Permission denied' }, { status: 403 });
 		case 'bad-request': {

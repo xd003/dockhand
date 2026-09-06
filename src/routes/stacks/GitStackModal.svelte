@@ -181,11 +181,13 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 	let gitDragIndex = $state<number | null>(null);
 
 	function gitAddComposePath() {
+		clearPreviewState();
 		formComposePaths = [...formComposePaths, ''];
 	}
 
 	function gitRemoveComposePath(index: number) {
 		if (formComposePaths.length <= 1) return;
+		clearPreviewState();
 		const newPaths = formComposePaths.filter((_, i) => i !== index);
 		formComposePaths = newPaths;
 		if (index === 0) formComposePath = newPaths[0] || 'compose.yaml';
@@ -193,6 +195,7 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 
 	function gitMovePathUp(index: number) {
 		if (index <= 0) return;
+		clearPreviewState();
 		const newPaths = [...formComposePaths];
 		[newPaths[index - 1], newPaths[index]] = [newPaths[index], newPaths[index - 1]];
 		formComposePaths = newPaths;
@@ -201,6 +204,7 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 
 	function gitMovePathDown(index: number) {
 		if (index >= formComposePaths.length - 1) return;
+		clearPreviewState();
 		const newPaths = [...formComposePaths];
 		[newPaths[index], newPaths[index + 1]] = [newPaths[index + 1], newPaths[index]];
 		formComposePaths = newPaths;
@@ -219,6 +223,7 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 		e.preventDefault();
 		if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
 		if (gitDragIndex === null || gitDragIndex === index) return;
+		clearPreviewState();
 		const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
 		const before = e.clientY < rect.top + rect.height / 2;
 		const targetIndex = before ? index : index + 1;
@@ -245,6 +250,7 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 
 	async function gitHandleRowBrowseSelect(absolutePath: string) {
 		if (gitBrowseForRowIndex === null) return;
+		clearPreviewState();
 		const capturedIndex = gitBrowseForRowIndex;
 		const relativePath = gitBrowserRootPath && absolutePath.startsWith(gitBrowserRootPath)
 			? absolutePath.slice(gitBrowserRootPath.length).replace(/^\//, '')
@@ -426,6 +432,13 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 	let loadingFileVars = $state(false);
 	let existingSecretKeys = $state<Set<string>>(new Set());
 	let populatingEnvVars = $state(false);
+	let envValidation = $state<ValidationResult | null>(null);
+	let previewedComposePaths = $state<string[]>([]);
+	let previewedComposeContent = $state('');
+	let previewedComposeContents = $state<Record<string, string>>({});
+	let previewRequestSeq = 0;
+	let envValidationSeq = 0;
+	let skipNextEnvValidationEffect = false;
 
 	// Resizable split panel state
 	let splitRatio = $state(60); // percentage for form panel
@@ -641,7 +654,61 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 		}
 	}
 
+	function clearPreviewState() {
+		if (gitStack) return;
+		previewRequestSeq++;
+		envValidationSeq++;
+		envValidation = null;
+		previewedComposePaths = [];
+		previewedComposeContent = '';
+		previewedComposeContents = {};
+		const previousFileKeys = new Set(Object.keys(fileEnvVars));
+		if (previousFileKeys.size > 0) {
+			envVars = envVars.filter((variable) => !previousFileKeys.has(variable.key));
+		}
+		fileEnvVars = {};
+		populatingEnvVars = false;
+	}
+
+	async function validatePreviewedEnvVars(
+		composeContent: string = previewedComposeContent,
+		composeContents: Record<string, string> = previewedComposeContents,
+		composePaths: string[] = previewedComposePaths,
+		variables: EnvVar[] = envVars
+	) {
+		if (gitStack || !composeContent.trim()) return;
+
+		const seq = ++envValidationSeq;
+		try {
+			const stackName = encodeURIComponent(formStackName.trim() || 'new');
+			const response = await fetch(appendEnvParam(`/api/stacks/${stackName}/env/validate`, effectiveEnvId), {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					compose: composeContent,
+					composePaths,
+					composeContents,
+					variables: variables.filter((v) => v.key.trim()).map((v) => v.key.trim())
+				})
+			});
+
+			if (seq !== envValidationSeq) return;
+			if (!response.ok) {
+				const data = await response.json().catch(() => ({}));
+				throw new Error(data.error || `Validation failed (${response.status})`);
+			}
+
+			skipNextEnvValidationEffect = true;
+			envValidation = await response.json() as ValidationResult;
+		} catch (e) {
+			if (seq !== envValidationSeq) return;
+			console.error('Failed to validate env vars:', e);
+			toast.error('Failed to validate environment variables');
+		}
+	}
+
 	async function populateEnvVars() {
+		if (gitStack) return;
 		// Validate we have repository info
 		if (formRepoMode === 'existing' && !formRepositoryId) {
 			toast.error('Please select a repository first');
@@ -652,11 +719,16 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 			return;
 		}
 
+		clearPreviewState();
+		const seq = previewRequestSeq;
+		const selectedComposePaths = formComposePaths.map((path) => path.trim()).filter(Boolean);
+		const primaryComposePath = selectedComposePaths[0] || formComposePath.trim() || 'compose.yaml';
+		const orderedComposePaths = selectedComposePaths.length > 0 ? selectedComposePaths : [primaryComposePath];
 		populatingEnvVars = true;
 		try {
 			const body: Record<string, any> = {
-				composePath: formComposePath || 'compose.yaml',
-				composePaths: formComposePaths.length > 0 ? formComposePaths : null,
+				composePath: primaryComposePath,
+				composePaths: orderedComposePaths,
 				envFilePath: formEnvFilePath || null
 			};
 
@@ -677,6 +749,7 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 			});
 
 			const data = await response.json();
+			if (seq !== previewRequestSeq) return;
 
 			if (!response.ok) {
 				toast.error('Failed to load env variables', {
@@ -685,37 +758,62 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 				return;
 			}
 
-			const vars = data.vars as Record<string, string>;
-			const count = Object.keys(vars).length;
-
-			if (count === 0) {
-				toast.info('No environment variables found', {
-					description: 'No .env files found in the repository. You can still add variables manually.'
-				});
-				return;
-			}
+			const vars = (data.vars || {}) as Record<string, string>;
+			const composeContent = typeof data.composeContent === 'string' ? data.composeContent : '';
+			const composeContents = data.composeContents && typeof data.composeContents === 'object' && !Array.isArray(data.composeContents)
+				? data.composeContents as Record<string, string>
+				: {};
+			previewedComposePaths = orderedComposePaths;
+			previewedComposeContent = composeContent;
+			previewedComposeContents = composeContents;
 
 			// Convert to EnvVar array - preserve existing user entries that aren't in repo
-			const existingUserVars = envVars.filter(v => v.key.trim() && !(v.key in vars));
+			const existingUserVars = envVars.filter((v) => v.key.trim() && !(v.key in vars));
 			const newVars: EnvVar[] = Object.entries(vars).map(([key, value]) => ({
 				key,
 				value,
 				isSecret: false
 			}));
+			const nextEnvVars = [...newVars, ...existingUserVars];
 
-			envVars = [...newVars, ...existingUserVars];
+			envVars = nextEnvVars;
 			fileEnvVars = vars;
 
-			toast.success(`Loaded ${count} variable${count === 1 ? '' : 's'}`, {
-				description: 'You can now customize values before deploying'
-			});
+			const count = Object.keys(vars).length;
+			if (count === 0) {
+				toast.info('No environment variables found', {
+					description: 'No .env files found in the repository. Required compose variables will still be shown as missing.'
+				});
+			} else {
+				toast.success(`Loaded ${count} variable${count === 1 ? '' : 's'}`, {
+					description: 'You can now customize values before deploying'
+				});
+			}
+
+			await validatePreviewedEnvVars(composeContent, composeContents, orderedComposePaths, nextEnvVars);
 		} catch (e) {
+			if (seq !== previewRequestSeq) return;
 			console.error('Failed to populate env vars:', e);
 			toast.error('Failed to load env variables');
 		} finally {
-			populatingEnvVars = false;
+			if (seq === previewRequestSeq) populatingEnvVars = false;
 		}
 	}
+
+	// Revalidate after environment-variable edits, but not on every keystroke.
+	$effect(() => {
+		const variables = envVars;
+		if (!open || gitStack || !envValidation || !previewedComposeContent.trim()) return;
+		if (skipNextEnvValidationEffect) {
+			skipNextEnvValidationEffect = false;
+			return;
+		}
+
+		const timeout = setTimeout(() => {
+			void validatePreviewedEnvVars(previewedComposeContent, previewedComposeContents, previewedComposePaths, variables);
+		}, 800);
+		return () => clearTimeout(timeout);
+	});
 
 	async function resetForm() {
 		// Clear state BEFORE async loads to avoid race conditions
@@ -729,6 +827,13 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 		envFiles = [];
 		envVars = [];
 		fileEnvVars = {};
+		envValidation = null;
+		previewedComposePaths = [];
+		previewedComposeContent = '';
+		previewedComposeContents = {};
+		previewRequestSeq++;
+		envValidationSeq++;
+		skipNextEnvValidationEffect = false;
 		existingSecretKeys = new Set();
 		temporaryCloneToken = null;
 		temporaryCloneRepositoryId = null;
@@ -1158,6 +1263,7 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 	}
 
 	function handleGitMultiBrowseSelect(entries: { path: string; name: string }[]) {
+		clearPreviewState();
 		const newRelativePaths: string[] = [];
 		for (const entry of entries) {
 			const relativePath = gitBrowserRootPath && entry.path.startsWith(gitBrowserRootPath)
@@ -1296,7 +1402,7 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 						<Button
 							variant={formRepoMode === 'existing' ? 'default' : 'outline'}
 							size="sm"
-							onclick={() => formRepoMode = 'existing'}
+							onclick={() => { clearPreviewState(); formRepoMode = 'existing'; }}
 							disabled={repositories.length === 0}
 						>
 							Select existing
@@ -1304,7 +1410,7 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 						<Button
 							variant={formRepoMode === 'new' ? 'default' : 'outline'}
 							size="sm"
-							onclick={() => formRepoMode = 'new'}
+							onclick={() => { clearPreviewState(); formRepoMode = 'new'; }}
 						>
 							Add new
 						</Button>
@@ -1314,7 +1420,7 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 						<Select.Root
 							type="single"
 							value={formRepositoryId?.toString() ?? ''}
-							onValueChange={(v) => { formRepositoryId = v ? parseInt(v) : null; errors.repository = undefined; }}
+							onValueChange={(v) => { clearPreviewState(); formRepositoryId = v ? parseInt(v) : null; errors.repository = undefined; }}
 						>
 							<Select.Trigger class="w-full {errors.repository ? 'border-destructive' : ''}">
 								{#if selectedRepo}
@@ -1372,8 +1478,8 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 									loading={branchesLoading}
 									placeholder="Repository default ({selectedRepo.branch})"
 									clearLabel="Repository default ({selectedRepo.branch})"
-									onchange={(v) => { formBranch = v; }}
-									onclear={() => { formBranch = null; }}
+									onchange={(v) => { clearPreviewState(); formBranch = v; }}
+									onclear={() => { clearPreviewState(); formBranch = null; }}
 								/>
 								<p class="text-xs text-muted-foreground">Branch this stack deploys from. Leave empty to follow the branch configured on the repository ({selectedRepo.branch}).</p>
 							</div>
@@ -1400,7 +1506,7 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 									bind:value={formNewRepoUrl}
 									placeholder="https://github.com/user/repo.git"
 									class={errors.repoUrl ? 'border-destructive focus-visible:ring-destructive' : ''}
-									oninput={() => errors.repoUrl = undefined}
+									oninput={() => { clearPreviewState(); errors.repoUrl = undefined; }}
 								/>
 								{#if errors.repoUrl}
 									<p class="text-xs text-destructive">{errors.repoUrl}</p>
@@ -1423,8 +1529,8 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 										branches={branches}
 										loading={branchesLoading}
 										placeholder="main"
-										onchange={(v) => { formNewRepoBranch = v; }}
-										onclear={() => { formNewRepoBranch = 'main'; }}
+										onchange={(v) => { clearPreviewState(); formNewRepoBranch = v; }}
+										onclear={() => { clearPreviewState(); formNewRepoBranch = 'main'; }}
 									/>
 									<p class="text-xs text-muted-foreground">Type a name or pick from the list.</p>
 								</div>
@@ -1433,7 +1539,7 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 									<Select.Root
 										type="single"
 										value={formNewRepoCredentialId?.toString() ?? 'none'}
-										onValueChange={(v) => formNewRepoCredentialId = v === 'none' ? null : parseInt(v)}
+										onValueChange={(v) => { clearPreviewState(); formNewRepoCredentialId = v === 'none' ? null : parseInt(v); }}
 									>
 										<Select.Trigger class="w-full">
 											{@const selectedCred = credentials.find(c => c.id === formNewRepoCredentialId)}
@@ -1598,8 +1704,8 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 						<Input
 							bind:value={formComposePaths[i]}
 							placeholder={i === 0 ? 'compose.yaml' : 'compose.override.yaml'}
-							class="flex-1"
-							oninput={() => { if (i === 0) formComposePath = formComposePaths[i]; }}
+							class="flex-1 max-md:h-11"
+							oninput={() => { clearPreviewState(); if (i === 0) formComposePath = formComposePaths[i]; }}
 						/>
 						{#if formRepoMode === 'existing' ? !!formRepositoryId : !!formNewRepoUrl.trim()}
 						<Button
@@ -1651,6 +1757,8 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 						id="env-file-path"
 						bind:value={formEnvFilePath}
 						placeholder=""
+							class="max-md:h-11"
+							oninput={clearPreviewState}
 					/>
 				<p class="text-xs text-muted-foreground">Additional env file to pass to Docker Compose</p>
 			</div>
@@ -1895,6 +2003,8 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 				/>
 				<StackEnvVarsPanel
 					bind:variables={envVars}
+					class="min-h-0 flex-1"
+					validation={!gitStack ? envValidation : null}
 					injectedSecretKeys={gitStack !== null ? injectedSecretKeys : []}
 					providerType={secretProviders.find((p) => p.id === formSecretProviderId)?.type ?? null}
 					providerName={secretProviders.find((p) => p.id === formSecretProviderId)?.name ?? null}

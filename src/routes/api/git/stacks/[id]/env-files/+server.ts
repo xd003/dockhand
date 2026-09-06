@@ -1,7 +1,8 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getGitStack } from '$lib/server/db';
-import { listGitStackEnvFiles, readGitStackEnvFile } from '$lib/server/git';
+import { listGitStackEnvFiles, previewGitStackEnvFiles, readGitStackEnvFile } from '$lib/server/git';
+import { assertNotMigrating } from '$lib/server/git-migration-guard';
 import { authorize } from '$lib/server/authorize';
 
 /**
@@ -56,12 +57,12 @@ export const GET: RequestHandler = async ({ params, cookies }) => {
  */
 /**
  * @openapi
- * summary: Read and parse one .env file from a git stack's repository into a key/value map
- * description: Reads and parses a single `.env` file (by `path`) from the git stack's synced repository checkout into a key/value map (read-only). There is no write counterpart — git-stack env is set via `envFilePath` (PUT /api/git/stacks/{id}) or the stack env endpoints.
+ * summary: Read an env file or refresh and populate environment data from a git stack repository
+ * description: With `path`, reads and parses one `.env` file from the synced checkout. With `populate: true`, refreshes the stack's active checkout (shared for centralized mode, per-stack otherwise) and returns merged env values plus configured compose contents.
  * path: id:integer! Git stack ID (from GET /api/git/stacks)
- * body: {path:string!}
+ * body: {path:string, populate:boolean}
  * body-example: {"path":".env.prod"}
- * resp-200: {vars:object!}
+ * resp-200: {vars:object!, sources:object, composeContent:string, composeContents:object}
  * resp-200-example: {"vars":{"TZ":"Europe/Berlin"}}
  * resp-400: The path field is missing or the env file could not be read
  * resp-403: Caller lacks the stacks:view permission for the stack's environment
@@ -84,6 +85,16 @@ export const POST: RequestHandler = async ({ params, cookies, request }) => {
 		}
 
 		const body = await request.json();
+		if (body.populate === true) {
+			if (auth.authEnabled && !await auth.can('stacks', 'edit', gitStack.environmentId || undefined)) {
+				return json({ error: 'Permission denied' }, { status: 403 });
+			}
+			const locked = await assertNotMigrating([id]);
+			if (locked) return locked;
+			const result = await previewGitStackEnvFiles(id);
+			if (result.error) return json({ error: result.error }, { status: 400 });
+			return json(result);
+		}
 		if (!body.path || typeof body.path !== 'string') {
 			return json({ error: 'File path is required' }, { status: 400 });
 		}

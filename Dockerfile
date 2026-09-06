@@ -88,7 +88,7 @@ RUN MAKEFLAGS="-j$(nproc)" npm ci --ignore-scripts \
 
 # Copy source code and build
 COPY . .
-RUN npm run build
+RUN NODE_OPTIONS="--max-old-space-size=8192 --max-semi-space-size=128" npm run build
 
 # Production dependencies only
 # Preserve better-sqlite3 native addon (no prebuilds exist for Node 24 ABI 137)

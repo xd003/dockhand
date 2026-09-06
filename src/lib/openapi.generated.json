@@ -13760,16 +13760,27 @@
                     "sources": {
                       "type": "object",
                       "properties": {}
+                    },
+                    "composeContent": {
+                      "type": "string"
+                    },
+                    "composeContents": {
+                      "type": "object",
+                      "properties": {}
                     }
                   },
                   "required": [
                     "vars",
-                    "sources"
+                    "sources",
+                    "composeContent",
+                    "composeContents"
                   ]
                 },
                 "example": {
                   "vars": {},
-                  "sources": {}
+                  "sources": {},
+                  "composeContent": "string",
+                  "composeContents": {}
                 }
               }
             }
@@ -13817,6 +13828,12 @@
                   },
                   "composePath": {
                     "type": "string"
+                  },
+                  "composePaths": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
                   },
                   "envFilePath": {
                     "type": "string"
@@ -15218,7 +15235,7 @@
         "tags": [
           "git"
         ],
-        "summary": "Read and parse one .env file from a git stack's repository into a key/value map",
+        "summary": "Read an env file or refresh and populate environment data from a git stack repository",
         "parameters": [
           {
             "name": "id",
@@ -15239,6 +15256,17 @@
                   "type": "object",
                   "properties": {
                     "vars": {
+                      "type": "object",
+                      "properties": {}
+                    },
+                    "sources": {
+                      "type": "object",
+                      "properties": {}
+                    },
+                    "composeContent": {
+                      "type": "string"
+                    },
+                    "composeContents": {
                       "type": "object",
                       "properties": {}
                     }
@@ -15276,7 +15304,7 @@
             "bearerAuth": []
           }
         ],
-        "description": "Reads and parses a single `.env` file (by `path`) from the git stack's synced repository checkout into a key/value map (read-only). There is no write counterpart — git-stack env is set via `envFilePath` (PUT /api/git/stacks/{id}) or the stack env endpoints.",
+        "description": "With `path`, reads and parses one `.env` file from the synced checkout. With `populate: true`, refreshes the stack's active checkout (shared for centralized mode, per-stack otherwise) and returns merged env values plus configured compose contents.",
         "requestBody": {
           "required": true,
           "content": {
@@ -15286,11 +15314,11 @@
                 "properties": {
                   "path": {
                     "type": "string"
+                  },
+                  "populate": {
+                    "type": "boolean"
                   }
-                },
-                "required": [
-                  "path"
-                ]
+                }
               },
               "example": {
                 "path": ".env.prod"

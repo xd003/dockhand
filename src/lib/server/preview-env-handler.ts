@@ -24,6 +24,8 @@
 // Types
 // ---------------------------------------------------------------------------
 
+import { validateComposePathsInput } from './compose-files';
+
 export interface PreviewEnvDependencies {
 	/** Resolve the auth context for the request cookies (authorization gate). */
 	authorize: (cookies: unknown) => Promise<PreviewEnvAuthContext>;
@@ -65,12 +67,15 @@ export interface PreviewEnvPreviewOptions {
 	branch: string;
 	credential: PreviewEnvCredential | null;
 	composePath: string;
+	composePaths?: string[] | null;
 	envFilePath: string | null;
 }
 
 export interface PreviewEnvPreviewResult {
 	vars: Record<string, string>;
 	sources: Record<string, string>;
+	composeContent: string;
+	composeContents: Record<string, string>;
 	error?: string;
 }
 
@@ -79,7 +84,13 @@ export interface PreviewEnvPreviewResult {
  * response (status + json body).
  */
 export type PreviewEnvOutcome =
-	| { kind: 'success'; vars: Record<string, string>; sources: Record<string, string> }
+	| {
+			kind: 'success';
+			vars: Record<string, string>;
+			sources: Record<string, string>;
+			composeContent: string;
+			composeContents: Record<string, string>;
+		}
 	| { kind: 'permission-denied' }
 	| { kind: 'bad-request'; message: string; vars?: Record<string, string>; sources?: Record<string, string> }
 	| { kind: 'not-found' }
@@ -127,6 +138,15 @@ export async function handlePreviewEnv(
 			return { kind: 'bad-request', message: 'Compose path is required' };
 		}
 
+		const composePathsError = validateComposePathsInput(data.composePaths);
+		if (composePathsError) {
+			return { kind: 'bad-request', message: composePathsError };
+		}
+		const composePaths = Array.isArray(data.composePaths) && data.composePaths.length > 0
+			? data.composePaths as string[]
+			: null;
+		const composePath = composePaths?.[0] ?? data.composePath;
+
 		let repoUrl: string;
 		let branch: string = 'main';
 		let credentialId: number | null = null;
@@ -171,7 +191,8 @@ export async function handlePreviewEnv(
 			repoUrl,
 			branch,
 			credential,
-			composePath: data.composePath,
+			composePath,
+			composePaths,
 			envFilePath: data.envFilePath || null
 		});
 
@@ -179,7 +200,13 @@ export async function handlePreviewEnv(
 			return { kind: 'bad-request', message: result.error, vars: {}, sources: {} };
 		}
 
-		return { kind: 'success', vars: result.vars, sources: result.sources };
+		return {
+			kind: 'success',
+			vars: result.vars,
+			sources: result.sources,
+			composeContent: result.composeContent,
+			composeContents: result.composeContents
+		};
 	} catch (error: any) {
 		return { kind: 'error', message: error.message || 'Failed to preview env files' };
 	}

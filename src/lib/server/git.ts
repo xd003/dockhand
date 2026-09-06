@@ -16,7 +16,7 @@
  */
 
 import { existsSync, mkdirSync, rmSync, chmodSync, readFileSync, writeFileSync, renameSync, readdirSync, realpathSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, relative } from 'node:path';
 import { spawn as nodeSpawn, spawnSync } from 'node:child_process';
 import { GIT_SSH_KEY_PATH_ENV, makeSshKeyPath, removeSshKey } from './git-ssh-key';
 import { permissionDeniedMessage } from './git-error';
@@ -1055,12 +1055,15 @@ interface PreviewEnvOptions {
 		password?: string | null;
 	} | null;
 	composePath: string;
+	composePaths?: string[] | null;
 	envFilePath: string | null;
 }
 
 interface PreviewEnvResult {
 	vars: Record<string, string>;
 	sources: Record<string, '.env' | 'envFile'>;
+	composeContent: string;
+	composeContents: Record<string, string>;
 	error?: string;
 }
 
@@ -1070,7 +1073,9 @@ interface PreviewEnvResult {
  * Cleans up temp directory after reading.
  */
 export async function previewRepoEnvFiles(options: PreviewEnvOptions): Promise<PreviewEnvResult> {
-	const { repoUrl, branch, credential, composePath, envFilePath } = options;
+	const { repoUrl, branch, credential, composePath, composePaths, envFilePath } = options;
+	const orderedComposePaths = composePaths && composePaths.length > 0 ? composePaths : [composePath];
+	const primaryComposePath = orderedComposePaths[0];
 	const logPrefix = '[Git:Preview]';
 
 	// Create a unique temp directory
@@ -1106,7 +1111,9 @@ export async function previewRepoEnvFiles(options: PreviewEnvOptions): Promise<P
 		assertSafeRepoTarget(repoUrl);
 		// Validate containment now (throws on traversal) before any read; the base .env
 		// path itself is derived via repoBaseEnvPath below.
-		repoFilePath(tempDir, composePath, 'Compose path');
+		for (const path of orderedComposePaths) {
+			repoFilePath(tempDir, path, 'Compose path');
+		}
 		const safeEnvFilePath = envFilePath ? repoFilePath(tempDir, envFilePath, 'Env file path') : null;
 		assertSafeGitRef(branch);
 		const authenticatedUrl = buildRepoUrl(repoUrl, credential as GitCredentialData | null);
@@ -1127,14 +1134,45 @@ export async function previewRepoEnvFiles(options: PreviewEnvOptions): Promise<P
 
 		if (cloneExitCode !== 0) {
 			console.error(`${logPrefix} Clone failed:`, cloneStderr);
-			return { vars: {}, sources: {}, error: `Failed to clone repository: ${cloneStderr.trim()}` };
+			return {
+				vars: {},
+				sources: {},
+				composeContent: '',
+				composeContents: {},
+				error: `Failed to clone repository: ${cloneStderr.trim()}`
+			};
 		}
 
 		console.log(`${logPrefix} Clone successful`);
 
 		// The base .env sits beside the compose file (repoBaseEnvPath keeps it inside the
 		// temp dir without doubling the prefix, #1495).
-		const baseEnvPath = repoBaseEnvPath(tempDir, composePath);
+		const baseEnvPath = repoBaseEnvPath(tempDir, primaryComposePath);
+		const realTempDir = realpathSync(tempDir);
+		const composeContents: Record<string, string> = {};
+		for (const path of orderedComposePaths) {
+			const composeFilePath = repoFilePath(tempDir, path, 'Compose path');
+			if (!existsSync(composeFilePath)) {
+				return {
+					vars: {},
+					sources: {},
+					composeContent: '',
+					composeContents: {},
+					error: `Compose file not found: ${path}`
+				};
+			}
+			const realComposePath = realpathSync(composeFilePath);
+			if (!isPathUnderRoot(realComposePath, realTempDir)) {
+				return {
+					vars: {},
+					sources: {},
+					composeContent: '',
+					composeContents: {},
+					error: `Compose path must resolve inside the repository: ${path}`
+				};
+			}
+			composeContents[path] = readFileSync(realComposePath, 'utf-8');
+		}
 
 		const vars: Record<string, string> = {};
 		const sources: Record<string, '.env' | 'envFile'> = {};
@@ -1173,10 +1211,15 @@ export async function previewRepoEnvFiles(options: PreviewEnvOptions): Promise<P
 
 		console.log(`${logPrefix} Total variables: ${Object.keys(vars).length}`);
 
-		return { vars, sources };
+		return {
+			vars,
+			sources,
+			composeContent: composeContents[primaryComposePath],
+			composeContents
+		};
 	} catch (error: any) {
 		console.error(`${logPrefix} Error:`, error);
-		return { vars: {}, sources: {}, error: error.message };
+		return { vars: {}, sources: {}, composeContent: '', composeContents: {}, error: error.message };
 	} finally {
 		// Always clean up temp directory
 		cleanupSshKey(credential as GitCredentialData | null, env);
@@ -1263,6 +1306,73 @@ export async function getEngineForRepository(repositoryId: number): Promise<GitE
 
 export async function syncGitStack(stackId: number, onProgress?: ProgressCallback): Promise<SyncResult> {
 	return (await getEngineForStack(stackId)).syncGitStack(stackId, onProgress);
+}
+
+export async function previewGitStackEnvFiles(stackId: number): Promise<PreviewEnvResult> {
+	const gitStack = await getGitStack(stackId);
+	if (!gitStack) {
+		return { vars: {}, sources: {}, composeContent: '', composeContents: {}, error: 'Git stack not found' };
+	}
+
+	const syncResult = await syncGitStack(stackId);
+	if (!syncResult.success || !syncResult.composeDir) {
+		return {
+			vars: {},
+			sources: {},
+			composeContent: '',
+			composeContents: {},
+			error: syncResult.error || 'Failed to sync repository'
+		};
+	}
+
+	try {
+		const composePaths = parseComposePathsColumn(gitStack.composePaths);
+		const orderedComposePaths = composePaths.length > 0 ? composePaths : [gitStack.composePath];
+		const baseDir = gitStack.contextDir || dirname(gitStack.composePath);
+		const realComposeDir = realpathSync(syncResult.composeDir);
+		const composeContents: Record<string, string> = {};
+
+		for (const path of orderedComposePaths) {
+			const fullPath = join(syncResult.composeDir, relative(baseDir, path));
+			if (!existsSync(fullPath)) {
+				throw new Error(`Compose file not found: ${path}`);
+			}
+			const realPath = realpathSync(fullPath);
+			if (!isPathUnderRoot(realPath, realComposeDir)) {
+				throw new Error(`Compose path must resolve inside the repository: ${path}`);
+			}
+			composeContents[path] = readFileSync(realPath, 'utf-8');
+		}
+
+		const vars: Record<string, string> = {};
+		const sources: Record<string, '.env' | 'envFile'> = {};
+		const baseEnvPath = join(dirname(orderedComposePaths[0]), '.env');
+		const baseResult = await readGitStackEnvFile(stackId, baseEnvPath);
+		if (!baseResult.error) {
+			for (const [key, value] of Object.entries(baseResult.vars)) {
+				vars[key] = value;
+				sources[key] = '.env';
+			}
+		}
+		if (gitStack.envFilePath) {
+			const envFileResult = await readGitStackEnvFile(stackId, gitStack.envFilePath);
+			if (!envFileResult.error) {
+				for (const [key, value] of Object.entries(envFileResult.vars)) {
+					vars[key] = value;
+					sources[key] = 'envFile';
+				}
+			}
+		}
+
+		return {
+			vars,
+			sources,
+			composeContent: composeContents[orderedComposePaths[0]],
+			composeContents
+		};
+	} catch (error: any) {
+		return { vars: {}, sources: {}, composeContent: '', composeContents: {}, error: error.message };
+	}
 }
 
 export async function deployGitStack(

@@ -239,11 +239,31 @@ describe('POST /api/git/preview-env — pipeline', () => {
 //   - auth enabled + read-only-> can('git','edit')=false -> 403;
 //   - auth enabled + git:edit -> gate satisfied, continues (200).
 // =============================================================================
-import { handlePreviewEnv, type PreviewEnvDependencies } from '../src/lib/server/preview-env-handler';
+import {
+	handlePreviewEnv,
+	type PreviewEnvDependencies,
+	type PreviewEnvPreviewOptions,
+	type PreviewEnvPreviewResult
+} from '../src/lib/server/preview-env-handler';
 
-function makeAuthDeps(cfg: { authEnabled: boolean; canGitEdit: boolean }): { deps: PreviewEnvDependencies; request: { json: () => Promise<unknown>; _body: unknown }; requestJsonCalls: () => number; previewCalled: () => number } {
+function makeAuthDeps(
+	cfg: { authEnabled: boolean; canGitEdit: boolean },
+	previewResult: PreviewEnvPreviewResult = {
+		vars: {},
+		sources: {},
+		composeContent: 'services: {}',
+		composeContents: { 'compose.yaml': 'services: {}' }
+	}
+): {
+	deps: PreviewEnvDependencies;
+	request: { json: () => Promise<unknown>; _body: unknown };
+	requestJsonCalls: () => number;
+	previewCalled: () => number;
+	previewOptions: () => PreviewEnvPreviewOptions | null;
+} {
 	let requestJsonCalls = 0;
 	let previewCalls = 0;
+	let previewOptions: PreviewEnvPreviewOptions | null = null;
 	const deps: PreviewEnvDependencies = {
 		authorize: async () => ({
 			authEnabled: cfg.authEnabled,
@@ -256,9 +276,10 @@ function makeAuthDeps(cfg: { authEnabled: boolean; canGitEdit: boolean }): { dep
 		}),
 		getGitRepository: async () => null,
 		getGitCredential: async () => null,
-		previewRepoEnvFiles: async () => {
+		previewRepoEnvFiles: async (options) => {
 			previewCalls++;
-			return { vars: {}, sources: {} };
+			previewOptions = options;
+			return previewResult;
 		},
 		assertSafeRepoTarget: () => {}
 	};
@@ -272,7 +293,13 @@ function makeAuthDeps(cfg: { authEnabled: boolean; canGitEdit: boolean }): { dep
 		},
 		_body: undefined
 	};
-	return { deps, request, requestJsonCalls: () => requestJsonCalls, previewCalled: () => previewCalls };
+	return {
+		deps,
+		request,
+		requestJsonCalls: () => requestJsonCalls,
+		previewCalled: () => previewCalls,
+		previewOptions: () => previewOptions
+	};
 }
 
 async function runAuthTest(
@@ -357,5 +384,71 @@ describe('POST /api/git/preview-env — git:edit gate (REAL handler core, no moc
 			cookies: {}
 		});
 		expect(out.kind).toBe('bad-request');
+	});
+});
+
+describe('POST /api/git/preview-env — compose preview contract', () => {
+	test('forwards ordered compose paths and returns primary plus additional contents', async () => {
+		const { deps, request, previewOptions } = makeAuthDeps({ authEnabled: false, canGitEdit: false }, {
+			vars: { IMAGE: 'nginx' },
+			sources: { IMAGE: '.env' },
+			composeContent: 'services:\n  web:\n    image: ${IMAGE}',
+			composeContents: {
+				'compose.yaml': 'services:\n  web:\n    image: ${IMAGE}',
+				'compose.prod.yaml': 'services:\n  web:\n    restart: always'
+			}
+		});
+		request._body = {
+			url: 'https://github.com/x.git',
+			composePath: 'stale-compose.yaml',
+			composePaths: ['compose.yaml', 'compose.prod.yaml']
+		};
+
+		const outcome = await handlePreviewEnv(deps, { request, cookies: {} });
+
+		expect(outcome.kind).toBe('success');
+		if (outcome.kind !== 'success') return;
+		expect(previewOptions()?.composePath).toBe('compose.yaml');
+		expect(previewOptions()?.composePaths).toEqual(['compose.yaml', 'compose.prod.yaml']);
+		expect(outcome.composeContent).toContain('${IMAGE}');
+		expect(outcome.composeContents['compose.prod.yaml']).toContain('restart');
+	});
+
+	test('returns primary compose content when no env values are found', async () => {
+		const { deps, request } = makeAuthDeps({ authEnabled: false, canGitEdit: false }, {
+			vars: {},
+			sources: {},
+			composeContent: 'services:\n  web:\n    image: ${REQUIRED}',
+			composeContents: { 'compose.yaml': 'services:\n  web:\n    image: ${REQUIRED}' }
+		});
+		request._body = { url: 'https://github.com/x.git', composePath: 'compose.yaml' };
+
+		const outcome = await handlePreviewEnv(deps, { request, cookies: {} });
+
+		expect(outcome.kind).toBe('success');
+		if (outcome.kind !== 'success') return;
+		expect(outcome.vars).toEqual({});
+		expect(outcome.composeContent).toContain('${REQUIRED}');
+	});
+
+	test('surfaces an absent additional compose file as a useful preview error', async () => {
+		const { deps, request } = makeAuthDeps({ authEnabled: false, canGitEdit: false }, {
+			vars: {},
+			sources: {},
+			composeContent: '',
+			composeContents: {},
+			error: 'Compose file not found: compose.prod.yaml'
+		});
+		request._body = {
+			url: 'https://github.com/x.git',
+			composePath: 'compose.yaml',
+			composePaths: ['compose.yaml', 'compose.prod.yaml']
+		};
+
+		const outcome = await handlePreviewEnv(deps, { request, cookies: {} });
+
+		expect(outcome.kind).toBe('bad-request');
+		if (outcome.kind !== 'bad-request') return;
+		expect(outcome.message).toContain('compose.prod.yaml');
 	});
 });

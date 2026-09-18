@@ -309,11 +309,11 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
 
 			try {
 				// Step 1: Pull the new Dockhand image
-				sendStep('pulling_image', 'active', `Pulling ${newImage}...`);
-				send('log', { message: `Pulling ${newImage}...` });
+				sendStep('pulling_image', 'active', `Pulling Dockhand image ${newImage}...`);
+				send('log', { message: `Pulling Dockhand image ${newImage}...` });
 				await pullImageLocal(newImage, (msg) => send('log', { message: msg }));
-				sendStep('pulling_image', 'completed', 'Image pulled');
-				send('log', { message: 'Image pulled successfully' });
+				sendStep('pulling_image', 'completed', 'Dockhand image pulled');
+				send('log', { message: 'Dockhand image pulled successfully' });
 
 				// Step 2: Build container config from self-inspect
 				sendStep('building_config', 'active', 'Building container config...');
@@ -328,12 +328,12 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
 				send('log', { message: `Networks: ${networkEnvVars.length > 0 ? networkEnvVars[0] : 'default'}` });
 				sendStep('building_config', 'completed', 'Config ready');
 
-				// Step 3: Pull the updater image
-				sendStep('pulling_updater', 'active', 'Pulling updater image...');
-				send('log', { message: `Pulling ${UPDATER_IMAGE}...` });
+				// Step 3: Pull the generic updater sidecar image
+				sendStep('pulling_updater', 'active', 'Pulling updater sidecar...');
+				send('log', { message: `Pulling updater sidecar image ${UPDATER_IMAGE}...` });
 				await pullImageLocal(UPDATER_IMAGE, (msg) => send('log', { message: msg }));
-				sendStep('pulling_updater', 'completed', 'Updater ready');
-				send('log', { message: 'Updater image ready' });
+				sendStep('pulling_updater', 'completed', 'Updater sidecar ready');
+				send('log', { message: 'Updater sidecar image ready' });
 
 				// Step 4: Create new container with temp name (no NetworkingConfig)
 				sendStep('creating_container', 'active', 'Creating new container...');

@@ -24,6 +24,7 @@ import { startRssTracker, stopRssTracker, rssBeforeOp, rssAfterOp } from '$lib/s
 import { getClientIp } from '$lib/server/client-ip';
 import { isPublicPath } from '$lib/server/public-paths-core';
 import { BACKUPS_ENABLED, API_DOCS_ENABLED } from '$lib/server/features';
+import { reconcileOidcEnvironment } from '$lib/server/oidc-environment';
 // Side-effect import: installs globalThis.__authenticateWsUpgrade and
 // globalThis.__canAccessEnvForUser used by the raw WS upgrade handlers in
 // server.js / vite.config.ts to authenticate /api/containers/*/exec.
@@ -122,8 +123,9 @@ declare global {
 
 // Initialize database on server start (synchronous with SQLite)
 let initialized = false;
+class OidcEnvironmentStartupError extends Error {}
 
-if (!initialized) {
+async function initializeServer(): Promise<void> {
 	try {
 		// Initialize crypto fallback first (detects old kernels and logs status)
 		initCryptoFallback();
@@ -148,6 +150,20 @@ if (!initialized) {
 
 		setServerStartTime(); // Track when server started
 		initDatabase();
+
+		let oidcResult;
+		try {
+			oidcResult = await reconcileOidcEnvironment();
+		} catch (error) {
+			console.error(
+				'[Startup] OIDC environment reconciliation failed:',
+				error instanceof Error ? error.message : 'unknown error'
+			);
+			throw new OidcEnvironmentStartupError();
+		}
+		const providerSuffix = oidcResult.providerId === undefined ? '' : ` providerId=${oidcResult.providerId}`;
+		console.log(`[Startup] OIDC environment: ${oidcResult.status}${providerSuffix}`);
+
 		validateStacksDirAtStartup();
 
 		// Resume an interrupted PER-STACK migration job only (never migrates
@@ -221,9 +237,12 @@ if (!initialized) {
 
 		initialized = true;
 	} catch (error) {
+		if (error instanceof OidcEnvironmentStartupError) throw error;
 		console.error('Failed to initialize database:', error);
 	}
 }
+
+const startupPromise = initialized ? Promise.resolve() : initializeServer();
 
 // Bearer token auth failure rate limiting (per IP, 5-minute cooldown after 10 failures)
 const bearerFailCounts = new Map<string, { count: number; firstFail: number }>();
@@ -284,6 +303,8 @@ function isStaticAsset(pathname: string): boolean {
 }
 
 export const handle: Handle = async ({ event, resolve }) => {
+	await startupPromise;
+
 	// Skip auth for static assets
 	if (isStaticAsset(event.url.pathname)) {
 		return resolve(event);

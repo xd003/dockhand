@@ -58,9 +58,9 @@
 
 	const ALL_STEPS = [
 		// Preparation (from SSE)
-		{ id: 'pulling_image', label: 'Pulling new image' },
+		{ id: 'pulling_image', label: 'Pulling Dockhand image' },
 		{ id: 'building_config', label: 'Building container config' },
-		{ id: 'pulling_updater', label: 'Pulling updater' },
+		{ id: 'pulling_updater', label: 'Pulling updater sidecar' },
 		{ id: 'creating_container', label: 'Creating new container' },
 		{ id: 'launching_updater', label: 'Launching updater' },
 		// Update (from updater container logs)

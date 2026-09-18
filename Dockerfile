@@ -90,7 +90,7 @@ COPY . .
 # The message catalogue puts the build close to Node's default heap: it needs over 3 GB
 # at 2168 keys across 6 locales and grows with every locale. Without a limit the build
 # dies as an exit-134 OOM with no useful message, so state the ceiling here.
-RUN NODE_OPTIONS=--max-old-space-size=6144 npm run build
+RUN NODE_OPTIONS="--max-old-space-size=8192 --max-semi-space-size=128" npm run build
 
 # Production dependencies only
 # Preserve better-sqlite3 native addon (no prebuilds exist for Node 24 ABI 137)

@@ -20,7 +20,7 @@
 	import { deployTallyFromRuns } from '$lib/utils/deploy-run-view';
 	import { volumesForStack, type VolumeInfo } from '$lib/utils/mounts';
 	import { fetchBackupExecutions } from '$lib/utils/backup';
-	import type { Component } from 'svelte';
+	import type { Component, ComponentType } from 'svelte';
 	import FilesystemBrowser from './FilesystemBrowser.svelte';
 	import IconPickerModal from './IconPickerModal.svelte';
 	import StackIcon from '$lib/components/StackIcon.svelte';
@@ -47,6 +47,7 @@
 	import ComposeGraphViewer from './ComposeGraphViewer.svelte';
 	import RedeployPopover from './RedeployPopover.svelte';
 	import { hasBuildSection as detectBuildSection } from '$lib/utils/compose-build-detect';
+	import type { LinkedFileAction, LinkedFilePostChange } from '$lib/stack-linked-files';
 
 
 	// localStorage key for persisted split ratio
@@ -175,6 +176,28 @@
 	let activeTab = $state<'editor' | 'graph' | 'backups' | 'deploys'>('editor');
 	let composeContents = $state<Record<string, string>>({});   // path → content map for multi-file
 	let activeComposePath = $state('');                           // currently viewed file path
+	type LinkedEditorEntry = {
+		path: string;
+		name: string;
+		content: string;
+		originalContent: string;
+		language: string;
+		ownership: 'local' | 'git';
+		tracked?: boolean;
+		ignored?: boolean;
+		postChange: LinkedFilePostChange;
+		originalPostChange: LinkedFilePostChange;
+		revision?: string;
+		error?: string;
+	};
+	let linkedEntries = $state<LinkedEditorEntry[]>([]);
+	let activeLinkedPath = $state('');
+	let activeEditorKind = $state<'compose' | 'linked'>('compose');
+	let linkedRoot = $state('');
+	let linkedComposeServices = $state<string[]>([]);
+	let originalComposeContents = $state<Record<string, string>>({});
+	let composeClassifications = $state<Record<string, { tracked?: boolean; ignored?: boolean }>>({});
+	let composeRevisions = $state<Record<string, string>>({});
 	let backupCount = $state(0);
 	let backupTally = $state<{ ok: number; failed: number }>({ ok: 0, failed: 0 });
 	let showConfirmClose = $state(false);
@@ -355,13 +378,14 @@
 	// file plus the current editor content under the active path.
 	function composeContentsPayload(): Record<string, string> {
 		return Object.fromEntries(
-			Object.entries({ ...composeContents, ...(activeComposePath ? { [activeComposePath]: composeContent } : {}) })
+			Object.entries({ ...composeContents, ...(activeEditorKind === 'compose' && activeComposePath ? { [activeComposePath]: composeContent } : {}) })
 				.filter(([p]) => p.trim())
 		);
 	}
 
 	function primaryComposeContent(): string {
 		const primaryPath = workingComposePaths[0] || workingComposePath;
+		if (activeEditorKind === 'linked') return composeContents[primaryPath] ?? '';
 		if (!primaryPath || primaryPath === activeComposePath) return composeContent;
 		return composeContents[primaryPath] ?? '';
 	}
@@ -628,7 +652,10 @@
 	let showFileBrowser = $state(false);
 	let fileBrowserConfig = $state<{
 		title: string;
-		icon?: Component<{ class?: string }>;
+		icon?: Component<{ class?: string }> | ComponentType;
+		description?: string;
+		initialPath?: string;
+		apiUrl?: string;
 		selectFilter?: RegExp;
 		selectMode: 'file' | 'directory' | 'file_or_directory';
 		onSelect: (path: string, name: string) => void;
@@ -639,6 +666,145 @@
 		selectMode: 'file',
 		onSelect: () => {}
 	});
+
+	function linkedApiUrl(): string {
+		const envId = $currentEnvironment?.id ?? null;
+		return appendEnvParam(`/api/stacks/${encodeURIComponent(stackName)}/files`, envId);
+	}
+
+	function linkedBrowseApiUrl(): string {
+		const envId = $currentEnvironment?.id ?? null;
+		return appendEnvParam(`/api/stacks/${encodeURIComponent(stackName)}/files/browse`, envId);
+	}
+
+	async function loadLinkedFiles(envId: number | null, preserveDirty = false) {
+		try {
+			const response = await fetch(appendEnvParam(`/api/stacks/${encodeURIComponent(stackName)}/files`, envId));
+			if (!response.ok) return;
+			const data = await response.json();
+			linkedRoot = typeof data.root === 'string' ? data.root : '';
+			linkedComposeServices = Array.isArray(data.composeServices) ? data.composeServices : [];
+			composeClassifications = Object.fromEntries((Array.isArray(data.entries) ? data.entries : [])
+				.filter((entry: any) => entry.kind === 'compose')
+				.map((entry: any) => [entry.path, { tracked: entry.tracked, ignored: entry.ignored }]));
+			composeRevisions = Object.fromEntries((Array.isArray(data.entries) ? data.entries : [])
+				.filter((entry: any) => entry.kind === 'compose' && typeof entry.revision === 'string')
+				.map((entry: any) => [entry.path, entry.revision]));
+			const loaded = (Array.isArray(data.entries) ? data.entries : [])
+				.filter((entry: any) => entry.kind === 'linked')
+				.map((entry: any) => ({
+					path: entry.path,
+					name: entry.name || entry.path,
+					content: typeof entry.content === 'string' ? entry.content : '',
+					originalContent: typeof entry.content === 'string' ? entry.content : '',
+					language: entry.language || 'text',
+					ownership: entry.ownership === 'git' ? 'git' : 'local',
+					tracked: entry.tracked,
+					ignored: entry.ignored,
+					postChange: entry.postChange,
+					originalPostChange: structuredClone(entry.postChange),
+					revision: entry.revision,
+					error: entry.error
+				}));
+			if (preserveDirty) {
+				const dirtyByPath = new Map(linkedEntries
+					.filter((entry) => entry.content !== entry.originalContent || JSON.stringify(entry.postChange) !== JSON.stringify(entry.originalPostChange))
+					.map((entry) => [entry.path, entry]));
+				linkedEntries = loaded.map((entry: LinkedEditorEntry) => dirtyByPath.get(entry.path) ?? entry);
+			} else {
+				linkedEntries = loaded;
+			}
+		} catch (e) {
+			console.warn('Failed to load linked stack files:', e);
+		}
+	}
+
+	function relativeToLinkedRoot(path: string): string {
+		const root = linkedRoot.replace(/\/$/, '');
+		return root && path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path;
+	}
+
+	async function reloadLinkedFiles(preserveDirty = false) {
+		await loadLinkedFiles($currentEnvironment?.id ?? null, preserveDirty);
+	}
+
+	async function openLinkedFileBrowser() {
+		if (!stackName) return;
+		fileBrowserConfig = {
+			title: 'Link configuration file',
+			description: 'Choose a text file below the primary Compose directory.',
+			initialPath: linkedRoot || workingComposePath.replace(/\/[^/]+$/, ''),
+			apiUrl: linkedBrowseApiUrl(),
+			selectFilter: /.*/,
+			selectMode: 'file',
+			onSelect: async (path) => {
+				showFileBrowser = false;
+				const response = await fetch(linkedApiUrl(), {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ operation: 'link', path: relativeToLinkedRoot(path), postChange: { action: 'none', target: 'stack', services: [] } })
+				});
+				if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'Failed to link file');
+				await reloadLinkedFiles(true);
+				if (stackSource?.sourceType === 'git') {
+					const linkedPath = relativeToLinkedRoot(path);
+					linkedEntries = linkedEntries.map((entry) => entry.path === linkedPath && entry.ownership === 'local' ? { ...entry, originalContent: `${entry.content}\0` } : entry);
+					isDirty = true;
+				}
+			}
+		};
+		showFileBrowser = true;
+	}
+
+	async function createLinkedFileFromPrompt() {
+		const path = window.prompt('Relative file path under the Compose directory');
+		if (!path) return;
+		const content = window.prompt('Initial file content', '') ?? '';
+		const response = await fetch(linkedApiUrl(), {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ operation: 'create-file', path, content, postChange: { action: 'none', target: 'stack', services: [] } })
+		});
+		if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'Failed to create file');
+		await reloadLinkedFiles(true);
+		if (stackSource?.sourceType === 'git') {
+			linkedEntries = linkedEntries.map((entry) => entry.path === path ? { ...entry, originalContent: `${entry.content}\0` } : entry);
+			isDirty = true;
+		}
+	}
+
+	async function createLinkedFolderFromPrompt() {
+		if (stackSource?.sourceType === 'git' && !window.confirm('Empty folders are local only because Git does not track directories. Continue?')) return;
+		const path = window.prompt('Relative folder path under the Compose directory');
+		if (!path) return;
+		const response = await fetch(linkedApiUrl(), {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ operation: 'create-folder', path })
+		});
+		if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'Failed to create folder');
+	}
+
+	async function unlinkActiveLinkedFile() {
+		if (!activeLinkedPath || !window.confirm(`Unlink ${activeLinkedPath}? The file will remain on disk.`)) return;
+		const response = await fetch(linkedApiUrl(), {
+			method: 'DELETE',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ path: activeLinkedPath })
+		});
+		if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'Failed to unlink file');
+		activeLinkedPath = '';
+		activeEditorKind = 'compose';
+		await reloadLinkedFiles(true);
+	}
+
+	function updateLinkedPolicy(patch: Partial<LinkedFilePostChange>) {
+		if (!activeLinkedPath) return;
+		linkedEntries = linkedEntries.map((entry) => entry.path === activeLinkedPath
+			? { ...entry, postChange: { ...entry.postChange, ...patch } }
+			: entry);
+		isDirty = true;
+	}
 
 	function deriveStackNameFromComposePath(path: string): string {
 		const parts = path.split('/');
@@ -712,6 +878,8 @@
 		workingComposePaths = newPaths;
 		workingComposePath = newPaths[0] ?? '';
 		activeComposePath = nextActive;
+		activeLinkedPath = '';
+		activeEditorKind = 'compose';
 		composeContent = nextContent;
 	}
 
@@ -1419,16 +1587,29 @@
 	// Stable callback for compose content changes - avoids stale closure issues
 	function handleComposeChange(value: string) {
 		composeContent = value;
-		if (activeComposePath) {
+		if (activeEditorKind === 'linked' && activeLinkedPath) {
+			linkedEntries = linkedEntries.map((entry) => entry.path === activeLinkedPath ? { ...entry, content: value } : entry);
+		} else if (activeComposePath) {
 			composeContents = { ...composeContents, [activeComposePath]: value };
 		}
 		isDirty = true;
-		debouncedValidate();
+		if (activeEditorKind === 'compose') debouncedValidate();
 	}
 
 	function switchComposeFile(path: string) {
-		if (path === activeComposePath) return;
+		if (path === activeComposePath && activeEditorKind === 'compose') return;
+		activeLinkedPath = '';
+		activeEditorKind = 'compose';
 		setComposePathList(workingComposePaths, { active: path });
+	}
+
+	function switchLinkedFile(path: string) {
+		const entry = linkedEntries.find((candidate) => candidate.path === path);
+		if (!entry) return;
+		activeLinkedPath = path;
+		activeEditorKind = 'linked';
+		activeComposePath = '';
+		composeContent = entry.content;
 	}
 
 	// Debounced validation to avoid too many API calls while typing. The live
@@ -1526,6 +1707,10 @@
 				!!(gitInfo && (gitInfo.commit || gitInfo.url || gitInfo.branch)))
 	);
 	const activeComposeDisplayPath = $derived(activeComposePath || workingComposePaths[0] || workingComposePath || '');
+	const activeEditorPath = $derived(activeEditorKind === 'linked' ? activeLinkedPath : activeComposeDisplayPath);
+	const activeLinkedEntry = $derived(linkedEntries.find((entry) => entry.path === activeLinkedPath));
+	const activeEditorLanguage = $derived(activeEditorKind === 'linked' ? (activeLinkedEntry?.language ?? 'text') : 'yaml');
+	const hasStaleLinkedPolicy = $derived(linkedEntries.some((entry) => entry.postChange.target === 'services' && entry.postChange.services.some((service) => !linkedComposeServices.includes(service))));
 
 	function shortGitUrl(url: string): string {
 		return url.replace(/^https?:\/\/(www\.)?github\.com\//, '').replace(/\.git$/, '');
@@ -1673,6 +1858,9 @@
 		loadError = null;
 		error = null;
 		needsFileLocation = false;
+		linkedEntries = [];
+		activeLinkedPath = '';
+		activeEditorKind = 'compose';
 
 		try {
 			const envId = $currentEnvironment?.id ?? null;
@@ -1760,6 +1948,7 @@
 			} else {
 				composeContents = activeComposePath ? { [activeComposePath]: composeContent } : {};
 			}
+			originalComposeContents = { ...composeContents };
 			// Set working paths
 			workingComposePath = data.composePath || '';
 			workingEnvPath = data.envPath || '';
@@ -1781,6 +1970,7 @@
 			if (!activeComposePath && workingComposePaths.length > 0) {
 				activeComposePath = workingComposePath || workingComposePaths[0];
 			}
+			await loadLinkedFiles(envId);
 			// Track original paths for detecting changes
 			originalComposePath = data.composePath || null;
 			originalEnvPath = data.envPath || null;
@@ -1879,6 +2069,116 @@
 		} finally {
 			validating = false;
 		}
+	}
+
+	function linkedFileChanges() {
+		const changes = linkedEntries
+			.filter((entry) => entry.content !== entry.originalContent)
+			.map((entry) => ({ path: entry.path, content: entry.content, expectedRevision: entry.revision }));
+		if (stackSource?.sourceType === 'git') {
+			for (const path of workingComposePaths.filter((candidate) => candidate.trim())) {
+				const content = composeContents[path] ?? '';
+				if (content !== (originalComposeContents[path] ?? '')) {
+					const relativePath = relativeToLinkedRoot(path);
+					changes.push({ path: relativePath, content, expectedRevision: composeRevisions[relativePath] });
+				}
+			}
+		}
+		return changes;
+	}
+
+	function linkedMetadataChanged() {
+		return linkedEntries.some((entry) => JSON.stringify(entry.postChange) !== JSON.stringify(entry.originalPostChange));
+	}
+
+	function linkedFileClassifications(changes: Array<{ path: string }>) {
+		return changes.map((change) => {
+			const linked = linkedEntries.find((entry) => entry.path === change.path);
+			const status = linked ?? composeClassifications[change.path];
+			return { path: change.path, tracked: status?.tracked === true, ignored: status?.ignored === true };
+		});
+	}
+
+	async function saveLinkedFiles(runActions = false): Promise<string[]> {
+		const changes = linkedFileChanges();
+		const metadataChanged = linkedMetadataChanged();
+		if (changes.length === 0 && !metadataChanged) return [];
+
+		const trackedChanges = changes.filter((change) => linkedEntries.find((entry) => entry.path === change.path)?.tracked || linkedEntries.find((entry) => entry.path === change.path)?.ownership === 'git' || composeClassifications[change.path]?.tracked);
+		const untrackedChanges = changes.filter((change) => !trackedChanges.some((tracked) => tracked.path === change.path));
+		let trackedDecision: 'commit' | 'internal' | undefined;
+		let untrackedDecision: 'add' | 'local' | undefined;
+		if (trackedChanges.length > 0) {
+			trackedDecision = window.confirm('Commit and push all tracked configuration changes? Cancel keeps the stack managed internally.') ? 'commit' : 'internal';
+		}
+		if (untrackedChanges.length > 0) {
+			untrackedDecision = window.confirm('Add all untracked configuration changes to Git? Cancel keeps them local.') ? 'add' : 'local';
+		}
+		let commitMessage: string | undefined;
+		if (trackedDecision === 'commit' || untrackedDecision === 'add') {
+			commitMessage = window.prompt('Git commit message', `Update ${stackName} configuration`) ?? undefined;
+			if (!commitMessage?.trim()) throw new Error('A non-blank Git commit message is required');
+		}
+
+		const response = await fetch(linkedApiUrl(), {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				changes,
+				classifications: linkedFileClassifications(changes),
+				linkedFiles: linkedEntries.map(({ path, ownership, postChange }) => ({ path, ownership, postChange })),
+				trackedDecision,
+				untrackedDecision,
+				commitMessage,
+				runActions
+			})
+		});
+		const data = await response.json().catch(() => ({}));
+		if (!response.ok) throw new Error(data.error || 'Failed to save linked files');
+		if (data.reconciliationError) {
+			await reloadLinkedFiles();
+			throw Object.assign(new Error(`Changes were pushed, but the deployed copy could not be reconciled: ${data.reconciliationError}`), { saved: true });
+		}
+		if (data.action && data.action.success === false) toast.warning('Files saved; post-change action failed');
+		await reloadLinkedFiles();
+		return changes.filter((change) => linkedEntries.some((entry) => entry.path === change.path)).map((change) => change.path);
+	}
+
+	async function runLinkedActions(actionPaths: string[], redeploy: boolean): Promise<void> {
+		if (!redeploy && actionPaths.length === 0) return;
+		const response = await fetch(linkedApiUrl(), {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ changes: [], actionPaths, redeploy })
+		});
+		const data = await response.json().catch(() => ({}));
+		if (!response.ok) throw new Error(data.error || 'Failed to run post-change action');
+		if (data.action?.success === false) {
+			startOutput(`Post-change action for ${stackName}`);
+			for (const line of Array.isArray(data.action.output) ? data.action.output : []) appendOutputLine(line);
+			finishOutput(undefined, false);
+			toast.warning('Files saved; post-change action failed');
+			throw Object.assign(new Error(data.action.error || 'Post-change action failed'), { saved: true });
+		}
+	}
+
+	async function preflightLinkedSave(redeploy: boolean): Promise<void> {
+		const actionPaths = linkedFileChanges()
+			.filter((change) => linkedEntries.some((entry) => entry.path === change.path))
+			.map((change) => change.path);
+		const response = await fetch(linkedApiUrl(), {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				changes: [],
+				actionPaths,
+				linkedFiles: linkedEntries.map(({ path, ownership, postChange }) => ({ path, ownership, postChange })),
+				redeploy,
+				preflight: true
+			})
+		});
+		const data = await response.json().catch(() => ({}));
+		if (!response.ok) throw new Error(data.error || 'File save validation failed');
 	}
 
 	function toggleEditorTheme() {
@@ -2118,10 +2418,11 @@
 		const envPathToSave = workingEnvPath.trim() || suggestedEnvPath || '';
 
 		try {
+			await preflightLinkedSave(restart);
 			// Build request body - include paths if they've been set/changed
 			const requestBody: Record<string, unknown> = {
 				content: composeContent,
-				restart
+				restart: false
 			};
 
 			// Include compose path if set (either custom path or user selected)
@@ -2154,6 +2455,12 @@
 				requestBody.build = deployOptions.build;
 				requestBody.forceRecreate = deployOptions.forceRecreate;
 			}
+
+			const isGitStack = stackSource?.sourceType === 'git';
+			let linkedActionPaths: string[] = [];
+			// Git content must commit and push before the deployed copy or environment
+			// is exposed locally. Internal stacks save linked files after Compose below.
+			if (isGitStack) linkedActionPaths = await saveLinkedFiles(false);
 
 			// Save env files BEFORE compose to ensure deploy reads fresh values
 			// Save raw content to .env file (non-secrets only, comments preserved)
@@ -2202,39 +2509,31 @@
 				secretVars.filter(v => v.key.trim()).map(v => v.key.trim())
 			);
 
-			if (restart) startOutput(`Redeploying ${stackName}`);
-
-			// Save compose file (with optional paths) - after env so deploy reads fresh .env
-			const response = await fetch(
-				appendEnvParam(`/api/stacks/${encodeURIComponent(stackName)}/compose`, envId),
-				{
-					method: 'PUT',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify(requestBody)
-				}
-			);
-
-			// When restart=true, response is a job or JSON; when restart=false, it's plain JSON
-			const data = restart
-				? await readJobResponse(response, (line) => appendOutputLine(line))
-				: await response.json();
-			if (restart) finishOutput(
-				typeof data.output === 'string' ? data.output : undefined,
-				Boolean(data.success),
-				typeof data.exitCode === 'number' ? data.exitCode : undefined
-			);
-
-			if (!response.ok && !data.success) {
-				throw new Error((typeof data.error === 'string' ? data.error : data.message) || 'Failed to save compose file');
+			let data: any = { success: true };
+			if (!isGitStack) {
+				// Persist Compose without deploying; linked files must be durable before a
+				// requested redeploy starts.
+				const saveResponse = await fetch(appendEnvParam(`/api/stacks/${encodeURIComponent(stackName)}/compose`, envId), {
+					method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(requestBody)
+				});
+				data = await saveResponse.json();
+				if (!saveResponse.ok || data.success === false) throw new Error(data.error || data.message || 'Failed to save compose file');
+				linkedActionPaths = await saveLinkedFiles(false);
 			}
-			if (data.success === false) {
-				// On the restart path the server persists the compose+env BEFORE deploying,
-				// so a success:false here is a failed DEPLOY, not a failed save -- the content
-				// is already on disk. Clear the dirty flag so the footer doesn't claim
-				// "Unsaved changes" for edits that were in fact saved; the deploy error still
-				// surfaces via the throw below. (Plain save keeps isDirty on a real save fail.)
-				if (restart) isDirty = false;
-				throw new Error(data.error || 'Failed to save compose file');
+
+			if (restart && !isGitStack) {
+				startOutput(`Redeploying ${stackName}`);
+				const deployResponse = await fetch(appendEnvParam(`/api/stacks/${encodeURIComponent(stackName)}/compose`, envId), {
+					method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...requestBody, restart: true })
+				});
+				data = await readJobResponse(deployResponse, (line) => appendOutputLine(line));
+				finishOutput(typeof data.output === 'string' ? data.output : undefined, Boolean(data.success), typeof data.exitCode === 'number' ? data.exitCode : undefined);
+				if (!deployResponse.ok || data.success === false) {
+					isDirty = false;
+					throw Object.assign(new Error(data.error || data.message || 'Failed to deploy stack'), { saved: true });
+				}
+			} else {
+				await runLinkedActions(linkedActionPaths, restart);
 			}
 
 			isDirty = false; // Reset dirty flag after successful save
@@ -2261,6 +2560,7 @@
 			// Same reasoning as handleCreate's catch block: don't clobber a real
 			// ok/exitCode that finishOutput already recorded before this throw.
 			if (restart && outputRunning) finishOutput(undefined, false);
+			if (e?.saved) isDirty = false;
 			operationError = {
 				title: restart ? 'Failed to apply stack' : 'Failed to save stack',
 				message: e.message || (restart ? 'An error occurred while applying the stack' : 'An error occurred while saving the stack'),
@@ -2312,6 +2612,14 @@
 		composeContent = '';
 		composeContents = {};
 		activeComposePath = '';
+		linkedEntries = [];
+		activeLinkedPath = '';
+		activeEditorKind = 'compose';
+		linkedRoot = '';
+		linkedComposeServices = [];
+		originalComposeContents = {};
+		composeClassifications = {};
+		composeRevisions = {};
 		envVars = [];
 		envValidation = null;
 		isDirty = false;
@@ -2876,16 +3184,21 @@
 									<div class="mb-3.5 flex flex-wrap items-center justify-between gap-3">
 										<div class="flex items-center gap-2 text-sm font-semibold text-zinc-800 dark:text-zinc-100">
 											<Code class="h-4 w-4 text-muted-foreground" />
-											Compose files
+											Configuration files
 											{#if workingComposePaths.length > 0}
-												<span class="text-xs font-normal text-muted-foreground">({workingComposePaths.length})</span>
+												<span class="text-xs font-normal text-muted-foreground">({workingComposePaths.length + linkedEntries.length})</span>
 											{/if}
 										</div>
-									{#if mode === 'edit' && !readonly && !needsFileLocation}
-										<button type="button" class="flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground" onclick={openChangeLocationBrowser}>
-											<FolderSync class="h-3.5 w-3.5" /> Relocate
-										</button>
-									{/if}
+									<div class="flex flex-wrap items-center justify-end gap-2">
+										{#if mode === 'edit' && !readonly && !needsFileLocation}
+											<button type="button" class="flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground" onclick={openChangeLocationBrowser}>
+												<FolderSync class="h-3.5 w-3.5" /> Relocate
+											</button>
+											<button type="button" class="rounded border px-2 py-1 text-xs text-muted-foreground hover:text-foreground" onclick={openLinkedFileBrowser}>+ Link</button>
+											<button type="button" class="rounded border px-2 py-1 text-xs text-muted-foreground hover:text-foreground" onclick={createLinkedFileFromPrompt}>+ File</button>
+											<button type="button" class="rounded border px-2 py-1 text-xs text-muted-foreground hover:text-foreground" onclick={createLinkedFolderFromPrompt}>+ Folder</button>
+										{/if}
+									</div>
 									</div>
 
 									{#if !composePathsLocked}
@@ -2945,10 +3258,10 @@
 										</div>
 									{/if}
 
-									{#if workingComposePaths.filter((p) => p.trim()).length > 0}
+									{#if workingComposePaths.filter((p) => p.trim()).length > 0 || linkedEntries.length > 0}
 										<Tabs.Root
-											value={activeComposePath || workingComposePaths[0]}
-											onValueChange={(v) => switchComposeFile(v)}
+											value={activeEditorPath}
+											onValueChange={(v) => linkedEntries.some((entry) => entry.path === v) ? switchLinkedFile(v) : switchComposeFile(v)}
 											class="flex-wrap border-b border-zinc-200 dark:border-zinc-700"
 										>
 											<Tabs.List class="flex w-full flex-wrap justify-start gap-0.5 rounded-none bg-transparent p-0">
@@ -2973,6 +3286,15 @@
 															{/if}
 														</button>
 													</div>
+												{/each}
+												{#each linkedEntries as entry (entry.path)}
+													<Tabs.Trigger
+														value={entry.path}
+														class="min-w-0 cursor-pointer break-all rounded-t-md border-b-2 px-3.5 py-2.5 max-md:py-3 font-mono text-xs rounded-none border-x-0 border-t-0 shadow-none transition-colors data-[state=active]:rounded-none data-[state=active]:border-primary data-[state=active]:bg-zinc-50 data-[state=active]:text-foreground data-[state=active]:shadow-none data-[state=active]:dark:bg-zinc-800/50"
+													>
+														<span title={entry.path}>{entry.name}</span>
+														<span class="ml-1 text-[10px] text-muted-foreground">{entry.ownership}</span>
+													</Tabs.Trigger>
 												{/each}
 											</Tabs.List>
 										</Tabs.Root>
@@ -3016,16 +3338,39 @@
 												</div>
 											{:else}
 												<div class="flex items-center justify-between gap-3 border-b border-zinc-200 bg-zinc-100/80 px-3.5 py-2 dark:border-zinc-700 dark:bg-zinc-800/60">
-													<span class="min-w-0 truncate font-mono text-[11px] text-muted-foreground" title={activeComposeDisplayPath}>
-														{activeComposeDisplayPath || 'No file selected'}
-													</span>
-													<div class="flex items-center gap-1">
-														<Button
+															<span class="min-w-0 truncate font-mono text-[11px] text-muted-foreground" title={activeEditorPath}>
+																{activeEditorPath || 'No file selected'}
+															</span>
+															<div class="flex items-center gap-1">
+																{#if activeEditorKind === 'linked' && !readonly}
+																	<select class="h-7 max-md:h-11 rounded border bg-background px-1 text-xs" value={activeLinkedEntry?.postChange.target ?? 'stack'} onchange={(event) => { const value = (event.currentTarget as HTMLSelectElement).value as 'stack' | 'services'; updateLinkedPolicy({ target: value, action: value === 'services' ? 'restart' : activeLinkedEntry?.postChange.action ?? 'none', services: value === 'services' ? activeLinkedEntry?.postChange.services ?? [] : [] }); }}>
+																	<option value="stack">Whole stack</option>
+																	<option value="services">Selected services</option>
+																</select>
+																	<select class="h-7 max-md:h-11 rounded border bg-background px-1 text-xs" value={activeLinkedEntry?.postChange.action ?? 'none'} onchange={(event) => updateLinkedPolicy({ action: (event.currentTarget as HTMLSelectElement).value as LinkedFileAction })}>
+														{#if activeLinkedEntry?.postChange.target === 'stack'}<option value="none">No action</option>{/if}
+																		<option value="restart">Restart</option>
+																		{#if activeLinkedEntry?.postChange.target === 'stack'}<option value="ordered">Ordered restart</option>{/if}
+																		<option value="recreate">Recreate</option>
+																	</select>
+																	{#if activeLinkedEntry?.postChange.target === 'services'}
+												<select multiple class="h-7 max-md:h-11 max-w-36 rounded border bg-background px-1 text-xs" aria-label="Services affected by this file" onchange={(event) => updateLinkedPolicy({ services: [...(event.currentTarget as HTMLSelectElement).selectedOptions].map((option) => option.value) })}>
+																			{#each linkedComposeServices as service}
+																				<option value={service} selected={activeLinkedEntry.postChange.services.includes(service)}>{service}</option>
+																			{/each}
+												</select>
+												{#if activeLinkedEntry.postChange.services.some((service) => !linkedComposeServices.includes(service))}
+													<span class="text-xs text-destructive">Missing service: {activeLinkedEntry.postChange.services.filter((service) => !linkedComposeServices.includes(service)).join(', ')}</span>
+												{/if}
+																	{/if}
+																	<button type="button" class="rounded border px-2 py-1 text-xs text-muted-foreground hover:text-destructive" onclick={unlinkActiveLinkedFile}>Unlink</button>
+																{/if}
+																<Button
 															variant="ghost"
 															size="sm"
 															class="h-7 max-md:h-11 shrink-0 px-2 text-xs text-muted-foreground"
-															onclick={runComposeValidate}
-															disabled={!composeContent}
+																	onclick={runComposeValidate}
+																	disabled={!composeContent || activeEditorKind === 'linked'}
 															title="Check this compose for problems before deploy"
 														>
 															{#if validateLoading}
@@ -3061,15 +3406,15 @@
 													</div>
 												</div>
 												<div bind:this={editorRowRef} class="flex-1 min-h-0 flex relative">
-													<CodeEditor
+																	<CodeEditor
 														bind:this={codeEditorRef}
 														value={composeContent}
-														language="yaml"
+																	language={activeEditorLanguage}
 														{readonly}
 														theme={editorTheme}
 														onchange={readonly ? undefined : handleComposeChange}
-														variableMarkers={variableMarkers}
-														lintMarkers={validateMarkers}
+																	variableMarkers={activeEditorKind === 'compose' ? variableMarkers : []}
+																	lintMarkers={activeEditorKind === 'compose' ? validateMarkers : []}
 														onLintClick={openValidateAtLine}
 														class="min-h-0 flex-1 overflow-hidden"
 													/>
@@ -3322,7 +3667,7 @@
 					</Button>
 				{:else if !readonly}
 					<!-- Edit mode buttons -->
-					<Button variant="outline" class="max-md:min-h-11 max-md:w-full w-24" onclick={() => handleSave(false)} disabled={saving || loading || (needsFileLocation && !workingComposePath.trim())}>
+					<Button variant="outline" class="max-md:min-h-11 max-md:w-full w-24" onclick={() => handleSave(false)} disabled={saving || loading || hasStaleLinkedPolicy || (needsFileLocation && !workingComposePath.trim())}>
 						{#if saving && !savingWithRestart}
 							<Loader2 class="w-4 h-4 animate-spin" />
 							Saving...
@@ -3331,7 +3676,7 @@
 							Save
 						{/if}
 					</Button>
-					<Button class="max-md:col-span-2 max-md:w-full max-md:min-h-11 w-36" onclick={() => handleSave(true)} disabled={saving || loading || (needsFileLocation && !workingComposePath.trim())}>
+					<Button class="max-md:col-span-2 max-md:w-full max-md:min-h-11 w-36" onclick={() => handleSave(true)} disabled={saving || loading || hasStaleLinkedPolicy || (needsFileLocation && !workingComposePath.trim())}>
 						{#if saving && savingWithRestart}
 							<Loader2 class="w-4 h-4 animate-spin" />
 							Deploying...
@@ -3546,6 +3891,9 @@
 	icon={fileBrowserConfig.icon}
 	selectFilter={fileBrowserConfig.selectFilter}
 	selectMode={fileBrowserConfig.selectMode}
+	initialPath={fileBrowserConfig.initialPath}
+	apiUrl={fileBrowserConfig.apiUrl}
+	description={fileBrowserConfig.description}
 	onSelect={fileBrowserConfig.onSelect}
 	onClose={() => showFileBrowser = false}
 />

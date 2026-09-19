@@ -134,6 +134,13 @@
       "when": 1789813866365,
       "tag": "0018_centralized_git",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1789815009096,
+      "tag": "0019_linked_stack_files",
+      "breakpoints": true
     }
   ]
 }

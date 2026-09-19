@@ -11,7 +11,7 @@
 	import { SELECTOR_VARS } from '$lib/utils/bulk-selector';
 	import { classifyMarker, resolvedRefVarNames } from '$lib/utils/invault-markers';
 	import { applyQuickFix, findingKey } from '$lib/utils/compose-quick-fix';
-	import { Layers, Save, Play, Code, GitGraph, GitBranch, GitCommitHorizontal, Github, Loader2, AlertCircle, X, Sun, Moon, TriangleAlert, GripVertical, GripHorizontal, FolderOpen, Copy, Check, XCircle, MapPin, ArrowRight, ArrowUp, ArrowDown, Info, Box, FolderSync, Archive, Lock, FileText, ListChecks, History, ChevronDown } from 'lucide-svelte';
+	import { Layers, Save, Play, Code, GitGraph, GitBranch, GitCommitHorizontal, Github, Loader2, AlertCircle, X, Sun, Moon, TriangleAlert, GripVertical, GripHorizontal, FolderOpen, Copy, Check, XCircle, MapPin, ArrowRight, ArrowUp, ArrowDown, Info, Box, FolderSync, Archive, Lock, FileText, ListChecks, History, ChevronDown, Settings2 } from 'lucide-svelte';
 	import ComposeValidatePanel from './ComposeValidatePanel.svelte';
 
 	import BackupPanel from '../containers/BackupPanel.svelte';
@@ -76,13 +76,20 @@
 		readonly?: boolean; // View compose content without allowing local changes
 		gitInfo?: { commit?: string; url?: string; branch?: string } | null; // Git provenance for read-only git stacks
 		stackSource?: { sourceType: string } | null;
+		initialTab?: 'editor' | 'graph';
 		onClose: () => void;
 		onSuccess: () => void; // Called after create or save
+		onAdoptFromGit?: () => void;
+		onEditGitSettings?: () => void;
 	}
 
-	let { open = $bindable(), mode: propMode, stackName: propStackName = '', initialCompose, initialStackName, readonly = false, gitInfo = null, stackSource = null, onClose, onSuccess }: Props = $props();
+	let { open = $bindable(), mode: propMode, stackName: propStackName = '', initialCompose, initialStackName, readonly = false, gitInfo = null, stackSource = null, initialTab = 'editor', onClose, onSuccess, onAdoptFromGit, onEditGitSettings }: Props = $props();
 
 	let gitCommitCopied = $state<'ok' | 'error' | null>(null);
+	function openGitSettings() {
+		open = false;
+		onEditGitSettings?.();
+	}
 
 	// Local effective state - can transition from create → edit after failed deploy
 	let mode = $state(propMode);
@@ -288,6 +295,10 @@
 	}
 
 	// Refresh the badge count when the modal opens (and after a deploy bumps the key).
+	$effect(() => {
+		if (open) activeTab = initialTab;
+	});
+
 	$effect(() => {
 		if (open) {
 			void deploysReloadKey; // re-count after a deploy finishes
@@ -2629,7 +2640,16 @@
 
 		<!-- View tabs — left-aligned underline bar under the header, matched to
 		     GitStackModal for a consistent look across the stack modals. -->
-		<div class="flex items-center gap-1 border-b border-zinc-200 px-5 max-md:px-4 dark:border-zinc-700 flex-shrink-0">
+		<div class="flex items-center gap-1 overflow-x-auto border-b border-zinc-200 px-5 max-md:px-4 dark:border-zinc-700 flex-shrink-0">
+			{#if isGitView && onEditGitSettings}
+				<button
+					type="button"
+					class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 border-transparent px-3 max-md:px-2 py-2 max-md:py-3 text-sm text-muted-foreground transition-colors hover:text-foreground"
+					onclick={openGitSettings}
+				>
+					<Settings2 class="h-3.5 w-3.5" /> Settings
+				</button>
+			{/if}
 			<button
 				type="button"
 				class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 px-3 max-md:px-2 py-2 max-md:py-3 text-sm transition-colors {activeTab === 'editor' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
@@ -2742,40 +2762,97 @@
 
 				<!-- File location needed banner -->
 				{#if mode === 'edit' && needsFileLocation}
-					<div class="px-4 py-3 border-b border-zinc-200 dark:border-zinc-700 bg-amber-50/50 dark:bg-amber-950/20">
-						<div class="flex items-start gap-3">
-							<AlertCircle class="w-4 h-4 shrink-0 text-amber-500 mt-0.5" />
-							<div class="flex-1 min-w-0">
-								<p class="text-sm text-zinc-600 dark:text-zinc-400 mb-2">
-									{#if readonly}
-										<span class="font-medium text-amber-800 dark:text-amber-300">Untracked stack</span> — this stack is running in Docker but Dockhand doesn't know where its compose file is stored on disk. Close this view and use Edit to locate the file.
-									{:else}
-										<span class="font-medium text-amber-800 dark:text-amber-300">Untracked stack</span> — this stack is running in Docker but Dockhand doesn't know where its compose file is stored on disk. Browse to locate the file to start editing and managing it.
-									{/if}
-								</p>
+					<div class="border-b border-zinc-200 bg-amber-50/60 px-4 py-2 dark:border-zinc-700 dark:bg-amber-950/20 sm:px-8 sm:py-2.5">
+						<div class="flex items-center gap-3">
+							<div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-amber-500/15 text-amber-600 dark:text-amber-400">
+								<AlertCircle class="h-4 w-4" />
+							</div>
+							<div class="min-w-0 flex-1">
+								<div class="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+									<h2 class="text-sm font-semibold text-amber-900 dark:text-amber-200">Untracked stack</h2>
+									<p class="truncate text-xs text-zinc-600 dark:text-zinc-400">Running in Docker, but its compose file is not registered in Dockhand yet.</p>
+								</div>
 								{#if stackContainers.length > 0}
-									<div class="text-xs text-zinc-500 dark:text-zinc-400">
-										<span class="font-medium text-zinc-700 dark:text-zinc-300">Running containers:</span>
-										<div class="mt-1.5 flex flex-wrap gap-1.5">
-											{#each stackContainers as container}
-												<span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs {container.state === 'running' ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300' : 'bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400'}">
-													<Box class="w-3 h-3" />
+									<div class="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400">
+										<span class="mr-1 font-medium text-zinc-700 dark:text-zinc-300">Running containers</span>
+										{#each stackContainers as container}
+											{#if container.state === 'running'}
+												<span class="inline-flex items-center gap-1.5 rounded-full bg-green-100 px-2 py-0.5 text-green-800 dark:bg-green-900/40 dark:text-green-300">
+													<Box class="h-3 w-3" />
 													{container.name}
 												</span>
-											{/each}
-										</div>
+											{:else}
+												<span class="inline-flex items-center gap-1.5 rounded-full bg-zinc-100 px-2 py-0.5 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400">
+													<Box class="h-3 w-3" />
+													{container.name}
+												</span>
+											{/if}
+										{/each}
 									</div>
 								{/if}
 							</div>
+							<span class="shrink-0 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-700 dark:text-amber-300">Untracked</span>
 						</div>
 					</div>
 				{/if}
 
 				<!-- Content area -->
-				<div bind:this={containerRef} class="flex-1 min-h-0 flex flex-col {isDraggingSplit ? 'select-none' : ''}">
-					{#if activeTab === 'editor'}
-						<!-- Mobile: one pane at a time; desktop keeps the resizable split below. -->
-						<div class="flex items-center gap-1 border-b border-zinc-200 px-4 dark:border-zinc-700 flex-shrink-0 md:hidden">
+		<div bind:this={containerRef} class="flex-1 min-h-0 flex flex-col {isDraggingSplit ? 'select-none' : ''}">
+			{#if activeTab === 'editor'}
+				{#if mode === 'edit' && needsFileLocation && !composeContent && !readonly}
+					<div class="flex min-h-0 flex-1 items-start justify-center overflow-auto px-4 py-8 sm:items-center sm:px-8 sm:py-10">
+						<div class="w-full max-w-4xl">
+							<div class="mb-4 flex items-center gap-3">
+								<div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+									<FolderOpen class="h-4 w-4" />
+								</div>
+								<div>
+									<h2 class="text-base font-semibold text-zinc-800 dark:text-zinc-100">Choose how Dockhand should manage it</h2>
+									<p class="mt-1 text-sm text-zinc-500 dark:text-zinc-400">Pick the source that should own future edits and redeploys.</p>
+								</div>
+							</div>
+							<div class="grid gap-3 sm:grid-cols-2">
+								<button
+									type="button"
+									onclick={openComposeBrowser}
+									class="group flex min-h-24 items-start gap-3 rounded-lg border border-blue-500/40 bg-blue-500/10 p-3 text-left transition-colors hover:border-blue-400 hover:bg-blue-500/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 dark:border-blue-400/30 dark:bg-blue-400/10 dark:hover:bg-blue-400/15"
+								>
+									<span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-blue-500/15 text-blue-600 dark:text-blue-300">
+										<FolderOpen class="h-4 w-4" />
+									</span>
+									<span class="min-w-0 flex-1">
+										<span class="flex items-center justify-between gap-2 text-sm font-semibold text-zinc-800 dark:text-zinc-100">
+											Manage internally
+											<ArrowRight class="h-3.5 w-3.5 shrink-0 text-blue-500 transition-transform group-hover:translate-x-0.5" />
+										</span>
+										<span class="mt-1 block text-xs leading-4 text-zinc-600 dark:text-zinc-400">Choose the compose file on disk and let Dockhand manage this stack locally.</span>
+									</span>
+								</button>
+
+								{#if onAdoptFromGit}
+									<button
+										type="button"
+										onclick={onAdoptFromGit}
+										class="group flex min-h-24 items-start gap-3 rounded-lg border border-violet-500/35 bg-violet-500/10 p-3 text-left transition-colors hover:border-violet-400 hover:bg-violet-500/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 dark:border-violet-400/30 dark:bg-violet-400/10 dark:hover:bg-violet-400/15"
+									>
+										<span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-violet-500/15 text-violet-600 dark:text-violet-300">
+											<GitBranch class="h-4 w-4" />
+										</span>
+										<span class="min-w-0 flex-1">
+											<span class="flex items-center justify-between gap-2 text-sm font-semibold text-zinc-800 dark:text-zinc-100">
+												Convert to Git
+												<ArrowRight class="h-3.5 w-3.5 shrink-0 text-violet-500 transition-transform group-hover:translate-x-0.5" />
+											</span>
+											<span class="mt-1 block text-xs leading-4 text-zinc-600 dark:text-zinc-400">Connect this stack to a repository for versioned files and Git-based deploys.</span>
+										</span>
+									</button>
+								{/if}
+							</div>
+						</div>
+					</div>
+				{:else}
+					<!-- Mobile: one pane at a time; desktop keeps the resizable split below. -->
+				<div class="flex items-center gap-1 border-b border-zinc-200 px-4 dark:border-zinc-700 flex-shrink-0 md:hidden">
 							<button
 								type="button"
 								class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 px-2 py-2.5 max-md:py-3 text-sm transition-colors {mobilePane === 'compose' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
@@ -3111,7 +3188,8 @@
 								</div>
 							</div>
 						</div>
-					{:else if activeTab === 'graph'}
+				{/if}
+			{:else if activeTab === 'graph'}
 						<!-- Graph tab: Full width -->
 						<ComposeGraphViewer
 							bind:this={graphViewerRef}

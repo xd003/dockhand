@@ -73,7 +73,8 @@ import {
 	setStackInjectedSecretKeys,
 	getEnvSetting,
 	setEnvSetting,
-	getStackSources
+	getStackSources,
+	getRegistries
 } from './db';
 import { getProvider } from './secretproviders';
 import { stripSurroundingQuotes } from './secretproviders/shared';
@@ -87,6 +88,7 @@ import { rewriteComposeVolumePaths, getHostDataDir } from './host-path';
 import { getOrderValue } from './container-labels';
 import { pendingRowsToClear } from './pending-updates-core';
 import { buildDockhandOverrideFile } from './dockhand-override-file';
+import { prepareHawserStackDirAdoption, type HawserStackDirAdoptionRequest } from './hawser-stack-adoption';
 
 // =============================================================================
 // TYPES
@@ -118,6 +120,16 @@ export interface StackOperationResult {
 	command?: string;
 	/** Result of applying git deletion sync (files removed / kept, with reasons) */
 	deletion?: DeletionApplyResult;
+	/** True once the deployment has invoked `docker compose up`. */
+	composeStarted?: boolean;
+	/** Hawser stack-directory adoption transaction identifier. */
+	adoptionId?: string;
+	/** Environment path retained or created by Hawser adoption. */
+	managedEnvRelativePath?: string;
+	/** Managed stack directory reported by Hawser. */
+	managedDirectory?: string;
+	/** Compose files retained or created by Hawser adoption. */
+	managedComposeFiles?: string[];
 	/**
 	 * The process's real exit code, when one exists to report -- the local/direct
 	 * compose path runs the command itself and knows it. Left unset on a timeout
@@ -197,6 +209,23 @@ export interface DeployStackOptions {
 	isGitDeploy?: boolean;
 	/** Optional callback invoked per redacted output line as the compose command runs. */
 	onLine?: (line: string) => void;
+	/** Adoption-only callback invoked immediately before `docker compose up`. */
+	onComposeStarted?: () => void;
+	/** Adoption-only path that must survive a Git overlay. */
+	preserveEnvPath?: string;
+	/** Adoption preflight already validated and snapshotted the existing managed directory. */
+	allowExistingStackDir?: boolean;
+	/** Remote Hawser adoption transaction. */
+	remoteAdoption?: {
+		adoptionId: string;
+		sourceDir: string;
+		sourceComposeFiles: string[];
+		sourceEnvPath?: string | null;
+		preservedEnvRelativePath?: string;
+		preserveExistingEnv: boolean;
+		explicitGitEnvRelativePath?: string | null;
+		onRemoteAdoptionPrepared?: (result: { managedDirectory?: string; managedEnvRelativePath?: string; managedComposeFiles?: string[] }) => void;
+	};
 }
 
 // =============================================================================
@@ -248,11 +277,8 @@ if (typeof process !== 'undefined') {
 	process.on('SIGTERM', () => { cleanupTlsDirs(); process.exit(143); });
 }
 
-/**
- * Execute a function with exclusive lock on a stack.
- * Prevents race conditions when multiple operations target the same stack.
- */
-async function withStackLock<T>(stackName: string, fn: () => Promise<T>): Promise<T> {
+/** Acquire an exclusive stack lock and return an idempotent release function. */
+export async function acquireStackLock(stackName: string): Promise<() => void> {
 	const lockKey = stackName;
 
 	// Wait for any existing lock to release
@@ -266,12 +292,24 @@ async function withStackLock<T>(stackName: string, fn: () => Promise<T>): Promis
 		releaseLock = resolve;
 	});
 	stackLocks.set(lockKey, lockPromise);
+	let released = false;
+
+	return () => {
+		if (released) return;
+		released = true;
+		if (stackLocks.get(lockKey) === lockPromise) stackLocks.delete(lockKey);
+		releaseLock!();
+	};
+}
+
+/** Execute a function with exclusive access to a stack. */
+export async function withStackLock<T>(stackName: string, fn: () => Promise<T>): Promise<T> {
+	const releaseLock = await acquireStackLock(stackName);
 
 	try {
 		return await fn();
 	} finally {
-		stackLocks.delete(lockKey);
-		releaseLock!();
+		releaseLock();
 	}
 }
 
@@ -1480,7 +1518,11 @@ export async function saveStackComposeFile(
 	}
 }
 
-async function checkFlatLocalStackNameCollision(stackName: string, envId?: number | null): Promise<string | null> {
+async function checkFlatLocalStackNameCollision(
+	stackName: string,
+	envId?: number | null,
+	allowExistingDir = false
+): Promise<string | null> {
 	const allSources = await getStackSources();
 	const conflict = findStackNameCollision(allSources, stackName, envId);
 	if (conflict) {
@@ -1488,7 +1530,7 @@ async function checkFlatLocalStackNameCollision(stackName: string, envId?: numbe
 		return `Stack name "${stackName}" is already used by environment "${conflictEnv?.name ?? conflict.environmentId}". With STACKS_DIR set, local stack names must be unique across environments.`;
 	}
 	const flatDir = join(getLocalStacksDir(), stackName);
-	if (existsSync(flatDir)) {
+	if (!allowExistingDir && existsSync(flatDir)) {
 		const existing = await getStackSource(stackName, envId);
 		if (!existing) {
 			return `Stack directory "${flatDir}" already exists. With STACKS_DIR set, local stack names must be unique across environments.`;
@@ -3694,7 +3736,26 @@ async function reconcileStackPendingUpdates(stackName: string, envId: number): P
  * Uses stack locking to prevent concurrent deployments.
  */
 export async function deployStack(options: DeployStackOptions): Promise<StackOperationResult> {
-	const { name, compose, envId, sourceDir, forceRecreate, build, noBuildCache, pullPolicy, composePath, composePaths, envPath, composeFileName, envFileName, filesToDelete, isGitDeploy, onLine } = options;
+	const { name } = options;
+	const logPrefix = `[Stack:${name}]`;
+
+	// Validate stack name before any path construction, even when the caller is
+	// only asking for the lock wrapper.
+	if (!/^[a-z0-9][a-z0-9_-]*$/.test(name)) {
+		console.log(`${logPrefix} ERROR: Invalid stack name format`);
+		return {
+			success: false,
+			output: '',
+			error: 'Stack name must be lowercase, start with a letter or number, and contain only letters, numbers, hyphens, and underscores'
+		};
+	}
+
+	return withStackLock(name, () => deployStackUnlocked(options));
+}
+
+/** Deploy body for callers that already hold the per-stack lock. */
+export async function deployStackUnlocked(options: DeployStackOptions): Promise<StackOperationResult> {
+	const { name, compose, envId, sourceDir, forceRecreate, build, noBuildCache, pullPolicy, composePath, composePaths, envPath, composeFileName, envFileName, filesToDelete, isGitDeploy, onLine, onComposeStarted, preserveEnvPath, allowExistingStackDir, remoteAdoption } = options;
 	const logPrefix = `[Stack:${name}]`;
 
 	console.log(`${logPrefix} ========================================`);
@@ -3708,18 +3769,7 @@ export async function deployStack(options: DeployStackOptions): Promise<StackOpe
 	console.log(`${logPrefix} Compose filename:`, composeFileName ?? '(none)');
 	console.log(`${logPrefix} Env filename:`, envFileName ?? '(none)');
 
-	// Validate stack name - Docker Compose requires lowercase alphanumeric, hyphens, underscores
-	// Must also start with a letter or number
-	if (!/^[a-z0-9][a-z0-9_-]*$/.test(name)) {
-		console.log(`${logPrefix} ERROR: Invalid stack name format`);
-		return {
-			success: false,
-			output: '',
-			error: 'Stack name must be lowercase, start with a letter or number, and contain only letters, numbers, hyphens, and underscores'
-		};
-	}
-
-	return withStackLock(name, async () => {
+	{
 		// Determine working directory: use custom composePath directory if provided,
 		// otherwise fall back to internal stack directory
 		let workingDir: string;
@@ -3741,7 +3791,7 @@ export async function deployStack(options: DeployStackOptions): Promise<StackOpe
 			// Enforce STACKS_DIR cross-env uniqueness on first create (same as internal stacks).
 			const existingGitSource = await getStackSource(name, envId);
 			if (!existingGitSource && await usesFlatLocalStacksDir(envId)) {
-				const collisionError = await checkFlatLocalStackNameCollision(name, envId);
+				const collisionError = await checkFlatLocalStackNameCollision(name, envId, allowExistingStackDir);
 				if (collisionError) {
 					return { success: false, output: '', error: collisionError };
 				}
@@ -3766,7 +3816,7 @@ export async function deployStack(options: DeployStackOptions): Promise<StackOpe
 
 			// Set actualEnvPath using the provided env filename from git stack config
 			// Only if envFileName is provided (env file is optional for git stacks)
-			if (envFileName) {
+			if (envFileName && !remoteAdoption) {
 				actualEnvPath = join(workingDir, envFileName);
 				console.log(`${logPrefix} Using env filename from git config:`, envFileName);
 				console.log(`${logPrefix} Actual env path will be:`, actualEnvPath);
@@ -3774,20 +3824,34 @@ export async function deployStack(options: DeployStackOptions): Promise<StackOpe
 
 			// Read all files for Hawser deployments
 			stackFiles = (await readDirFilesAsMap(sourceDir)).files;
+			if (preserveEnvPath && !remoteAdoption) {
+				const preservedRelativePath = relative(workingDir, resolve(preserveEnvPath));
+				if (preservedRelativePath && !preservedRelativePath.startsWith('..') && !isAbsolute(preservedRelativePath)) {
+					delete stackFiles[preservedRelativePath.split(pathSep).join('/')];
+				}
+			}
 			console.log(`${logPrefix} Read ${Object.keys(stackFiles).length} files from source directory`);
 			console.log(`${logPrefix} Files:`, Object.keys(stackFiles).join(', '));
 
 			// Copy git source files to stack directory (overlay, not replace).
 			// Do NOT rmSync first — relative volume mounts (e.g., ./data) live here
 			// and would be destroyed, causing data loss (#831).
-			console.log(`${logPrefix} Copying source directory to stack directory...`);
-			mkdirSync(workingDir, { recursive: true });
-			cpSync(sourceDir, workingDir, {
-				recursive: true,
-				force: true,
-				filter: (src) => !src.includes('/.git/') && !src.endsWith('/.git')
-			});
-			console.log(`${logPrefix} Copied ${sourceDir} -> ${workingDir}`);
+			if (!remoteAdoption) {
+				console.log(`${logPrefix} Copying source directory to stack directory...`);
+				mkdirSync(workingDir, { recursive: true });
+				const preservePath = preserveEnvPath ? resolve(preserveEnvPath) : null;
+				cpSync(sourceDir, workingDir, {
+					recursive: true,
+					force: true,
+					filter: (src) => {
+						if (src.includes('/.git/') || src.endsWith('/.git')) return false;
+						if (!preservePath) return true;
+						const sourceRelative = relative(sourceDir, src);
+						return resolve(join(workingDir, sourceRelative)) !== preservePath;
+					}
+				});
+				console.log(`${logPrefix} Copied ${sourceDir} -> ${workingDir}`);
+			}
 
 			// Git stack composePaths are stored relative to the repository, while the
 			// source directory above is copied into workingDir. Rebase every configured
@@ -3980,6 +4044,82 @@ export async function deployStack(options: DeployStackOptions): Promise<StackOpe
 		console.log(`${logPrefix} DB non-secret override vars:`, Object.keys(dbNonSecretVars).length);
 		console.log(`${logPrefix} DB secret vars:`, Object.keys(secretVars).length);
 
+		// Remote adoption is a separate Hawser transaction. It stages the existing
+		// host directory before applying these Git files, so the ordinary Hawser
+		// file writer must not receive this request and create a partial destination.
+		if (remoteAdoption && typeof envId === 'number') {
+			const composeNames = (actualComposePaths?.length
+				? actualComposePaths
+				: [actualComposePath || join(workingDir, composeFileName || 'compose.yaml')])
+				.map((path) => {
+					const rel = relative(workingDir, path);
+					return rel && !rel.startsWith('..') && !isAbsolute(rel)
+						? rel.split(pathSep).join('/')
+						: basename(path);
+				});
+			const primaryComposeName = composeNames[0] || composeFileName || 'compose.yaml';
+			const registries = (await getRegistries())
+				.filter((registry) => registry.username && registry.password)
+				.map((registry) => ({ url: registry.url, username: registry.username!, password: registry.password! }));
+			const secrets = Object.values(secretVars).filter((value): value is string => typeof value === 'string');
+			const lines = makeRedactedLineSink(onLine, secrets);
+			onComposeStarted?.();
+			const adoptionRequest: HawserStackDirAdoptionRequest = {
+				adoptionId: remoteAdoption.adoptionId,
+				projectName: name,
+				sourceDir: remoteAdoption.sourceDir,
+				sourceComposeFiles: remoteAdoption.sourceComposeFiles,
+				sourceEnvPath: remoteAdoption.sourceEnvPath,
+				preservedEnvRelativePath: remoteAdoption.preservedEnvRelativePath,
+				preserveExistingEnv: remoteAdoption.preserveExistingEnv,
+				explicitGitEnvRelativePath: remoteAdoption.explicitGitEnvRelativePath,
+				compose: {
+					operation: 'up',
+					projectName: name,
+					composeFile: compose,
+					composeFileName: primaryComposeName,
+					composeFileNames: composeNames,
+					envFileName: remoteAdoption.explicitGitEnvRelativePath || undefined,
+					files: stackFiles || {},
+					envVars: { ...dbNonSecretVars, ...secretVars },
+					forceRecreate: forceRecreate ?? false,
+					build: build ?? false,
+					noBuildCache: (build && noBuildCache) ?? false,
+					pullPolicy: pullPolicy || '',
+					registries,
+					streamOutput: !!onLine
+				}
+			};
+			try {
+				const adoption = await prepareHawserStackDirAdoption(envId, adoptionRequest, lines.forward);
+				lines.surfaceBlock(adoption.output);
+				const operationResult: StackOperationResult = {
+					success: adoption.success,
+					output: redactSecretVars(adoption.output || '', secretVars),
+					error: adoption.success ? undefined : redactSecretVars(adoption.error || 'Remote stack adoption failed', secretVars),
+					composeStarted: true,
+					adoptionId: adoption.adoptionId || remoteAdoption.adoptionId,
+					managedDirectory: adoption.managedDirectory,
+					managedEnvRelativePath: adoption.managedEnvRelativePath,
+					managedComposeFiles: adoption.managedComposeFiles,
+					exitCode: adoption.exitCode
+				};
+				remoteAdoption.onRemoteAdoptionPrepared?.({
+					managedDirectory: operationResult.managedDirectory,
+					managedEnvRelativePath: operationResult.managedEnvRelativePath,
+					managedComposeFiles: operationResult.managedComposeFiles
+				});
+				return operationResult;
+			} catch (error) {
+				return {
+					success: false,
+					composeStarted: true,
+					adoptionId: remoteAdoption.adoptionId,
+					error: redactSecretVars(`Failed to adopt remote stack directory: ${error instanceof Error ? error.message : String(error)}`, secretVars)
+				};
+			}
+		}
+
 		// For git stacks (sourceDir provided), use the override file (.env.dockhand)
 		// to layer editor overrides on top of the repo's .env file.
 		// Only DB overrides go into .env.dockhand - repo values are already in the repo's env file.
@@ -4019,6 +4159,7 @@ export async function deployStack(options: DeployStackOptions): Promise<StackOpe
 		}
 
 		console.log(`${logPrefix} Calling executeComposeCommand...`);
+		onComposeStarted?.();
 		const result = await executeComposeCommand(
 			'up',
 			cmdOptions,
@@ -4027,6 +4168,7 @@ export async function deployStack(options: DeployStackOptions): Promise<StackOpe
 			secretVars,
 			onLine
 		);
+		result.composeStarted = true;
 		// F4 fix: `secretVars` here is POST-resolveProviderEnvVars (line ~3059 above) --
 		// the same set executeComposeCommand just redacted streamed lines against. This
 		// is the single call site inside deployStack(), so setting it here covers both
@@ -4068,7 +4210,7 @@ export async function deployStack(options: DeployStackOptions): Promise<StackOpe
 			]).catch(() => {});
 		}
 		return result;
-	});
+	}
 }
 
 /**

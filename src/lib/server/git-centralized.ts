@@ -55,6 +55,7 @@ import {
 	type GitMode
 } from './git';
 import { deployStackFromSync } from './git-deploy-shared';
+import { withStackLock } from './stacks';
 import { getGitMode } from './git-mode';
 
 // Generous per-clone bound: a frozen network/SSH connection must not wedge the
@@ -703,6 +704,19 @@ async function deployGitStackCore(
 	opts: DeployGitStackOpts,
 	onProgress?: ProgressCallback
 ): Promise<DeployGitStackResult> {
+	const gitStack = await getGitStack(stackId);
+	if (!gitStack) {
+		onProgress?.({ status: 'error', error: 'Git stack not found' });
+		return { success: false, error: 'Git stack not found' };
+	}
+	return withStackLock(gitStack.stackName, () => deployGitStackCoreUnlocked(stackId, opts, onProgress));
+}
+
+async function deployGitStackCoreUnlocked(
+	stackId: number,
+	opts: DeployGitStackOpts,
+	onProgress?: ProgressCallback
+): Promise<DeployGitStackResult> {
 	const { force, ignoreForceRedeploy } = opts;
 
 	const gitStack = await getGitStack(stackId);
@@ -743,7 +757,7 @@ async function deployGitStackCore(
 		}
 
 		// Deploy using the shared post-sync body (git-deploy-shared.ts).
-		return deployStackFromSync({ stackId, gitStack, opts: { force, ignoreForceRedeploy }, syncResult, onProgress, logPrefix });
+		return deployStackFromSync({ stackId, gitStack, opts: { force, ignoreForceRedeploy }, syncResult, onProgress, logPrefix, lockHeld: true });
 	} finally {
 		stackDeployReentrancy.delete(stackId);
 	}

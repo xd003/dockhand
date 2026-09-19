@@ -44,6 +44,7 @@ import {
 	type GitEngine
 } from './git';
 import { deployStackFromSync } from './git-deploy-shared';
+import { withGitRepositoryMutationLock } from './git-stack-files';
 import { withStackLock } from './stacks';
 
 // Generous per-clone bound: a frozen network/SSH connection must not hold a
@@ -262,6 +263,12 @@ async function getPreviousCommit(repoPath: string, env: Record<string, string>):
 }
 
 export async function syncGitStack(stackId: number, _onProgress?: ProgressCallback): Promise<SyncResult> {
+	const gitStack = await getGitStack(stackId);
+	if (!gitStack) return { success: false, error: 'Git stack not found' };
+	return withGitRepositoryMutationLock(gitStack.repositoryId, () => syncGitStackUnlocked(stackId, _onProgress));
+}
+
+async function syncGitStackUnlocked(stackId: number, _onProgress?: ProgressCallback): Promise<SyncResult> {
 	const gitStack = await getGitStack(stackId);
 	if (!gitStack) {
 		return { success: false, error: 'Git stack not found' };

@@ -97,6 +97,7 @@ import { parseComposePathsColumn } from './compose-files';
 import { parseInjectedSecretKeys, serializeInjectedSecretKeys } from './stack-secret-keys';
 import { invalidateVulnerabilitiesCache } from './vulnerabilities-cache';
 import { filterStackModel, filterReposWithCentralizedMember } from '../utils/git-model-routing';
+import { parseLinkedFiles, serializeLinkedFiles, type LinkedStackFile } from '../stack-linked-files';
 
 // Re-export for backwards compatibility
 export { db, isPostgres, isSqlite };
@@ -3096,6 +3097,7 @@ export interface StackSourceData {
 	envPath: string | null;
 	secretProviderId: number | null;
 	icon: string | null;
+	linkedFiles: string | null;
 	createdAt: string;
 	updatedAt: string;
 }
@@ -3225,6 +3227,7 @@ export async function upsertStackSource(data: {
 	envPath?: string | null;
 	secretProviderId?: number | null;
 	icon?: string | null;
+	linkedFiles?: LinkedStackFile[] | null;
 }): Promise<StackSourceData> {
 	const existing = await getStackSource(data.stackName, data.environmentId);
 
@@ -3256,7 +3259,9 @@ export async function upsertStackSource(data: {
 				// Preserve existing binding when caller (like git) omits it
 				...(data.secretProviderId !== undefined && { secretProviderId: data.secretProviderId }),
 				// Same preserve-on-omit for the icon, so a git sync doesn't wipe a user's choice
-				...(data.icon !== undefined && { icon: data.icon })
+				...(data.icon !== undefined && { icon: data.icon }),
+				// Linked file metadata follows the same preserve-on-omit rule.
+				...(data.linkedFiles !== undefined && { linkedFiles: data.linkedFiles === null ? null : serializeLinkedFiles(data.linkedFiles) })
 			})
 			.where(eq(stackSources.id, existing.id));
 		return getStackSource(data.stackName, data.environmentId) as Promise<StackSourceData>;
@@ -3272,7 +3277,8 @@ export async function upsertStackSource(data: {
 			composePaths: pathsJson,
 			envPath: data.envPath ?? null,
 			secretProviderId: data.secretProviderId ?? null,
-			icon: data.icon ?? null
+			icon: data.icon ?? null,
+			linkedFiles: data.linkedFiles == null ? null : serializeLinkedFiles(data.linkedFiles)
 		});
 		return getStackSource(data.stackName, data.environmentId) as Promise<StackSourceData>;
 	}
@@ -3281,7 +3287,7 @@ export async function upsertStackSource(data: {
 export async function updateStackSource(
 	stackName: string,
 	environmentId: number | null,
-updates: { composePath?: string | null; composePaths?: string[] | null; envPath?: string | null; secretProviderId?: number | null; icon?: string | null }
+	updates: { composePath?: string | null; composePaths?: string[] | null; envPath?: string | null; secretProviderId?: number | null; icon?: string | null; linkedFiles?: LinkedStackFile[] | null }
 ): Promise<boolean> {
 	const existing = await getStackSource(stackName, environmentId);
 	if (!existing) return false;
@@ -3293,11 +3299,19 @@ updates: { composePath?: string | null; composePaths?: string[] | null; envPath?
 			envPath: updates.envPath !== undefined ? updates.envPath : existing.envPath,
 			secretProviderId: updates.secretProviderId !== undefined ? updates.secretProviderId : existing.secretProviderId,
 			icon: updates.icon !== undefined ? updates.icon : existing.icon,
+			linkedFiles: updates.linkedFiles !== undefined
+				? (updates.linkedFiles === null ? null : serializeLinkedFiles(updates.linkedFiles))
+				: existing.linkedFiles,
 			updatedAt: new Date().toISOString()
 		})
 		.where(eq(stackSources.id, existing.id));
 
 	return true;
+}
+
+/** Parse a stack's linked-file document, tolerating pre-feature/null/corrupt rows. */
+export function getStackLinkedFiles(source: { linkedFiles?: string | null } | null | undefined): LinkedStackFile[] {
+	return parseLinkedFiles(source?.linkedFiles);
 }
 
 /**

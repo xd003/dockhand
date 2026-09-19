@@ -599,6 +599,7 @@ export type DeployGitStackResult = {
 	output?: string;
 	error?: string;
 	skipped?: boolean;
+	composeStarted?: boolean;
 };
 
 export type FanOutResult = {

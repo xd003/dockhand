@@ -97,11 +97,14 @@
 		credentials: GitCredential[];
 		onClose: () => void;
 		onSaved: () => void;
+		/** Existing external stack being intentionally converted to Git. */
+		adoptionTarget?: { stackName: string; environmentId: number | null; displayName?: string; envPath?: string | null } | null;
 		/** Called when a new repository is created inline (via Browse) so the parent can refresh the repos list */
 		onRepositoryCreated?: () => void;
 	}
 
-let { open = $bindable(), gitStack = null, environmentId = null, icon = null, repositories, credentials, onClose, onSaved, onRepositoryCreated }: Props = $props();
+	let { open = $bindable(), gitStack = null, adoptionTarget = null, environmentId = null, icon = null, repositories, credentials, onClose, onSaved, onRepositoryCreated }: Props = $props();
+	const isAdopting = $derived(adoptionTarget !== null && gitStack === null);
 
 	// Per-stack icon override (same name-based /icon endpoint as internal stacks, #1473).
 	let formIcon = $state<string | null>(icon);
@@ -160,7 +163,7 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 	// Ok/fail run tally shown on the Backups tab (edit mode only).
 	let backupTally = $state<{ ok: number; failed: number }>({ ok: 0, failed: 0 });
 	let backupTallyLoaded = $state(false);
-	const effectiveEnvId = $derived(gitStack?.environmentId ?? environmentId ?? null);
+	const effectiveEnvId = $derived(gitStack?.environmentId ?? adoptionTarget?.environmentId ?? environmentId ?? null);
 
 	async function loadBackupTally() {
 		if (backupTallyLoaded || !gitStack) return;
@@ -959,6 +962,35 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 			// vars stay visible on reopen. The save filter still drops file-equal
 			// non-secrets, keeping the DB override-only (git-sync pickup intact).
 			envVars = mergeGitStackEnvVars(fileEnvVars, envVars);
+		} else if (adoptionTarget) {
+			formRepoMode = repositories.length > 0 ? 'existing' : 'new';
+			formRepositoryId = null;
+			formNewRepoName = '';
+			formNewRepoUrl = '';
+			formNewRepoBranch = 'main';
+			formNewRepoCredentialId = null;
+			formNewRepoAutoUpdate = false;
+			formNewRepoAutoUpdateCron = '0 3 * * *';
+			formNewRepoWebhookEnabled = false;
+			formNewRepoWebhookSecret = '';
+			formStackName = adoptionTarget.stackName;
+			formStackNameUserModified = true;
+			formComposePath = 'compose.yaml';
+			formComposePaths = ['compose.yaml'];
+			formComposePathBrowsed = false;
+			formEnvFilePath = null;
+			formContextDir = null;
+			formBuildOnDeploy = false;
+			formNoBuildCache = false;
+			formRepullImages = false;
+			formForceRedeploy = false;
+			formStackWebhookEnabled = false;
+			formStackWebhookSecret = '';
+			formStackAutoUpdate = false;
+			formStackAutoUpdateSchedule = 'daily';
+			formStackAutoUpdateCron = '0 3 * * *';
+			formDeployNow = true;
+			formSecretProviderId = null;
 		} else {
 			formRepoMode = repositories.length > 0 ? 'existing' : 'new';
 			formRepositoryId = null;
@@ -993,7 +1025,7 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 
 	async function loadSecretProviderBindingForStack(stackName: string) {
 		try {
-			const url = environmentId ? `/api/stacks/sources?env=${environmentId}` : '/api/stacks/sources';
+			const url = effectiveEnvId ? `/api/stacks/sources?env=${effectiveEnvId}` : '/api/stacks/sources';
 			const response = await fetch(url);
 			if (!response.ok) return;
 			const sourceMap = await response.json();
@@ -1093,8 +1125,9 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 
 		if (hasErrors) return;
 
-		// Check if stack already exists (only for new stacks)
-		if (!gitStack) {
+		// Adoption has already selected the authoritative external row; ordinary
+		// creation keeps the client-side warning as a convenience only.
+		if (!gitStack && !isAdopting) {
 			try {
 				const stacksResponse = await fetch(`/api/stacks?env=${environmentId}`);
 				if (stacksResponse.ok) {
@@ -1126,13 +1159,14 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 				composePath: formComposePath || 'compose.yaml',
 				composePaths: formComposePaths.length > 0 ? formComposePaths : null,
 				envFilePath: formEnvFilePath,
-				environmentId: environmentId,
+				environmentId: effectiveEnvId,
 				contextDir: formContextDir || null,
 				buildOnDeploy: formBuildOnDeploy,
 				noBuildCache: formNoBuildCache,
 				repullImages: formRepullImages,
 				forceRedeploy: formForceRedeploy,
-				deployNow: deployAfterSave,
+				deployNow: isAdopting ? true : deployAfterSave,
+				adoptExternal: isAdopting,
 				secretProviderId: formSecretProviderId,
 				envVars: overrideVars.map(v => ({
 					key: v.key.trim(),
@@ -1243,7 +1277,7 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 			onSaved();
 			// With a deploy, leave the modal open behind the output window so the user
 			// can review the log; a plain save closes as before.
-			if (!deployAfterSave) onClose();
+			if (!deployAfterSave || isAdopting) onClose();
 		} catch (error) {
 			formError = 'Failed to save git stack';
 		} finally {
@@ -1270,7 +1304,7 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 	// Auto-populate stack name from selected repo and compose path (only if user hasn't manually edited
 	// AND the path wasn't set via the Browse button — Browse already sets the optimal name from parent dir).
 	$effect(() => {
-		if (formRepoMode === 'existing' && formRepositoryId && !gitStack && !formStackNameUserModified && !formComposePathBrowsed) {
+		if (formRepoMode === 'existing' && formRepositoryId && !gitStack && !isAdopting && !formStackNameUserModified && !formComposePathBrowsed) {
 			const repo = repositories.find(r => r.id === formRepositoryId);
 			if (repo) {
 				// Normalize repo name: lowercase, spaces/underscores to hyphens, strip invalid chars
@@ -1444,10 +1478,10 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 					{/if}
 					<div>
 						<Dialog.Title class="text-sm font-semibold text-zinc-800 dark:text-zinc-100">
-							{gitStack ? 'Edit git stack' : 'Deploy from Git'}
+							{isAdopting ? 'Adopt stack from Git' : gitStack ? 'Edit git stack' : 'Deploy from Git'}
 						</Dialog.Title>
 						<Dialog.Description class="text-xs text-zinc-500 dark:text-zinc-400">
-							{gitStack ? 'Update git stack settings' : 'Deploy a compose stack from a Git repository'}
+							{isAdopting ? 'Reuse the running Compose project while moving its files into Dockhand\'s managed Git location' : gitStack ? 'Update git stack settings' : 'Deploy a compose stack from a Git repository'}
 						</Dialog.Description>
 						<div class="flex items-center gap-2 mt-1">
 							<Badge variant="outline" class="text-2xs py-0 px-1.5">
@@ -1799,15 +1833,22 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 					id="stack-name"
 					bind:value={formStackName}
 					placeholder="e.g., my-app"
+					disabled={isAdopting}
 					class="max-md:h-11 {errors.stackName ? 'border-destructive focus-visible:ring-destructive' : ''}"
 					oninput={() => { errors.stackName = undefined; formStackNameUserModified = true; }}
 				/>
 				{#if errors.stackName}
 					<p class="text-xs text-destructive">{errors.stackName}</p>
 				{:else}
-					<p class="text-xs text-muted-foreground">This will be the name of the deployed stack</p>
+					<p class="text-xs text-muted-foreground">{isAdopting ? 'The existing stack name and Compose project are preserved.' : 'This will be the name of the deployed stack'}</p>
 				{/if}
 			</div>
+			{#if isAdopting}
+				<div class="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-muted-foreground">
+					<p class="font-medium text-foreground">Existing services stay running.</p>
+					<p class="mt-1">Compose <code class="rounded bg-muted px-1">up</code> reuses project "{adoptionTarget?.stackName}". The current compose directory, including relative bind data, will move into Dockhand's managed Git location after a successful deployment. The current environment file is preserved unless you explicitly select a Git env file below.</p>
+				</div>
+			{/if}
 
 			{#if gitStack?.stackName}
 				<div class="space-y-2">
@@ -1931,7 +1972,7 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 							class="max-md:h-11"
 							oninput={clearPreviewState}
 					/>
-				<p class="text-xs text-muted-foreground">Additional env file to pass to Docker Compose</p>
+				<p class="text-xs text-muted-foreground">{isAdopting && !formEnvFilePath ? 'Leave empty to preserve the current environment file.' : 'Additional env file to pass to Docker Compose'}</p>
 			</div>
 
 			<!-- Context directory -->
@@ -2242,6 +2283,16 @@ let { open = $bindable(), gitStack = null, environmentId = null, icon = null, re
 							Saving...
 						{:else}
 							Save changes
+						{/if}
+					</Button>
+				{:else if isAdopting}
+					<Button class="max-md:order-1 max-md:col-span-2 max-md:min-h-11 max-md:w-full" onclick={() => saveGitStack(true)} disabled={formSaving}>
+						{#if formSaving}
+							<Loader2 class="w-4 h-4 mr-1 animate-spin" />
+							Adopting...
+						{:else}
+							<Rocket class="w-4 h-4" />
+							Deploy from Git
 						{/if}
 					</Button>
 				{:else}

@@ -118,6 +118,8 @@ export interface StackOperationResult {
 	command?: string;
 	/** Result of applying git deletion sync (files removed / kept, with reasons) */
 	deletion?: DeletionApplyResult;
+	/** True once the deployment has invoked `docker compose up`. */
+	composeStarted?: boolean;
 	/**
 	 * The process's real exit code, when one exists to report -- the local/direct
 	 * compose path runs the command itself and knows it. Left unset on a timeout
@@ -197,6 +199,12 @@ export interface DeployStackOptions {
 	isGitDeploy?: boolean;
 	/** Optional callback invoked per redacted output line as the compose command runs. */
 	onLine?: (line: string) => void;
+	/** Adoption-only callback invoked immediately before `docker compose up`. */
+	onComposeStarted?: () => void;
+	/** Adoption-only path that must survive a Git overlay. */
+	preserveEnvPath?: string;
+	/** Adoption preflight already validated and snapshotted the existing managed directory. */
+	allowExistingStackDir?: boolean;
 }
 
 // =============================================================================
@@ -248,11 +256,8 @@ if (typeof process !== 'undefined') {
 	process.on('SIGTERM', () => { cleanupTlsDirs(); process.exit(143); });
 }
 
-/**
- * Execute a function with exclusive lock on a stack.
- * Prevents race conditions when multiple operations target the same stack.
- */
-async function withStackLock<T>(stackName: string, fn: () => Promise<T>): Promise<T> {
+/** Acquire an exclusive stack lock and return an idempotent release function. */
+export async function acquireStackLock(stackName: string): Promise<() => void> {
 	const lockKey = stackName;
 
 	// Wait for any existing lock to release
@@ -266,12 +271,24 @@ async function withStackLock<T>(stackName: string, fn: () => Promise<T>): Promis
 		releaseLock = resolve;
 	});
 	stackLocks.set(lockKey, lockPromise);
+	let released = false;
+
+	return () => {
+		if (released) return;
+		released = true;
+		if (stackLocks.get(lockKey) === lockPromise) stackLocks.delete(lockKey);
+		releaseLock!();
+	};
+}
+
+/** Execute a function with exclusive access to a stack. */
+export async function withStackLock<T>(stackName: string, fn: () => Promise<T>): Promise<T> {
+	const releaseLock = await acquireStackLock(stackName);
 
 	try {
 		return await fn();
 	} finally {
-		stackLocks.delete(lockKey);
-		releaseLock!();
+		releaseLock();
 	}
 }
 
@@ -1480,7 +1497,11 @@ export async function saveStackComposeFile(
 	}
 }
 
-async function checkFlatLocalStackNameCollision(stackName: string, envId?: number | null): Promise<string | null> {
+async function checkFlatLocalStackNameCollision(
+	stackName: string,
+	envId?: number | null,
+	allowExistingDir = false
+): Promise<string | null> {
 	const allSources = await getStackSources();
 	const conflict = findStackNameCollision(allSources, stackName, envId);
 	if (conflict) {
@@ -1488,7 +1509,7 @@ async function checkFlatLocalStackNameCollision(stackName: string, envId?: numbe
 		return `Stack name "${stackName}" is already used by environment "${conflictEnv?.name ?? conflict.environmentId}". With STACKS_DIR set, local stack names must be unique across environments.`;
 	}
 	const flatDir = join(getLocalStacksDir(), stackName);
-	if (existsSync(flatDir)) {
+	if (!allowExistingDir && existsSync(flatDir)) {
 		const existing = await getStackSource(stackName, envId);
 		if (!existing) {
 			return `Stack directory "${flatDir}" already exists. With STACKS_DIR set, local stack names must be unique across environments.`;
@@ -3677,7 +3698,26 @@ async function reconcileStackPendingUpdates(stackName: string, envId: number): P
  * Uses stack locking to prevent concurrent deployments.
  */
 export async function deployStack(options: DeployStackOptions): Promise<StackOperationResult> {
-	const { name, compose, envId, sourceDir, forceRecreate, build, noBuildCache, pullPolicy, composePath, composePaths, envPath, composeFileName, envFileName, filesToDelete, isGitDeploy, onLine } = options;
+	const { name } = options;
+	const logPrefix = `[Stack:${name}]`;
+
+	// Validate stack name before any path construction, even when the caller is
+	// only asking for the lock wrapper.
+	if (!/^[a-z0-9][a-z0-9_-]*$/.test(name)) {
+		console.log(`${logPrefix} ERROR: Invalid stack name format`);
+		return {
+			success: false,
+			output: '',
+			error: 'Stack name must be lowercase, start with a letter or number, and contain only letters, numbers, hyphens, and underscores'
+		};
+	}
+
+	return withStackLock(name, () => deployStackUnlocked(options));
+}
+
+/** Deploy body for callers that already hold the per-stack lock. */
+export async function deployStackUnlocked(options: DeployStackOptions): Promise<StackOperationResult> {
+	const { name, compose, envId, sourceDir, forceRecreate, build, noBuildCache, pullPolicy, composePath, composePaths, envPath, composeFileName, envFileName, filesToDelete, isGitDeploy, onLine, onComposeStarted, preserveEnvPath, allowExistingStackDir } = options;
 	const logPrefix = `[Stack:${name}]`;
 
 	console.log(`${logPrefix} ========================================`);
@@ -3691,18 +3731,7 @@ export async function deployStack(options: DeployStackOptions): Promise<StackOpe
 	console.log(`${logPrefix} Compose filename:`, composeFileName ?? '(none)');
 	console.log(`${logPrefix} Env filename:`, envFileName ?? '(none)');
 
-	// Validate stack name - Docker Compose requires lowercase alphanumeric, hyphens, underscores
-	// Must also start with a letter or number
-	if (!/^[a-z0-9][a-z0-9_-]*$/.test(name)) {
-		console.log(`${logPrefix} ERROR: Invalid stack name format`);
-		return {
-			success: false,
-			output: '',
-			error: 'Stack name must be lowercase, start with a letter or number, and contain only letters, numbers, hyphens, and underscores'
-		};
-	}
-
-	return withStackLock(name, async () => {
+	{
 		// Determine working directory: use custom composePath directory if provided,
 		// otherwise fall back to internal stack directory
 		let workingDir: string;
@@ -3724,7 +3753,7 @@ export async function deployStack(options: DeployStackOptions): Promise<StackOpe
 			// Enforce STACKS_DIR cross-env uniqueness on first create (same as internal stacks).
 			const existingGitSource = await getStackSource(name, envId);
 			if (!existingGitSource && await usesFlatLocalStacksDir(envId)) {
-				const collisionError = await checkFlatLocalStackNameCollision(name, envId);
+				const collisionError = await checkFlatLocalStackNameCollision(name, envId, allowExistingStackDir);
 				if (collisionError) {
 					return { success: false, output: '', error: collisionError };
 				}
@@ -3757,6 +3786,12 @@ export async function deployStack(options: DeployStackOptions): Promise<StackOpe
 
 			// Read all files for Hawser deployments
 			stackFiles = (await readDirFilesAsMap(sourceDir)).files;
+			if (preserveEnvPath) {
+				const preservedRelativePath = relative(workingDir, resolve(preserveEnvPath));
+				if (preservedRelativePath && !preservedRelativePath.startsWith('..') && !isAbsolute(preservedRelativePath)) {
+					delete stackFiles[preservedRelativePath.split(pathSep).join('/')];
+				}
+			}
 			console.log(`${logPrefix} Read ${Object.keys(stackFiles).length} files from source directory`);
 			console.log(`${logPrefix} Files:`, Object.keys(stackFiles).join(', '));
 
@@ -3765,10 +3800,16 @@ export async function deployStack(options: DeployStackOptions): Promise<StackOpe
 			// and would be destroyed, causing data loss (#831).
 			console.log(`${logPrefix} Copying source directory to stack directory...`);
 			mkdirSync(workingDir, { recursive: true });
+			const preservePath = preserveEnvPath ? resolve(preserveEnvPath) : null;
 			cpSync(sourceDir, workingDir, {
 				recursive: true,
 				force: true,
-				filter: (src) => !src.includes('/.git/') && !src.endsWith('/.git')
+				filter: (src) => {
+					if (src.includes('/.git/') || src.endsWith('/.git')) return false;
+					if (!preservePath) return true;
+					const sourceRelative = relative(sourceDir, src);
+					return resolve(join(workingDir, sourceRelative)) !== preservePath;
+				}
 			});
 			console.log(`${logPrefix} Copied ${sourceDir} -> ${workingDir}`);
 
@@ -4002,6 +4043,7 @@ export async function deployStack(options: DeployStackOptions): Promise<StackOpe
 		}
 
 		console.log(`${logPrefix} Calling executeComposeCommand...`);
+		onComposeStarted?.();
 		const result = await executeComposeCommand(
 			'up',
 			cmdOptions,
@@ -4010,6 +4052,7 @@ export async function deployStack(options: DeployStackOptions): Promise<StackOpe
 			secretVars,
 			onLine
 		);
+		result.composeStarted = true;
 		// F4 fix: `secretVars` here is POST-resolveProviderEnvVars (line ~3059 above) --
 		// the same set executeComposeCommand just redacted streamed lines against. This
 		// is the single call site inside deployStack(), so setting it here covers both
@@ -4051,7 +4094,7 @@ export async function deployStack(options: DeployStackOptions): Promise<StackOpe
 			]).catch(() => {});
 		}
 		return result;
-	});
+	}
 }
 
 /**

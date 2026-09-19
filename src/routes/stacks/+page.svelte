@@ -75,7 +75,7 @@
 	// rate-limited), with the error text for the tooltip — session-only (#1255).
 	let failedUpdateCheckIds = $state<Set<string>>(new Set());
 	let failedUpdateCheckErrors = $state<Map<string, string>>(new Map());
-let stackSources = $state<Record<string, { sourceType: string; composePath?: string | null; composePaths?: string | null; repository?: any; gitStack?: any; icon?: string | null }>>({});
+	let stackSources = $state<Record<string, { sourceType: string; composePath?: string | null; composePaths?: string | null; envPath?: string | null; repository?: any; gitStack?: any; icon?: string | null }>>({});
 	let stackEnvVarCounts = $state<Record<string, number>>({});
 	let gitStacks = $state<any[]>([]);
 	let copiedWebhookStackId = $state<number | null>(null);
@@ -109,6 +109,7 @@ let stackSources = $state<Record<string, { sourceType: string; composePath?: str
 	let stackModalGitInfo = $state<{ commit?: string; url?: string; branch?: string } | null>(null);
 	let stackModalSource = $state<{ sourceType: string; repository?: { url?: string; branch?: string } | null; gitStack?: { lastCommit?: string | null } | null } | null>(null);
 	let editingGitStack = $state<any>(null);
+	let adoptionTarget = $state<{ stackName: string; environmentId: number | null; displayName?: string; envPath?: string | null } | null>(null);
 	let envId = $state<number | null>(null);
 
 	// User-defined tags: assignments (name -> tagId[]) + catalog + filter.
@@ -1205,8 +1206,9 @@ let gitMigratingStackId = $state<number | null>(null);
 		}
 	}
 
-	async function openGitModal(gitStack?: any) {
-		editingGitStack = gitStack || null;
+	async function openGitModal(gitStack?: any, target?: { stackName: string; environmentId: number | null; displayName?: string; envPath?: string | null }) {
+		editingGitStack = target ? null : (gitStack || null);
+		adoptionTarget = target ?? null;
 		// Fetch repositories and credentials before opening modal
 		try {
 			const [reposRes, credsRes] = await Promise.all([
@@ -2158,7 +2160,9 @@ let gitMigratingStackId = $state<number | null>(null);
 
 								<p class="pt-1 text-xs font-medium text-muted-foreground">Actions</p>
 								<div class="grid grid-cols-2 gap-2">
-									{#if (stack.status === 'not deployed' || stack.status === 'created') && source.gitStack}
+									{#if source.sourceType === 'external' && $canAccess('stacks', 'create') && $canAccess('stacks', 'edit')}
+										<button type="button" onclick={() => openGitModal(undefined, { stackName: stack.name, environmentId: envId, displayName: stack.name, envPath: source.envPath })} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><GitBranch class="size-4" />Deploy from Git</button>
+									{:else if (stack.status === 'not deployed' || stack.status === 'created') && source.gitStack}
 										{#if $canAccess('stacks', 'edit')}
 											<button type="button" onclick={() => openGitModal(source.gitStack)} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><Pencil class="size-4" />Edit Git stack</button>
 										{/if}
@@ -2683,6 +2687,16 @@ let gitMigratingStackId = $state<number | null>(null);
 									</button>
 								{/snippet}
 							</GitDeployProgressPopover>
+						{/if}
+						{#if source.sourceType === 'external' && $canAccess('stacks', 'create') && $canAccess('stacks', 'edit')}
+							<button
+								type="button"
+								onclick={(e) => { e.stopPropagation(); openGitModal(undefined, { stackName: stack.name, environmentId: envId, displayName: stack.name, envPath: source.envPath }); }}
+								title="Deploy from Git"
+								class="p-1 rounded hover:bg-muted transition-colors opacity-70 hover:opacity-100 cursor-pointer"
+							>
+								<GitBranch class="grid-action-icon grid-action-start text-muted-foreground hover:text-violet-500" />
+							</button>
 						{/if}
 						{#if showsManagementActions(source.sourceType, stack.status)}
 							{#if $canAccess('stacks', 'edit')}
@@ -3425,6 +3439,7 @@ let gitMigratingStackId = $state<number | null>(null);
 <GitStackModal
 	bind:open={showGitModal}
 	gitStack={editingGitStack}
+	adoptionTarget={adoptionTarget}
 	environmentId={envId}
 	icon={editingGitStack ? (stackSources[editingGitStack.stackName]?.icon ?? null) : null}
 	repositories={gitRepositories}
@@ -3432,6 +3447,7 @@ let gitMigratingStackId = $state<number | null>(null);
 	onClose={() => {
 		showGitModal = false;
 		editingGitStack = null;
+		adoptionTarget = null;
 	}}
 	onSaved={fetchStacks}
 	onRepositoryCreated={async () => {

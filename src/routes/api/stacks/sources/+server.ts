@@ -61,6 +61,7 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 				sourceType: string;
 				composePath?: string | null;
 				composePaths?: string | null;
+				envPath?: string | null;
 				repository?: any;
 				secretProviderId?: number | null;
 				icon?: string | null;
@@ -78,6 +79,7 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 				sourceType: source.sourceType,
 				composePath: resolved.composePath,
 				composePaths: resolved.composePaths.length > 0 ? JSON.stringify(resolved.composePaths) : null,
+				envPath: source.envPath,
 				repository: source.repository,
 				secretProviderId: source.secretProviderId,
 				icon: source.icon ?? null,

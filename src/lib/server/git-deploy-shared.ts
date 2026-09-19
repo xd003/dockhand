@@ -15,7 +15,7 @@
 
 import { join } from 'node:path';
 import { updateGitStack, upsertStackSource } from './db';
-import { deployStack, getStackDir } from './stacks';
+import { deployStack, deployStackUnlocked, getStackDir } from './stacks';
 import {
 	finalizeDeletionSync,
 	notifyGitSync,
@@ -45,8 +45,29 @@ export interface DeployStackFromSyncArgs {
 	gitStack: GitStackForDeploy;
 	opts: DeployGitStackOpts;
 	syncResult: SyncResult;
+	onLine?: (line: string) => void;
+	onComposeStarted?: () => void;
 	onProgress?: ProgressCallback;
 	logPrefix: string;
+	/** Set by adoption, which already holds the stack lock. */
+	lockHeld?: boolean;
+	/** Preserve the existing environment file during the first Git overlay. */
+	preserveEnvPath?: string;
+	/** Adoption preflight already validated the existing managed directory. */
+	allowExistingStackDir?: boolean;
+	/** Commit stack_sources only after Compose succeeds. */
+	sourceCommit?: () => Promise<void>;
+	/** Remote adoption transaction details, validated by Hawser. */
+	remoteAdoption?: {
+		adoptionId: string;
+		sourceDir: string;
+		sourceComposeFiles: string[];
+		sourceEnvPath?: string | null;
+		preservedEnvRelativePath?: string;
+		preserveExistingEnv: boolean;
+		explicitGitEnvRelativePath?: string | null;
+		onRemoteAdoptionPrepared?: (result: { managedDirectory?: string; managedEnvRelativePath?: string; managedComposeFiles?: string[] }) => void;
+	};
 }
 
 /**
@@ -118,7 +139,8 @@ export async function deployStackFromSync(args: DeployStackFromSyncArgs): Promis
 	console.log(`${logPrefix} Compose filename:`, syncResult.composeFileName);
 	console.log(`${logPrefix} Env filename:`, syncResult.envFileName ?? '(none)');
 
-	const result = await deployStack({
+	const deploy = args.lockHeld ? deployStackUnlocked : deployStack;
+	const result = await deploy({
 		name: gitStack.stackName,
 		compose: syncResult.composeContent!,
 		envId: gitStack.environmentId,
@@ -131,7 +153,15 @@ export async function deployStackFromSync(args: DeployStackFromSyncArgs): Promis
 		noBuildCache: gitStack.noBuildCache,
 		pullPolicy: gitStack.repullImages ? 'always' : undefined,
 		filesToDelete: syncResult.deletionPlan?.toDelete,
-		isGitDeploy: true // suppress stack_* notification; we emit git_sync_* below
+		isGitDeploy: true, // suppress stack_* notification; we emit git_sync_* below
+		onLine: args.onLine,
+		onComposeStarted: args.onComposeStarted,
+		preserveEnvPath: args.preserveEnvPath,
+		allowExistingStackDir: args.allowExistingStackDir,
+		envPath: args.remoteAdoption ? undefined : args.preserveEnvPath,
+		remoteAdoption: args.remoteAdoption
+			? { ...args.remoteAdoption, onRemoteAdoptionPrepared: args.remoteAdoption.onRemoteAdoptionPrepared }
+			: undefined
 	});
 
 	console.log(`${logPrefix} ----------------------------------------`);
@@ -163,15 +193,19 @@ export async function deployStackFromSync(args: DeployStackFromSyncArgs): Promis
 
 		console.log(`${logPrefix} Resolved compose path for stack_sources:`, resolvedComposePath);
 
-		await upsertStackSource({
-			stackName: gitStack.stackName,
-			environmentId: gitStack.environmentId,
-			sourceType: 'git',
-			gitRepositoryId: gitStack.repositoryId,
-			gitStackId: stackId,
-			composePath: resolvedComposePath,
-			composePaths: gitStack.composePaths ? parseComposePathsColumn(gitStack.composePaths) : null
-		});
+		if (args.sourceCommit) {
+			await args.sourceCommit();
+		} else {
+			await upsertStackSource({
+				stackName: gitStack.stackName,
+				environmentId: gitStack.environmentId,
+				sourceType: 'git',
+				gitRepositoryId: gitStack.repositoryId,
+				gitStackId: stackId,
+				composePath: resolvedComposePath,
+				composePaths: gitStack.composePaths ? parseComposePathsColumn(gitStack.composePaths) : null
+			});
+		}
 
 		if (onProgress) {
 			const applySkips = (result.deletion?.skipped ?? []).filter((s) => s.reason !== 'already-absent');

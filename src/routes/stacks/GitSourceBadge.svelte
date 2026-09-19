@@ -27,7 +27,7 @@
 
 {#snippet badge()}
 	<span
-		class="inline-flex max-w-full items-center justify-center gap-1 overflow-hidden rounded-sm bg-green-100 px-1.5 py-0.5 text-xs text-green-800 shadow-sm dark:bg-green-900 dark:text-green-200 {showHash || compact ? '' : 'min-w-[5.5rem]'}"
+		class="inline-flex max-w-full items-center justify-center gap-1 overflow-hidden rounded-sm bg-purple-100 px-1.5 py-0.5 text-xs text-purple-800 shadow-sm dark:bg-purple-900 dark:text-purple-200 {showHash || compact ? '' : 'min-w-[5.5rem]'}"
 	>
 		<ForgeIcon class="w-3 h-3 shrink-0" />
 		<span class="shrink-0">Git</span>

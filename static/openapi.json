@@ -14816,8 +14816,11 @@
           "403": {
             "description": "Permission denied (needs stacks:create; binding a secret provider also needs secrets:view)"
           },
+          "404": {
+            "description": "The requested external stack does not exist"
+          },
           "409": {
-            "description": "A git stack with this name already exists in the environment"
+            "description": "A git stack with this name already exists, or the external stack is already managed/migrating"
           },
           "500": {
             "description": "Failed to create the git stack"
@@ -14864,6 +14867,12 @@
                   },
                   "webhookSecret": {
                     "type": "string"
+                  },
+                  "adoptExternal": {
+                    "type": "boolean"
+                  },
+                  "deployNow": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -14880,7 +14889,9 @@
                 ],
                 "secretProviderId": 0,
                 "webhookEnabled": true,
-                "webhookSecret": "string"
+                "webhookSecret": "string",
+                "adoptExternal": true,
+                "deployNow": true
               }
             }
           }

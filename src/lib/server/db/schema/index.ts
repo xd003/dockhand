@@ -382,6 +382,8 @@ export const stackSources = sqliteTable('stack_sources', {
 	// Per-stack icon: a lucide name ('server'), 'selfhst:<ref>', or 'custom:<file>'.
 	// Null -> UI falls back to a generic icon.
 	icon: text('icon'),
+	// Versioned JSON document containing explicit linked config-file metadata.
+	linkedFiles: text('linked_files'),
 	createdAt: text('created_at').default(sql`CURRENT_TIMESTAMP`),
 	updatedAt: text('updated_at').default(sql`CURRENT_TIMESTAMP`)
 }, (table) => ({

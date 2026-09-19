@@ -1436,6 +1436,14 @@ let gitMigratingStackId = $state<number | null>(null);
 		showEditModal = true;
 	}
 
+	function editStackFiles(name: string) {
+		editingStackName = name;
+		stackModalReadonly = false;
+		stackModalSource = getStackSource(name);
+		stackModalGitInfo = null;
+		showEditModal = true;
+	}
+
 	function viewStack(name: string) {
 		editingStackName = name;
 		stackModalReadonly = true;
@@ -2164,7 +2172,8 @@ let gitMigratingStackId = $state<number | null>(null);
 										<button type="button" onclick={() => openGitModal(undefined, { stackName: stack.name, environmentId: envId, displayName: stack.name, envPath: source.envPath })} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><GitBranch class="size-4" />Deploy from Git</button>
 									{:else if (stack.status === 'not deployed' || stack.status === 'created') && source.gitStack}
 										{#if $canAccess('stacks', 'edit')}
-											<button type="button" onclick={() => openGitModal(source.gitStack)} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><Pencil class="size-4" />Edit Git stack</button>
+											<button type="button" onclick={() => openGitModal(source.gitStack)} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><Pencil class="size-4" />Edit Git settings</button>
+											<button type="button" onclick={() => editStackFiles(stack.name)} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><FileCode class="size-4" />Edit files</button>
 										{/if}
 										<GitDeployProgressPopover stackId={source.gitStack.id} stackName={stack.name} onComplete={fetchStacks}>
 											{#snippet children()}
@@ -2183,7 +2192,10 @@ let gitMigratingStackId = $state<number | null>(null);
 											<button type="button" onclick={() => migrateGitStackFromList(source.gitStack)} disabled={gitMigratingStackId === source.gitStack.id} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted disabled:opacity-50"><ArrowRightCircle class="size-4" />Migrate Git mode</button>
 										{/if}
 										{#if $canAccess('stacks', 'edit')}
-											<button type="button" onclick={() => source.sourceType === 'git' && source.gitStack ? openGitModal(source.gitStack) : editStack(stack.name)} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><Pencil class="size-4" />Edit</button>
+											<button type="button" onclick={() => source.sourceType === 'git' && source.gitStack ? openGitModal(source.gitStack) : editStack(stack.name)} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><Pencil class="size-4" />{source.sourceType === 'git' ? 'Edit Git settings' : 'Edit'}</button>
+											{#if source.sourceType === 'git' && source.gitStack}
+												<button type="button" onclick={() => editStackFiles(stack.name)} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><FileCode class="size-4" />Edit files</button>
+											{/if}
 										{/if}
 										{#if stack.containers.length > 0}
 											<button type="button" onclick={() => viewStackLogs(stack)} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><ScrollText class="size-4" />View logs</button>
@@ -2715,14 +2727,22 @@ let gitMigratingStackId = $state<number | null>(null);
 											{/if}
 										</button>
 									{/if}
-									<button
-										type="button"
-										onclick={(e) => { e.stopPropagation(); openGitModal(source.gitStack); }}
+											<button
+												type="button"
+												onclick={(e) => { e.stopPropagation(); openGitModal(source.gitStack); }}
 										title="Edit git stack"
 										class="p-1 rounded hover:bg-muted transition-colors opacity-70 hover:opacity-100 cursor-pointer"
 									>
-										<Pencil class="grid-action-icon grid-action-edit text-muted-foreground hover:text-purple-500" />
-									</button>
+												<Pencil class="grid-action-icon grid-action-edit text-muted-foreground hover:text-purple-500" />
+											</button>
+											<button
+												type="button"
+												onclick={(e) => { e.stopPropagation(); editStackFiles(stack.name); }}
+												title="Edit stack files"
+												class="p-1 rounded hover:bg-muted transition-colors opacity-70 hover:opacity-100 cursor-pointer"
+											>
+												<FileCode class="grid-action-icon grid-action-edit text-muted-foreground hover:text-blue-500" />
+											</button>
 								{:else}
 									<!-- Internal stacks (including those needing file location) -->
 									<button

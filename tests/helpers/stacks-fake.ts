@@ -28,9 +28,7 @@ const KNOWN_EXPORTS = [
 	'requireComposeFile',
 	'deployStack',
 	'getStackDir',
-	'remapHawserStagingDisplayPaths',
-	'remapHawserStagingDisplayComposeContents',
-	'unmapHawserDisplayComposeOptionsToStaging'
+	'remapHawserStagingDisplayPaths'
 ] as const;
 
 const impls: Record<string, AnyFn> = {};

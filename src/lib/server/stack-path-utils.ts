@@ -34,16 +34,6 @@ export function remapPathsBetweenDirs(fromDir: string, toDir: string, paths: str
 	return paths.map((path) => remapPathBetweenDirs(fromDir, toDir, path));
 }
 
-export function remapContentsBetweenDirs(
-	fromDir: string,
-	toDir: string,
-	contents: Record<string, string>
-): Record<string, string> {
-	return Object.fromEntries(
-		Object.entries(contents).map(([path, content]) => [remapPathBetweenDirs(fromDir, toDir, path), content])
-	);
-}
-
 export function resolveStackDirForLayout(
 	defaultRoot: string,
 	localRoot: string,

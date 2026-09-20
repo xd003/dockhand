@@ -1,10 +1,9 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { getStackSources, getEnvironment } from '$lib/server/db';
+import { getStackSources } from '$lib/server/db';
 import { countStackEnvVars } from '$lib/server/stacks';
 import { authorize } from '$lib/server/authorize';
-import { listContainers } from '$lib/server/docker';
-import { resolveStackSourceDisplayPathsForEnv, buildStackPathHintsMap } from '$lib/server/stacks';
+import { resolveStackSourceDisplayPaths } from '$lib/server/stacks';
 
 /**
  * @openapi
@@ -26,19 +25,6 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 
 	try {
 		const sources = await getStackSources(envIdNum);
-
-		// Batch-fetch environments and container path hints once per env, so
-		// per-stack Hawser remapping doesn't trigger a DB lookup and a full
-		// container listing for every source (N+1).
-		const envIds = [...new Set(sources.map((s) => s.environmentId ?? null))];
-		const perEnv = await Promise.all(
-			envIds.map(async (id) => ({
-				id,
-				env: id != null ? (await getEnvironment(id)) ?? null : null,
-				hints: buildStackPathHintsMap(await listContainers(true, id).catch(() => []))
-			}))
-		);
-		const byEnv = new Map(perEnv.map((e) => [e.id, e]));
 
 		// Count env vars server-side (one local read per stack) so the list badge does
 		// not need a /env fetch per stack. GET /env resolves its env param as
@@ -69,12 +55,7 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 			}
 		> = {};
 		for (const [i, source] of sources.entries()) {
-			const entry = byEnv.get(source.environmentId ?? null);
-			const resolved = await resolveStackSourceDisplayPathsForEnv(
-				source,
-				entry?.env ?? null,
-				entry?.hints.get(source.stackName) ?? null
-			);
+			const resolved = resolveStackSourceDisplayPaths(source);
 			sourceMap[source.stackName] = {
 				sourceType: source.sourceType,
 				composePath: resolved.composePath,

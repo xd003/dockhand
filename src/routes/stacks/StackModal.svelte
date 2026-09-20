@@ -370,6 +370,7 @@
 	// Working paths: what we're currently editing (always strings, never null)
 	let workingComposePath = $state('');
 	let workingEnvPath = $state('');
+	let remoteComposePath = $state<string | null>(null);
 
 	// Multi compose paths (ordered list)
 	let workingComposePaths = $state<string[]>([]);
@@ -1458,8 +1459,6 @@
 				if (mode !== 'create') {
 					workingComposePath = composeFilePath;
 				}
-				// Clear the needsFileLocation flag since we now have content
-				needsFileLocation = false;
 				stackContainers = [];
 			} else {
 				const err = await composeResponse.json();
@@ -1858,6 +1857,7 @@
 		loadError = null;
 		error = null;
 		needsFileLocation = false;
+		remoteComposePath = null;
 		linkedEntries = [];
 		activeLinkedPath = '';
 		activeEditorKind = 'compose';
@@ -1952,6 +1952,7 @@
 			// Set working paths
 			workingComposePath = data.composePath || '';
 			workingEnvPath = data.envPath || '';
+			remoteComposePath = data.remoteComposePath || null;
 			// The compose endpoint returns resolved paths as an array; retain support
 			// for the persisted JSON string used by older responses.
 			if (Array.isArray(data.composePaths)) {
@@ -2418,6 +2419,25 @@
 		const envPathToSave = workingEnvPath.trim() || suggestedEnvPath || '';
 
 		try {
+			if (needsFileLocation) {
+				if (envId === null) throw new Error('Select an environment before managing this stack');
+				const adoptResponse = await fetch('/api/stacks/adopt', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({
+						stacks: [{ name: stackName, composePath: workingComposePath.trim(), envPath: envPathToSave || undefined }],
+						environmentId: envId
+					})
+				});
+				const adoptData = await adoptResponse.json().catch(() => ({}));
+				const adoptError = adoptData.failed?.[0]?.error;
+				if (!adoptResponse.ok || adoptError || !adoptData.adopted?.length) {
+					throw new Error(adoptError || adoptData.error || 'Failed to manage stack internally');
+				}
+				stackName = adoptData.adopted[0];
+				needsFileLocation = false;
+			}
+
 			await preflightLinkedSave(restart);
 			// Build request body - include paths if they've been set/changed
 			const requestBody: Record<string, unknown> = {
@@ -3338,9 +3358,12 @@
 												</div>
 											{:else}
 												<div class="flex items-center justify-between gap-3 border-b border-zinc-200 bg-zinc-100/80 px-3.5 py-2 dark:border-zinc-700 dark:bg-zinc-800/60">
-															<span class="min-w-0 truncate font-mono text-[11px] text-muted-foreground" title={activeEditorPath}>
-																{activeEditorPath || 'No file selected'}
-															</span>
+													<div class="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden font-mono text-[11px] text-muted-foreground">
+														<span class="truncate" title={activeEditorPath}>{activeEditorPath || 'No file selected'}</span>
+														{#if remoteComposePath}
+															<span class="min-w-0 max-w-[45%] truncate text-muted-foreground/70" title={`Compose file on the Hawser node: ${remoteComposePath}`}>(Hawser: {remoteComposePath})</span>
+														{/if}
+													</div>
 															<div class="flex items-center gap-1">
 																{#if activeEditorKind === 'linked' && !readonly}
 																	<select class="h-7 max-md:h-11 rounded border bg-background px-1 text-xs" value={activeLinkedEntry?.postChange.target ?? 'stack'} onchange={(event) => { const value = (event.currentTarget as HTMLSelectElement).value as 'stack' | 'services'; updateLinkedPolicy({ target: value, action: value === 'services' ? 'restart' : activeLinkedEntry?.postChange.action ?? 'none', services: value === 'services' ? activeLinkedEntry?.postChange.services ?? [] : [] }); }}>

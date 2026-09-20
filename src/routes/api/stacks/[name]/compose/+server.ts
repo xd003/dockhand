@@ -1,7 +1,6 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { dirname } from 'node:path';
-import { getStackComposeFile, deployStack, saveStackComposeFile, requireComposeFile, remapHawserStagingDisplayPaths, remapHawserStagingDisplayComposeContents, unmapHawserDisplayComposeOptionsToStaging } from '$lib/server/stacks';
+import { getStackComposeFile, deployStack, saveStackComposeFile, requireComposeFile, remapHawserStagingDisplayPaths } from '$lib/server/stacks';
 import { updateStackSource } from '$lib/server/db';
 import { authorize } from '$lib/server/authorize';
 import { createJobResponse } from '$lib/server/sse';
@@ -9,23 +8,10 @@ import { validateComposePathsInput, validateComposeContentsInput } from '$lib/se
 import { createRunRecorder } from '$lib/server/deploy-run-record';
 import { hashComposeContent, hashEnvFingerprint } from '$lib/server/deploy-run-record-core';
 
-async function remapDisplayPath(
-	name: string,
-	envId: number | undefined,
-	path: string | null | undefined
-): Promise<string | null | undefined> {
-	if (!path) return path;
-	const remapped = await remapHawserStagingDisplayPaths(name, envId, {
-		composePath: path,
-		composePaths: []
-	});
-	return remapped.composePath ?? path;
-}
-
 // GET /api/stacks/[name]/compose - Get compose file content
 /**
  * @openapi
- * summary: Get a stack's compose file content plus its resolved compose/env paths
+ * summary: Get a stack's compose file content plus its Dockhand staging compose/env paths
  * path: name:string The stack name
  * query: env:integer Environment id the stack belongs to
  * resp-403: Permission denied (needs stacks:view)
@@ -56,28 +42,23 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 			}, { status: 404 });
 		}
 
-		const displayPaths = await remapHawserStagingDisplayPaths(name, envIdNum, {
+		const remotePaths = await remapHawserStagingDisplayPaths(name, envIdNum, {
 			composePath: result.composePath ?? null,
 			composePaths: result.composePaths ?? []
 		});
-		const displayComposeContents = await remapHawserStagingDisplayComposeContents(
-			name,
-			envIdNum,
-			result.composeContents ?? null
-		);
-		let displayStackDir = result.stackDir;
-		if (displayPaths.composePath) {
-			displayStackDir = dirname(displayPaths.composePath);
-		}
+		const remoteComposePath = remotePaths.composePath && remotePaths.composePath !== result.composePath
+			? remotePaths.composePath
+			: null;
 
 		return json({
 			content: result.content,
-			composeContents: displayComposeContents ?? null,
-			stackDir: displayStackDir,
-			composePath: displayPaths.composePath,
-			composePaths: displayPaths.composePaths.length > 0 ? displayPaths.composePaths : null,
-			envPath: await remapDisplayPath(name, envIdNum, result.envPath),
-			suggestedEnvPath: await remapDisplayPath(name, envIdNum, result.suggestedEnvPath)
+			composeContents: result.composeContents ?? null,
+			stackDir: result.stackDir,
+			composePath: result.composePath,
+			composePaths: result.composePaths?.length ? result.composePaths : null,
+			envPath: result.envPath,
+			suggestedEnvPath: result.suggestedEnvPath,
+			remoteComposePath
 		});
 	} catch (error: any) {
 		console.error(`Error getting compose file for stack ${name}:`, error);
@@ -158,10 +139,8 @@ export const PUT: RequestHandler = async ({ params, request, url, cookies }) => 
 			(effectiveComposePath || composePaths || envPath !== undefined || moveFromDir || oldComposePath || oldEnvPath || composeContents || secretProviderId !== undefined)
 				? { composePath: effectiveComposePath, composePaths, composeContents, envPath, moveFromDir, oldComposePath, oldEnvPath, secretProviderId }
 				: undefined;
-		const pathOptions = submittedPathOptions
-			? await unmapHawserDisplayComposeOptionsToStaging(name, envIdNum, submittedPathOptions)
-			: undefined;
-		// Keep the primary in sync after staging remap too.
+		const pathOptions = submittedPathOptions;
+		// Keep the primary in sync when only composePaths was submitted.
 		if (pathOptions?.composePaths?.length && !pathOptions.composePath) {
 			pathOptions.composePath = pathOptions.composePaths[0];
 		}
@@ -230,7 +209,7 @@ export const PUT: RequestHandler = async ({ params, request, url, cookies }) => 
 			}
 			// Deploy with docker compose up -d --force-recreate.
 			// Force recreate ensures env var changes are applied.
-			// Update DB with multi-file paths if provided (unmapped to staging paths)
+			// Update DB with multi-file staging paths if provided.
 			if (composePaths !== undefined) {
 				await updateStackSource(name, envIdNum ?? null, {
 					composePaths: pathOptions?.composePaths ?? undefined

@@ -25,7 +25,6 @@ import {
 	findStackNameCollision,
 	isPathUnderRoot,
 	moveStackFilePathCrossDevice,
-	remapContentsBetweenDirs,
 	remapPathsBetweenDirs,
 	resolveStackDirForLayout
 } from './stack-path-utils';
@@ -841,81 +840,6 @@ export async function remapHawserStagingDisplayPaths(
 		composePath: remapped[0] ?? null,
 		composePaths: remapped
 	};
-}
-
-/**
- * Remap composeContents keys from staging paths to Hawser remote display paths.
- */
-export async function remapHawserStagingDisplayComposeContents(
-	stackName: string,
-	environmentId: number | null | undefined,
-	composeContents: Record<string, string> | null | undefined,
-	env?: HawserEnvLike | null,
-	hints?: { workingDir: string | null; configFiles: string[] | null } | null
-): Promise<Record<string, string> | null | undefined> {
-	if (!composeContents || environmentId == null) return composeContents;
-
-	const pair = await resolveHawserStackDirPair(stackName, environmentId, env, hints);
-	if (!pair) return composeContents;
-
-	return remapContentsBetweenDirs(pair.stagingStackDir, pair.remoteStackDir, composeContents);
-}
-
-/**
- * Convert Hawser display paths from the UI back to Dockhand staging paths for disk writes.
- */
-export async function unmapHawserDisplayComposeOptionsToStaging(
-	stackName: string,
-	environmentId: number | null | undefined,
-	options: {
-		composePath?: string;
-		composePaths?: string[] | null;
-		composeContents?: Record<string, string>;
-		envPath?: string;
-		moveFromDir?: string;
-		oldComposePath?: string;
-		oldEnvPath?: string;
-		secretProviderId?: number | null;
-	}
-): Promise<typeof options> {
-	if (!options || environmentId == null) return options;
-
-	const pair = await resolveHawserStackDirPair(stackName, environmentId);
-	if (!pair) return options;
-
-	const { stagingStackDir, remoteStackDir } = pair;
-	const result = { ...options };
-	const remap = (paths: string[]) => remapPathsBetweenDirs(remoteStackDir, stagingStackDir, paths);
-
-	if (options.composePath) result.composePath = remap([options.composePath])[0];
-	if (options.composePaths) result.composePaths = remap(options.composePaths);
-	if (options.composeContents) {
-		result.composeContents = remapContentsBetweenDirs(remoteStackDir, stagingStackDir, options.composeContents);
-	}
-	if (options.envPath) result.envPath = remap([options.envPath])[0];
-	if (options.oldComposePath) result.oldComposePath = remap([options.oldComposePath])[0];
-	if (options.oldEnvPath) result.oldEnvPath = remap([options.oldEnvPath])[0];
-
-	return result;
-}
-
-/**
- * Resolve stack source compose paths for UI display, including Hawser remote remapping.
- */
-export async function resolveStackSourceDisplayPathsForEnv(
-	source: {
-		stackName: string;
-		environmentId?: number | null;
-		sourceType: string;
-		composePath?: string | null;
-		composePaths?: string | null;
-		gitStack?: { contextDir?: string | null; composePath?: string } | null;
-	},
-	env?: HawserEnvLike | null,
-	hints?: { workingDir: string | null; configFiles: string[] | null } | null
-): Promise<{ composePath: string | null; composePaths: string[] }> {
-	const base = resolveStackSourceDisplayPaths(source);
-	return remapHawserStagingDisplayPaths(source.stackName, source.environmentId, base, env, hints);
 }
 
 /**

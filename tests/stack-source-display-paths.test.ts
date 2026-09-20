@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const sourcesRoutePath = join(root, 'src', 'routes', 'api', 'stacks', 'sources', '+server.ts');
 const composeRoutePath = join(root, 'src', 'routes', 'api', 'stacks', '[name]', 'compose', '+server.ts');
+const stacksPath = join(root, 'src', 'lib', 'server', 'stacks.ts');
 
 describe('stack staging display paths', () => {
 	test('/stacks sources uses stored staging paths without Hawser display remapping', async () => {
@@ -20,5 +21,11 @@ describe('stack staging display paths', () => {
 		expect(source).toContain('composeContents: result.composeContents ?? null');
 		expect(source).toContain('remoteComposePath');
 		expect(source).not.toContain('unmapHawserDisplayComposeOptionsToStaging');
+	});
+
+	test('the editor reads Git compose and env files from the deployed stack directory', async () => {
+		const source = await readFile(stacksPath, 'utf8');
+		expect(source).toContain('foundStackDir = await getStackDir(stackName, envId)');
+		expect(source).toContain('source.gitStack.envFilePath');
 	});
 });

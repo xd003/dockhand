@@ -7,6 +7,7 @@ import {
 	moveStackFilePathCrossDevice,
 	prepareStackDirectoryRelocation,
 	resolveComposePathHints,
+	resolveGitStackPaths,
 	resolveStackDirForLayout
 } from '../src/lib/server/stack-path-utils';
 
@@ -50,6 +51,19 @@ describe('resolveComposePathHints', () => {
 
 	it('rejects relative label paths without an authoritative working directory', () => {
 		expect(resolveComposePathHints(null, ['compose.yaml'])).toEqual([]);
+	});
+});
+
+describe('resolveGitStackPaths', () => {
+	it('resolves compose and env files from the repo context into the deployed stack directory', () => {
+		expect(resolveGitStackPaths(
+			['stacks/linkleaner/compose.yaml', 'stacks/linkleaner/.env'],
+			'stacks/linkleaner',
+			'/data/stacks/linkleaner'
+		)).toEqual([
+			'/data/stacks/linkleaner/compose.yaml',
+			'/data/stacks/linkleaner/.env'
+		]);
 	});
 });
 

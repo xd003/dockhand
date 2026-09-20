@@ -13,7 +13,7 @@ import {
 	unlinkSync,
 	writeFileSync
 } from 'node:fs';
-import { dirname, isAbsolute, join, relative, resolve, sep as pathSep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep as pathSep } from 'node:path';
 
 /** True when childPath is rootPath or one of its descendants. */
 export function isPathUnderRoot(childPath: string, rootPath: string): boolean {
@@ -32,6 +32,19 @@ export function remapPathBetweenDirs(fromDir: string, toDir: string, path: strin
 
 export function remapPathsBetweenDirs(fromDir: string, toDir: string, paths: string[]): string[] {
 	return paths.map((path) => remapPathBetweenDirs(fromDir, toDir, path));
+}
+
+/** Resolve repo-relative Git stack paths inside the copied deployment directory. */
+export function resolveGitStackPaths(rawPaths: string[], contextDir: string, stackDir: string | null): string[] {
+	return rawPaths.map((path) => {
+		if (isAbsolute(path) || !stackDir) return path;
+		let deployedPath = path;
+		if (contextDir) {
+			if (path.startsWith(contextDir + '/')) deployedPath = path.slice(contextDir.length + 1);
+			else if (path === contextDir) deployedPath = basename(path);
+		}
+		return join(stackDir, deployedPath);
+	});
 }
 
 export function resolveStackDirForLayout(

@@ -26,6 +26,7 @@ import {
 	isPathUnderRoot,
 	moveStackFilePathCrossDevice,
 	remapPathsBetweenDirs,
+	resolveGitStackPaths,
 	resolveStackDirForLayout
 } from './stack-path-utils';
 import { redactEnvVarsForLog } from './log-utils';
@@ -871,28 +872,6 @@ function gitStackBaseDir(gitStack?: { contextDir?: string | null; composePath?: 
 }
 
 /**
- * Join a stack's stored compose paths onto the deployed stack dir.
- * Git stacks store repo-relative paths (relative to the repo context dir):
- * strip that prefix before joining. Absolute paths (and all paths when no
- * stack dir is known) pass through unchanged.
- */
-function joinComposePathsToStackDir(rawPaths: string[], baseDir: string, stackDir: string | null): string[] {
-	return rawPaths.map((p) => {
-		if (isAbsolute(p)) return p;
-		if (!stackDir) return p;
-		let relativeToStack = p;
-		if (baseDir) {
-			if (p.startsWith(baseDir + '/')) {
-				relativeToStack = p.slice(baseDir.length + 1);
-			} else if (p === baseDir) {
-				relativeToStack = basename(p);
-			}
-		}
-		return join(stackDir, relativeToStack);
-	});
-}
-
-/**
  * Resolve stack source compose paths to absolute on-disk paths for UI display.
  * Git stacks store repo-relative paths in the DB; external/adopted stacks use absolute paths.
  */
@@ -927,7 +906,7 @@ export function resolveStackSourceDisplayPaths(
 		return { composePath: null, composePaths: [] };
 	}
 
-	const absolutePaths = joinComposePathsToStackDir(rawPaths, gitStackBaseDir(source.gitStack), dirname(deployedComposePath));
+	const absolutePaths = resolveGitStackPaths(rawPaths, gitStackBaseDir(source.gitStack), dirname(deployedComposePath));
 
 	return {
 		composePath: absolutePaths[0] ?? null,
@@ -1049,24 +1028,15 @@ export async function getStackComposeFile(
 	const baseDir = source.sourceType === 'git' ? gitStackBaseDir(source.gitStack) : '';
 	let foundStackDir: string | null;
 	if (source.sourceType === 'git' && source.gitStack) {
-		let repoPath: string;
-		if (source.gitStack.engine === 'centralized') {
-			const { getRepoPath } = await import('./git');
-			repoPath = getRepoPath(source.gitStack.repository.name);
-		} else {
-			const { getStackRepoPath } = await import('./git-stack');
-			repoPath = await getStackRepoPath(
-				source.gitStack.id,
-				source.gitStack.stackName,
-				source.gitStack.environmentId
-			);
-		}
-		foundStackDir = baseDir ? join(repoPath, baseDir) : repoPath;
+		foundStackDir = await getStackDir(stackName, envId);
 	} else {
 		foundStackDir = await findStackDir(stackName, envId);
 	}
 
-	const absolutePaths = joinComposePathsToStackDir(rawPaths, baseDir, foundStackDir);
+	const absolutePaths = resolveGitStackPaths(rawPaths, baseDir, foundStackDir);
+	const envPath = source.sourceType === 'git' && source.gitStack?.envFilePath
+		? resolveGitStackPaths([source.gitStack.envFilePath], baseDir, foundStackDir)[0]
+		: source.envPath;
 
 	// Every explicitly configured file must exist — silently deploying a
 	// subset (e.g. only compose.yaml of [compose.yaml, compose.prod.yaml])
@@ -1081,7 +1051,7 @@ export async function getStackComposeFile(
 				success: false,
 				error: `Compose file(s) exist but could not be read: ${absolutePaths.join(', ')}`,
 				composePath: absolutePaths[0],
-				envPath: source.envPath
+				envPath
 			};
 		}
 
@@ -1090,7 +1060,7 @@ export async function getStackComposeFile(
 
 		// For custom paths, suggest .env next to compose if envPath not set
 		let suggestedEnvPath: string | undefined;
-		if (source.envPath === null) {
+		if (envPath === null) {
 			suggestedEnvPath = join(primaryDir, '.env');
 		}
 
@@ -1101,7 +1071,7 @@ export async function getStackComposeFile(
 			composePaths: paths,
 			stackDir: primaryDir,
 			composePath: primaryPath,
-			envPath: source.envPath,
+			envPath,
 			suggestedEnvPath,
 			sourceType: source.sourceType
 		};
@@ -1118,7 +1088,7 @@ export async function getStackComposeFile(
 					: `Compose file(s) no longer accessible: ${rawPaths.join(', ')}`)
 				: `Configured compose file(s) missing on disk: ${missingPaths.join(', ')}`,
 			composePath: rawPaths[0],
-			envPath: source.envPath
+			envPath
 		};
 	}
 

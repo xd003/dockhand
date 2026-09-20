@@ -91,6 +91,30 @@ describe('mergeDeployGitStackOpts', () => {
 			{ force: false, ignoreForceRedeploy: true }
 		);
 	});
+
+	it('preserves run metadata and forwards output to every coalesced caller', () => {
+		const lines: string[] = [];
+		const merged = mergeDeployGitStackOpts(
+			{
+				force: false,
+				ignoreForceRedeploy: false,
+				triggeredBy: 'manual',
+				userId: 7,
+				onLine: (line) => lines.push(`first:${line}`)
+			},
+			{
+				force: true,
+				ignoreForceRedeploy: false,
+				triggeredBy: 'webhook',
+				onLine: (line) => lines.push(`second:${line}`)
+			}
+		);
+
+		assert.equal(merged.triggeredBy, 'manual');
+		assert.equal(merged.userId, 7);
+		merged.onLine?.('ready');
+		assert.deepEqual(lines, ['first:ready', 'second:ready']);
+	});
 });
 
 describe('repoFanOutDefersStack', () => {

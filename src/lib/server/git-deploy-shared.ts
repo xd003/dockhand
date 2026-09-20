@@ -3,10 +3,10 @@
  *
  * Both engines (stack git-stack.ts, centralized git-centralized.ts) run the
  * same "deploy a stack from a successful sync result" skeleton: decide whether
- * to deploy, run docker compose, finalize the deletion sync, record the stack
- * source, roll back lastCommit on failure, and emit the single git_sync_*
- * notification. Extracted here so a fix to that body (e.g. deploy bugfixes)
- * lands in ONE place instead of two/three near-duplicates.
+ * to deploy, record the deploy run, run docker compose, finalize the deletion
+ * sync, record the stack source, roll back lastCommit on failure, and emit the
+ * single git_sync_* notification. Extracted here so a fix to that body (e.g. a
+ * deploy bugfix) lands in ONE place instead of two/three near-duplicates.
  *
  * The SYNC half differs per engine (per-stack re-clone vs shared-clone sync),
  * so each engine keeps its own syncGitStack and feeds the resulting SyncResult
@@ -14,8 +14,17 @@
  */
 
 import { join } from 'node:path';
-import { getStackLinkedFiles, getStackSource, updateGitStack, upsertStackSource } from './db';
+import {
+	getNonSecretEnvVarsAsRecord,
+	getSecretEnvVarsAsRecord,
+	getStackLinkedFiles,
+	getStackSource,
+	updateGitStack,
+	upsertStackSource
+} from './db';
 import { deployStack, deployStackUnlocked, getStackDir } from './stacks';
+import { createRunRecorder } from './deploy-run-record';
+import { hashComposeContent, hashEnvFingerprint } from './deploy-run-record-core';
 import {
 	finalizeDeletionSync,
 	notifyGitSync,
@@ -116,7 +125,7 @@ export async function deployStackFromSync(args: DeployStackFromSyncArgs): Promis
 		return skippedResult;
 	}
 
-	const forceRecreate = syncResult.updated;
+	const forceRecreate = !!syncResult.updated;
 	console.log(`${logPrefix} Will force recreate:`, forceRecreate, `(updated=${syncResult.updated})`);
 	console.log(`${logPrefix} Build on deploy:`, gitStack.buildOnDeploy);
 	console.log(`${logPrefix} Re-pull images:`, gitStack.repullImages);
@@ -155,30 +164,79 @@ export async function deployStackFromSync(args: DeployStackFromSyncArgs): Promis
 	console.log(`${logPrefix} Compose filename:`, syncResult.composeFileName);
 	console.log(`${logPrefix} Env filename:`, syncResult.envFileName ?? '(none)');
 
-	const deploy = args.lockHeld ? deployStackUnlocked : deployStack;
-	const result = await deploy({
-		name: gitStack.stackName,
-		compose: syncResult.composeContent!,
-		envId: gitStack.environmentId,
-		sourceDir: syncResult.composeDir, // Copy entire directory from git repo
-		composeFileName: syncResult.composeFileName, // Use original compose filename from repo
-		envFileName: syncResult.envFileName, // Env file relative to compose dir (for --env-file flag, optional)
-		composePaths: gitStack.composePaths ? parseComposePathsColumn(gitStack.composePaths) : undefined,
-		forceRecreate,
-		build: gitStack.buildOnDeploy,
-		noBuildCache: gitStack.noBuildCache,
-		pullPolicy: gitStack.repullImages ? 'always' : undefined,
-		filesToDelete: syncResult.deletionPlan?.toDelete,
-		isGitDeploy: true, // suppress stack_* notification; we emit git_sync_* below
-		onLine: args.onLine,
-		onComposeStarted: args.onComposeStarted,
-		preserveEnvPath: args.preserveEnvPath,
-		allowExistingStackDir: args.allowExistingStackDir,
-		envPath: args.remoteAdoption ? undefined : args.preserveEnvPath,
-		remoteAdoption: args.remoteAdoption
-			? { ...args.remoteAdoption, onRemoteAdoptionPrepared: args.remoteAdoption.onRemoteAdoptionPrepared }
-			: undefined
+	let effectiveEnvVars: Record<string, string> = { ...(syncResult.envFileVars ?? {}) };
+	try {
+		const nonSecretVars = await getNonSecretEnvVarsAsRecord(gitStack.stackName, gitStack.environmentId);
+		const secretVars = await getSecretEnvVarsAsRecord(gitStack.stackName, gitStack.environmentId);
+		effectiveEnvVars = { ...nonSecretVars, ...secretVars, ...(syncResult.envFileVars ?? {}) };
+	} catch (error) {
+		console.error(`${logPrefix} Failed to read env vars for run recording (deploy continues):`, error);
+	}
+
+	const recorder = await createRunRecorder({
+		stackName: gitStack.stackName,
+		envId: gitStack.environmentId ?? null,
+		userId: opts.userId,
+		triggeredBy: opts.triggeredBy ?? 'manual',
+		options: {
+			pull: gitStack.repullImages,
+			build: gitStack.buildOnDeploy,
+			forceRecreate
+		},
+		composeHash: hashComposeContent(syncResult.composeContent!),
+		envHash: hashEnvFingerprint(effectiveEnvVars),
+		secrets: Object.values(effectiveEnvVars)
+	}).catch((error) => {
+		console.error(`${logPrefix} Failed to create deploy run recorder (deploy continues):`, error);
+		return null;
 	});
+
+	const onLine = (line: string) => {
+		recorder?.line(line);
+		args.onLine?.(line);
+	};
+
+	const deploy = args.lockHeld ? deployStackUnlocked : deployStack;
+	let result: Awaited<ReturnType<typeof deploy>>;
+	try {
+		result = await deploy({
+			name: gitStack.stackName,
+			compose: syncResult.composeContent!,
+			envId: gitStack.environmentId,
+			sourceDir: syncResult.composeDir, // Copy entire directory from git repo
+			composeFileName: syncResult.composeFileName, // Use original compose filename from repo
+			envFileName: syncResult.envFileName, // Env file relative to compose dir (for --env-file flag, optional)
+			composePaths: gitStack.composePaths ? parseComposePathsColumn(gitStack.composePaths) : undefined,
+			forceRecreate,
+			build: gitStack.buildOnDeploy,
+			noBuildCache: gitStack.noBuildCache,
+			pullPolicy: gitStack.repullImages ? 'always' : undefined,
+			filesToDelete: syncResult.deletionPlan?.toDelete,
+			isGitDeploy: true, // suppress stack_* notification; we emit git_sync_* below
+			onLine,
+			onComposeStarted: args.onComposeStarted,
+			preserveEnvPath: args.preserveEnvPath,
+			allowExistingStackDir: args.allowExistingStackDir,
+			envPath: args.remoteAdoption ? undefined : args.preserveEnvPath,
+			remoteAdoption: args.remoteAdoption
+				? { ...args.remoteAdoption, onRemoteAdoptionPrepared: args.remoteAdoption.onRemoteAdoptionPrepared }
+				: undefined
+		});
+	} catch (error) {
+		try {
+			await recorder?.end(false, undefined, error instanceof Error ? error.message : String(error));
+		} catch (recordError) {
+			console.error(`${logPrefix} Failed to close deploy run recorder:`, recordError);
+		}
+		throw error;
+	}
+
+	recorder?.addSecrets(result.resolvedSecrets ?? []);
+	try {
+		await recorder?.end(result.success, undefined, result.success ? undefined : result.error);
+	} catch (error) {
+		console.error(`${logPrefix} Failed to close deploy run recorder:`, error);
+	}
 
 	console.log(`${logPrefix} ----------------------------------------`);
 	console.log(`${logPrefix} DEPLOY GIT STACK RESULT`);

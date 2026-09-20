@@ -758,7 +758,7 @@ async function deployGitStackCoreUnlocked(
 		}
 
 		// Deploy using the shared post-sync body (git-deploy-shared.ts).
-		return deployStackFromSync({ stackId, gitStack, opts: { force, ignoreForceRedeploy }, syncResult, onProgress, logPrefix, lockHeld: true });
+		return deployStackFromSync({ stackId, gitStack, opts, syncResult, onLine: opts.onLine, onProgress, logPrefix, lockHeld: true });
 	} finally {
 		stackDeployReentrancy.delete(stackId);
 	}
@@ -766,13 +766,16 @@ async function deployGitStackCoreUnlocked(
 
 export async function deployGitStack(
 	stackId: number,
-	options?: { force?: boolean; ignoreForceRedeploy?: boolean }
+	options?: Partial<DeployGitStackOpts>
 ): Promise<DeployGitStackResult> {
 	// Coalesce concurrent stack deploys (stack webhook ↔ repo fan-out ↔ manual).
 	// Stronger intent wins: force ORs; ignoreForceRedeploy only if all agree.
 	const opts: DeployGitStackOpts = {
 		force: options?.force ?? true, // Default to force for backward compatibility
-		ignoreForceRedeploy: options?.ignoreForceRedeploy ?? false
+		ignoreForceRedeploy: options?.ignoreForceRedeploy ?? false,
+		triggeredBy: options?.triggeredBy,
+		userId: options?.userId,
+		onLine: options?.onLine
 	};
 
 	return runCoalesced(

@@ -46,6 +46,7 @@ import {
 import { deployStackFromSync } from './git-deploy-shared';
 import { withGitRepositoryMutationLock } from './git-stack-files';
 import { withStackLock } from './stacks';
+import type { DeployGitStackOpts } from '../utils/git-deploy-gating';
 
 // Generous per-clone bound: a frozen network/SSH connection must not hold a
 // webhook/worker slot forever (the subprocess is SIGKILLed on timeout).
@@ -536,7 +537,7 @@ async function syncGitStackUnlocked(stackId: number, _onProgress?: ProgressCallb
 
 export async function deployGitStack(
 	stackId: number,
-	options?: { force?: boolean; ignoreForceRedeploy?: boolean }
+	options?: Partial<DeployGitStackOpts>
 ): Promise<DeployGitStackResult> {
 	activeStackDeploys++;
 	activeStackDeployIds.add(stackId);
@@ -550,7 +551,7 @@ export async function deployGitStack(
 
 async function deployGitStackCore(
 	stackId: number,
-	options?: { force?: boolean; ignoreForceRedeploy?: boolean }
+	options?: Partial<DeployGitStackOpts>
 ): Promise<DeployGitStackResult> {
 	const gitStack = await getGitStack(stackId);
 	if (!gitStack) return { success: false, error: 'Git stack not found' };
@@ -559,7 +560,7 @@ async function deployGitStackCore(
 
 async function deployGitStackCoreUnlocked(
 	stackId: number,
-	options?: { force?: boolean; ignoreForceRedeploy?: boolean }
+	options?: Partial<DeployGitStackOpts>
 ): Promise<DeployGitStackResult> {
 	const force = options?.force ?? true; // Default to force for backward compatibility
 
@@ -594,7 +595,21 @@ async function deployGitStackCoreUnlocked(
 	}
 
 	// Deploy using the shared post-sync body (git-deploy-shared.ts).
-	return deployStackFromSync({ stackId, gitStack, opts: { force, ignoreForceRedeploy: false }, syncResult, logPrefix, lockHeld: true });
+	return deployStackFromSync({
+		stackId,
+		gitStack,
+		opts: {
+			force,
+			ignoreForceRedeploy: options?.ignoreForceRedeploy ?? false,
+			triggeredBy: options?.triggeredBy,
+			userId: options?.userId,
+			onLine: options?.onLine
+		},
+		syncResult,
+		onLine: options?.onLine,
+		logPrefix,
+		lockHeld: true
+	});
 }
 
 export async function deleteGitStackFiles(stackId: number, stackName?: string, environmentId?: number | null): Promise<void> {

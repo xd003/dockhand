@@ -38,10 +38,12 @@
 	import { ensureWebhookSecret, webhookSecretValidationError } from '$lib/utils/webhook-secret';
 	import { startJobPolling, type JobPollingHandle } from '$lib/utils/job-polling';
 	import { detectedComposeOverridePaths } from '$lib/compose-overrides';
+	import { saveCloseTiming } from '$lib/utils/save-close-policy';
 
 
 	// localStorage key for persisted split ratio
 	const STORAGE_KEY_SPLIT = 'dockhand-git-stack-modal-split';
+	const DEPLOY_SUCCESS_CLOSE_DELAY_MS = 1500;
 
 	interface GitCredential {
 		id: number;
@@ -1280,9 +1282,23 @@
 
 			deploysReloadKey++; // a new run was recorded; refresh the Deploys tab
 			onSaved();
-			// With a deploy, leave the modal open behind the output window so the user
-			// can review the log; a plain save closes as before.
-			if (!deployAfterSave || isAdopting) onClose();
+			if (isAdopting) {
+				onClose();
+				return;
+			}
+			switch (saveCloseTiming(deployAfterSave, true)) {
+				case 'close':
+					onClose();
+					break;
+				case 'close-delayed':
+					setTimeout(() => {
+						outputOpen = false;
+						onClose();
+					}, DEPLOY_SUCCESS_CLOSE_DELAY_MS);
+					break;
+				case 'stay-open':
+					break;
+			}
 		} catch (error) {
 			formError = 'Failed to save git stack';
 		} finally {

@@ -7,6 +7,9 @@
 export interface DeployGitStackOpts {
 	force: boolean;
 	ignoreForceRedeploy: boolean;
+	triggeredBy?: 'cron' | 'webhook' | 'manual' | 'startup';
+	userId?: number;
+	onLine?: (line: string) => void;
 }
 
 export interface ShouldDeployGitStackInput extends DeployGitStackOpts {
@@ -38,9 +41,17 @@ export function mergeDeployGitStackOpts(
 	a: DeployGitStackOpts,
 	b: DeployGitStackOpts
 ): DeployGitStackOpts {
+	const onLine = a.onLine && b.onLine
+		? (line: string) => { a.onLine!(line); b.onLine!(line); }
+		: a.onLine ?? b.onLine;
+	const triggeredBy = a.triggeredBy ?? b.triggeredBy;
+	const userId = a.userId ?? b.userId;
 	return {
 		force: a.force || b.force,
-		ignoreForceRedeploy: a.ignoreForceRedeploy && b.ignoreForceRedeploy
+		ignoreForceRedeploy: a.ignoreForceRedeploy && b.ignoreForceRedeploy,
+		...(triggeredBy !== undefined ? { triggeredBy } : {}),
+		...(userId !== undefined ? { userId } : {}),
+		...(onLine ? { onLine } : {})
 	};
 }
 

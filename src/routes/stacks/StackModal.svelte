@@ -11,7 +11,7 @@
 	import { SELECTOR_VARS } from '$lib/utils/bulk-selector';
 	import { classifyMarker, resolvedRefVarNames } from '$lib/utils/invault-markers';
 	import { applyQuickFix, findingKey } from '$lib/utils/compose-quick-fix';
-	import { Layers, Save, Play, Code, GitGraph, GitBranch, GitCommitHorizontal, Github, Loader2, AlertCircle, X, Sun, Moon, TriangleAlert, GripVertical, GripHorizontal, FolderOpen, Copy, Check, XCircle, MapPin, ArrowRight, ArrowUp, ArrowDown, Info, Box, FolderSync, Archive, Lock, FileText, ListChecks, History, ChevronDown, Settings2 } from 'lucide-svelte';
+	import { Layers, Save, Play, Code, GitGraph, GitBranch, GitCommitHorizontal, Github, Loader2, AlertCircle, X, Sun, Moon, TriangleAlert, GripVertical, GripHorizontal, FolderOpen, Copy, Check, XCircle, MapPin, ArrowRight, ArrowUp, ArrowDown, Info, Box, FolderSync, Archive, Lock, FileText, ListChecks, History, ChevronDown, Settings2, Download } from 'lucide-svelte';
 	import ComposeValidatePanel from './ComposeValidatePanel.svelte';
 
 	import BackupPanel from '../containers/BackupPanel.svelte';
@@ -48,6 +48,7 @@
 	import RedeployPopover from './RedeployPopover.svelte';
 	import { hasBuildSection as detectBuildSection } from '$lib/utils/compose-build-detect';
 	import type { LinkedFileAction, LinkedFilePostChange } from '$lib/stack-linked-files';
+	import { isGitStackOverride, mergeGitStackEnvVars } from '$lib/env-merge';
 
 
 	// localStorage key for persisted split ratio
@@ -76,7 +77,7 @@
 		initialStackName?: string; // Pre-fill stack name (for library deploy)
 		readonly?: boolean; // View compose content without allowing local changes
 		gitInfo?: { commit?: string; url?: string; branch?: string } | null; // Git provenance for read-only git stacks
-		stackSource?: { sourceType: string } | null;
+		stackSource?: { sourceType: string; gitStack?: { id?: number } | null } | null;
 		initialTab?: 'editor' | 'graph';
 		onClose: () => void;
 		onSuccess: () => void; // Called after create or save
@@ -88,8 +89,8 @@
 
 	let gitCommitCopied = $state<'ok' | 'error' | null>(null);
 	function openGitSettings() {
-		open = false;
 		onEditGitSettings?.();
+		onClose();
 	}
 
 	// Local effective state - can transition from create → edit after failed deploy
@@ -235,6 +236,8 @@
 	let rawEnvContent = $state(''); // Raw .env file content (comments preserved)
 	let envValidation = $state<ValidationResult | null>(null);
 	let validating = $state(false);
+	let gitFileEnvVars = $state<Record<string, string>>({});
+	let populatingGitEnvVars = $state(false);
 
 	// SELECTOR_VARS (OP_ENVIRONMENT_ID / DOCKHAND_SECRET_SELECTOR) are consumed by the
 	// secret provider, not the compose file, so they only count as "used" when a
@@ -1705,6 +1708,7 @@
 			(stackSource?.sourceType === 'git' ||
 				!!(gitInfo && (gitInfo.commit || gitInfo.url || gitInfo.branch)))
 	);
+	const gitStackId = $derived(stackSource?.gitStack?.id ?? null);
 	const activeComposeDisplayPath = $derived(activeComposePath || workingComposePaths[0] || workingComposePath || '');
 	const activeEditorPath = $derived(activeEditorKind === 'linked' ? activeLinkedPath : activeComposeDisplayPath);
 	const activeLinkedEntry = $derived(linkedEntries.find((entry) => entry.path === activeLinkedPath));
@@ -2015,18 +2019,18 @@
 				injectedSecretKeys = envData.injectedSecretKeys ?? [];
 			}
 
-			// Process raw .env file content
-			let loadedRawContent = '';
-			if (rawEnvResponse.ok) {
-				const rawEnvData = await rawEnvResponse.json();
-				loadedRawContent = rawEnvData.content || '';
-			}
-
-			// Pass data directly to syncAfterLoad - no tick() needed
-			// This sets both envVars and rawEnvContent synchronously via the panel
 			loading = false;
-			await tick(); // Wait for panel ref to be available
-			envVarsPanelRef?.syncAfterLoad(loadedVars, loadedRawContent);
+			if (isGitView) {
+				envVars = loadedVars;
+			} else {
+				let loadedRawContent = '';
+				if (rawEnvResponse.ok) {
+					const rawEnvData = await rawEnvResponse.json();
+					loadedRawContent = rawEnvData.content || '';
+				}
+				await tick();
+				envVarsPanelRef?.syncAfterLoad(loadedVars, loadedRawContent);
+			}
 			isDirty = false;
 
 		} catch (e: any) {
@@ -2069,6 +2073,67 @@
 			console.error('Failed to validate env vars:', e);
 		} finally {
 			validating = false;
+		}
+	}
+
+	async function populateGitEnvVars(overrides: EnvVar[] = envVars, notify = true) {
+		if (!gitStackId) return;
+		const wasDirty = isDirty;
+		populatingGitEnvVars = true;
+		try {
+			const response = await fetch(`/api/git/stacks/${gitStackId}/env-files`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ populate: true })
+			});
+			const data = await response.json();
+			if (!response.ok) throw new Error(data.error || 'Failed to populate environment variables');
+
+			if (data.composeContents && typeof data.composeContents === 'object' && !Array.isArray(data.composeContents)) {
+				composeContents = data.composeContents;
+				originalComposeContents = { ...composeContents };
+				const selectedPath = activeComposePath || workingComposePaths[0] || workingComposePath;
+				composeContent = composeContents[selectedPath] ?? data.composeContent ?? '';
+			}
+			gitFileEnvVars = data.vars || {};
+			envVars = mergeGitStackEnvVars(gitFileEnvVars, overrides);
+			rawEnvContent = '';
+			await tick();
+			await validateEnvVars();
+			isDirty = wasDirty;
+			if (notify) toast.success(`Loaded ${Object.keys(composeContents).length} compose files and ${Object.keys(gitFileEnvVars).length} environment variables from Git`);
+		} catch (e) {
+			toast.error('Failed to populate environment variables', {
+				description: e instanceof Error ? e.message : undefined
+			});
+		} finally {
+			populatingGitEnvVars = false;
+		}
+	}
+
+	async function saveGitEnvVars() {
+		const envId = $currentEnvironment?.id ?? null;
+		const variables = envVars
+			.filter((variable) => isGitStackOverride(variable, gitFileEnvVars))
+			.map((variable) => ({ key: variable.key.trim(), value: variable.value, isSecret: variable.isSecret }));
+		saving = true;
+		try {
+			const response = await fetch(appendEnvParam(`/api/stacks/${encodeURIComponent(stackName)}/env`, envId), {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ variables })
+			});
+			const data = await response.json();
+			if (!response.ok) throw new Error(data.error || 'Failed to save environment variables');
+			isDirty = false;
+			toast.success('Environment variables saved');
+			onSuccess();
+		} catch (e) {
+			toast.error('Failed to save environment variables', {
+				description: e instanceof Error ? e.message : undefined
+			});
+		} finally {
+			saving = false;
 		}
 	}
 
@@ -2642,6 +2707,8 @@
 		composeRevisions = {};
 		envVars = [];
 		envValidation = null;
+		gitFileEnvVars = {};
+		populatingGitEnvVars = false;
 		isDirty = false;
 		existingSecretKeys = new Set();
 		hadExistingDbVars = false;
@@ -2937,31 +3004,39 @@
 					</div>
 				</div>
 
-				<div class="flex shrink-0 items-center gap-2">
-					{#if activeTab === 'editor'}
+				<div class="flex shrink-0 flex-col items-end gap-2">
+					<div class="flex items-center gap-2">
+						{#if activeTab === 'editor'}
+							<button
+								type="button"
+								aria-label={editorTheme === 'light' ? 'Switch to dark editor theme' : 'Switch to light editor theme'}
+								onclick={toggleEditorTheme}
+								class="flex h-8 w-8 items-center justify-center rounded-md border border-zinc-200 bg-zinc-50 text-zinc-500 transition-colors hover:border-zinc-300 hover:text-zinc-700 dark:border-zinc-700 dark:bg-zinc-800 dark:hover:text-zinc-300 max-md:hidden"
+								title={editorTheme === 'light' ? 'Switch to dark theme' : 'Switch to light theme'}
+							>
+								{#if editorTheme === 'light'}
+									<Moon class="h-4 w-4" />
+								{:else}
+									<Sun class="h-4 w-4" />
+								{/if}
+							</button>
+						{/if}
 						<button
 							type="button"
-							aria-label={editorTheme === 'light' ? 'Switch to dark editor theme' : 'Switch to light editor theme'}
-							onclick={toggleEditorTheme}
-							class="flex h-8 w-8 items-center justify-center rounded-md border border-zinc-200 bg-zinc-50 text-zinc-500 transition-colors hover:border-zinc-300 hover:text-zinc-700 dark:border-zinc-700 dark:bg-zinc-800 dark:hover:text-zinc-300 max-md:hidden"
-							title={editorTheme === 'light' ? 'Switch to dark theme' : 'Switch to light theme'}
+							aria-label="Close stack editor"
+							onclick={tryClose}
+							class="flex h-8 w-8 items-center justify-center rounded-md border border-zinc-200 bg-zinc-50 text-zinc-500 transition-colors hover:border-zinc-300 hover:text-zinc-700 dark:border-zinc-700 dark:bg-zinc-800 dark:hover:text-zinc-300 max-md:h-11 max-md:w-11"
+							title="Close"
 						>
-							{#if editorTheme === 'light'}
-								<Moon class="h-4 w-4" />
-							{:else}
-								<Sun class="h-4 w-4" />
-							{/if}
+							<X class="h-4 w-4" />
 						</button>
+					</div>
+					{#if isGitView && activeTab === 'editor'}
+						<Button type="button" size="sm" variant="outline" class="mt-3" onclick={() => populateGitEnvVars()} disabled={populatingGitEnvVars}>
+							{#if populatingGitEnvVars}<Loader2 class="h-3.5 w-3.5 animate-spin" />{:else}<Download class="h-3.5 w-3.5" />{/if}
+							Populate all files
+						</Button>
 					{/if}
-					<button
-						type="button"
-						aria-label="Close stack editor"
-						onclick={tryClose}
-						class="flex h-8 w-8 items-center justify-center rounded-md border border-zinc-200 bg-zinc-50 text-zinc-500 transition-colors hover:border-zinc-300 hover:text-zinc-700 dark:border-zinc-700 dark:bg-zinc-800 dark:hover:text-zinc-300 max-md:h-11 max-md:w-11"
-						title="Close"
-					>
-						<X class="h-4 w-4" />
-					</button>
 				</div>
 			</div>
 		</Dialog.Header>
@@ -3491,7 +3566,7 @@
 
 							<!-- Environment variables panel -->
 							<div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden {mobilePane === 'vars' ? 'max-md:flex-1' : 'max-md:hidden'}">
-								<div class="flex min-h-0 flex-1 flex-col px-4 py-4 sm:px-8 sm:py-6">
+							<div class="flex min-h-0 flex-1 flex-col px-4 py-4 sm:px-8 sm:py-6">
 									<div class="mb-3.5 flex items-center justify-between gap-3">
 										<div class="flex items-center gap-2 text-sm font-semibold text-zinc-800 dark:text-zinc-100">
 											<FileText class="h-4 w-4 text-muted-foreground" />
@@ -3499,17 +3574,19 @@
 										</div>
 									</div>
 
-									<SecretProviderPicker
-										bind:secretProviderId={formSecretProviderId}
-										bind:envVars
-										providers={secretProviders}
-										onchange={() => { markDirty(); debouncedValidate(); }}
-									/>
+									{#if !isGitView}
+										<SecretProviderPicker
+											bind:secretProviderId={formSecretProviderId}
+											bind:envVars
+											providers={secretProviders}
+											onchange={() => { markDirty(); debouncedValidate(); }}
+										/>
+									{/if}
 
 									<div class="mb-5 flex items-center gap-3 rounded-lg border border-zinc-200 bg-zinc-50 px-3.5 py-3 dark:border-zinc-700 dark:bg-zinc-800/40">
 										<FileText class="h-4 w-4 shrink-0 text-muted-foreground" />
 										<div class="min-w-0 flex-1">
-											<div class="text-[11px] text-muted-foreground">Env file</div>
+											<div class="text-[11px] text-muted-foreground">{isGitView ? 'Repository env file' : 'Env file'}</div>
 											<div class="truncate font-mono text-xs text-zinc-600 dark:text-zinc-300" title={displayEnvPath}>
 												{displayEnvPath || (mode === 'create' ? 'Enter stack name above' : 'Not specified')}
 											</div>
@@ -3546,11 +3623,11 @@
 										providerName={selectedProviderName}
 										{probeError}
 										{providerKeySet}
-										{readonly}
+										readonly={readonly && !isGitView}
 										hideHeader
 										onchange={() => { markDirty(); debouncedValidate(); }}
 										theme={editorTheme}
-										infoText="These variables will be written to a .env file in the stack directory and passed to the compose command."
+										infoText={isGitView ? "Repository values are read-only defaults. Changed, new, and secret values are saved as Dockhand overrides and applied on the next deploy." : "These variables will be written to a .env file in the stack directory and passed to the compose command."}
 										class="min-h-0 flex-1"
 									/>
 								</div>
@@ -3643,11 +3720,9 @@
 		<!-- Footer -->
 		<div class="flex flex-shrink-0 items-center justify-between gap-2 border-t border-zinc-200 px-4 py-3 sm:px-8 dark:border-zinc-700 max-md:pb-[max(0.75rem,env(safe-area-inset-bottom))]">
 			<div class="flex min-w-0 items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400 max-sm:hidden">
-				{#if readonly}
+				{#if readonly && !isGitView}
 					<Lock class="h-3.5 w-3.5 shrink-0" />
-					{#if isGitView}
-						<span>All files are synced from Git and read-only. Edit the compose files in your repository and redeploy to apply changes.</span>
-					{:else if needsFileLocation}
+					{#if needsFileLocation}
 						<span>Compose file location is unknown. Use Edit to browse and attach it.</span>
 					{:else}
 						<span>Viewing only. Use Edit to change the compose file and environment variables.</span>
@@ -3661,7 +3736,15 @@
 
 			<div class="flex flex-wrap items-center justify-end gap-2 max-md:grid max-md:w-full max-md:grid-cols-2 max-md:gap-2">
 				{#if readonly}
-					<Button class="max-md:order-1 max-md:col-span-2 max-md:w-full max-md:min-h-11" onclick={tryClose}>Close</Button>
+					{#if isGitView && activeTab === 'editor'}
+						<Button variant="outline" class="max-md:min-h-11" onclick={tryClose} disabled={saving}>Close</Button>
+						<Button class="max-md:min-h-11" onclick={saveGitEnvVars} disabled={saving || !isDirty}>
+							{#if saving}<Loader2 class="h-4 w-4 animate-spin" />{/if}
+							Save variables
+						</Button>
+					{:else}
+						<Button class="max-md:order-1 max-md:col-span-2 max-md:w-full max-md:min-h-11" onclick={tryClose}>Close</Button>
+					{/if}
 				{:else}
 					<Button variant="outline" class="max-md:min-h-11" onclick={tryClose} disabled={saving}>
 						Cancel

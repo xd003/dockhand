@@ -445,13 +445,6 @@
 						{/snippet}
 					</ConfirmPopover>
 				</div>
-				<input
-					bind:this={fileInputRef}
-					type="file"
-					accept=".env,.env.*,text/plain"
-					class="hidden"
-					onchange={handleFileSelect}
-				/>
 			{/if}
 		</div>
 		<!-- Help text -->
@@ -646,10 +639,36 @@
 					</Tooltip.Content>
 				</Tooltip.Root>
 				{#if !readonly}
+					<Button type="button" size="sm" variant="ghost" onclick={handleLoadFromFile} class="h-7 px-2 text-xs">
+						<Upload class="h-3.5 w-3.5" />
+						Load
+					</Button>
 					<Button type="button" size="sm" variant="ghost" onclick={addEnvVariable} class="h-7 px-2 text-xs">
 						<Plus class="h-3.5 w-3.5" />
 						Add
 					</Button>
+					<ConfirmPopover
+						bind:open={confirmClearOpen}
+						title="Clear all variables?"
+						action="clear"
+						itemType="environment variables"
+						confirmText="Clear all"
+						onConfirm={clearAll}
+						onOpenChange={(o) => confirmClearOpen = o}
+					>
+						{#snippet children({ open })}
+							<Button
+								type="button"
+								size="sm"
+								variant="ghost"
+								class="h-7 px-2 text-xs {hasContent ? 'text-destructive hover:text-destructive' : 'text-muted-foreground/50 cursor-not-allowed'}"
+								disabled={!hasContent}
+							>
+								<Trash2 class="h-3.5 w-3.5" />
+								Clear
+							</Button>
+						{/snippet}
+					</ConfirmPopover>
 				{/if}
 			</div>
 		</div>
@@ -662,6 +681,15 @@
 			</div>
 		{/if}
 	</div>
+	{/if}
+	{#if !readonly}
+		<input
+			bind:this={fileInputRef}
+			type="file"
+			accept=".env,.env.*,text/plain"
+			class="hidden"
+			onchange={handleFileSelect}
+		/>
 	{/if}
 	<!-- Content area -->
 	<div bind:this={contentAreaRef} class="flex-1 overflow-auto {hideHeader ? 'pt-2.5' : 'px-4 py-3'}">

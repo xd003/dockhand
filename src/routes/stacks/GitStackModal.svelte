@@ -109,8 +109,8 @@
 	let { open = $bindable(), gitStack = null, adoptionTarget = null, environmentId = null, icon = null, repositories, credentials, onClose, onSaved, onOpenStackView, onRepositoryCreated }: Props = $props();
 	const isAdopting = $derived(adoptionTarget !== null && gitStack === null);
 	function openStackView(tab: 'editor' | 'graph') {
-		open = false;
 		onOpenStackView?.(tab);
+		onClose();
 	}
 
 	// Per-stack icon override (same name-based /icon endpoint as internal stacks, #1473).
@@ -1601,7 +1601,8 @@
 				<DeploysPanel stackName={gitStack.stackName} envId={effectiveEnvId} reloadKey={deploysReloadKey} onTally={(t) => (deploysTally = t)} />
 			</div>
 		{:else}
-		<!-- Mobile: one pane at a time; desktop keeps the resizable split below. -->
+		<!-- New-stack setup keeps variables beside Settings until an Editor view exists. -->
+		{#if !gitStack}
 		<div class="flex items-center gap-1 border-b border-zinc-200 px-4 dark:border-zinc-700 flex-shrink-0 md:hidden">
 			<button
 				type="button"
@@ -1618,10 +1619,11 @@
 				<FileText class="h-3.5 w-3.5" /><span class="max-md:hidden">Environment variables</span><span class="md:hidden">Variables</span>
 			</button>
 		</div>
+		{/if}
 
 		<div bind:this={containerRef} class="flex-1 min-h-0 flex max-md:flex-col {isDraggingSplit ? 'select-none' : ''}">
 			<!-- Left column: Form fields -->
-			<div class="flex-shrink-0 flex flex-col min-w-0 overflow-y-auto max-md:w-full! {mobilePane === 'form' ? 'max-md:flex-1' : 'max-md:hidden'}" style="width: {splitRatio}%">
+			<div class="flex-shrink-0 flex flex-col min-w-0 overflow-y-auto max-md:w-full! {gitStack || mobilePane === 'form' ? 'max-md:flex-1' : 'max-md:hidden'}" style="width: {gitStack ? 100 : splitRatio}%">
 				<div class="space-y-4 py-4 px-4 sm:px-6">
 			<!-- Repository selection -->
 			{#if !gitStack}
@@ -2227,6 +2229,7 @@
 				</div>
 			</div>
 
+			{#if !gitStack}
 			<!-- Resizable divider -->
 			<div
 				class="w-1 flex-shrink-0 bg-zinc-200 dark:bg-zinc-700 hover:bg-blue-400 dark:hover:bg-blue-500 cursor-col-resize transition-colors flex items-center justify-center group max-md:hidden {isDraggingSplit ? 'bg-blue-500 dark:bg-blue-400' : ''}"
@@ -2292,6 +2295,7 @@
 					{/snippet}
 				</StackEnvVarsPanel>
 			</div>
+			{/if}
 		</div>
 		{/if}
 

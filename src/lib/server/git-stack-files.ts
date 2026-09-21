@@ -129,15 +129,19 @@ export async function mutateGitStackFiles(options: GitFileMutationOptions): Prom
 			oldHead = head.stdout.trim();
 
 			const classifications: GitFileClassification[] = [];
+			const changedPaths = new Set<string>();
 			for (const change of options.changes) {
 				const path = repoRelativePath(options.repoPath, change.path);
 				if (Buffer.byteLength(change.content, 'utf8') > MAX_LINKED_FILE_SIZE || change.content.includes('\0')) throw new Error(`Invalid text content for Git file: ${change.path}`);
 				const target = resolveSafeGitFileTarget(options.repoPath, path);
-				if (!change.expectedRevision) throw new Error(`Git file revision is required: ${change.path}`);
 				const classification = await classifyPath(options.repoPath, path, env);
+				// Newly-created untracked draft files have no repository revision yet.
+				// Existing and tracked files still require the optimistic-concurrency hash.
+				if (!change.expectedRevision && (classification.tracked || existsSync(target))) throw new Error(`Git file revision is required: ${change.path}`);
 				if ((existsSync(target) && contentRevision(readFileSync(target)) !== change.expectedRevision) || (!existsSync(target) && classification.tracked)) {
 					throw new Error(`Git file changed since it was loaded: ${change.path}`);
 				}
+				if (!existsSync(target) || contentRevision(readFileSync(target)) !== contentRevision(change.content)) changedPaths.add(path);
 				classifications.push(classification);
 			}
 			if (options.expectedClassifications) {
@@ -154,10 +158,11 @@ export async function mutateGitStackFiles(options: GitFileMutationOptions): Prom
 			}
 			const shouldMutateTracked = options.trackedDecision === 'commit';
 			const shouldMutateUntracked = options.untrackedDecision === 'add';
-			const pathsToCommit = classifications.filter((entry) => entry.tracked ? shouldMutateTracked : shouldMutateUntracked).map((entry) => entry.path);
+			const pathsToCommit = classifications.filter((entry) => changedPaths.has(entry.path) && (entry.tracked ? shouldMutateTracked : shouldMutateUntracked)).map((entry) => entry.path);
 			for (const change of options.changes) {
 				const path = repoRelativePath(options.repoPath, change.path);
 				const classification = classifications.find((entry) => entry.path === path)!;
+				if (!changedPaths.has(path)) continue;
 				if (classification.tracked || options.untrackedDecision !== 'add') continue;
 				const target = resolveSafeGitFileTarget(options.repoPath, path);
 				untrackedSnapshots.set(path, existsSync(target) ? readFileSync(target) : null);
@@ -165,6 +170,7 @@ export async function mutateGitStackFiles(options: GitFileMutationOptions): Prom
 			for (const change of options.changes) {
 				const path = repoRelativePath(options.repoPath, change.path);
 				const classification = classifications.find((entry) => entry.path === path)!;
+				if (!changedPaths.has(path)) continue;
 				if (!classification.tracked && options.untrackedDecision === 'local') continue;
 				const target = resolveSafeGitFileTarget(options.repoPath, path);
 				mkdirSync(dirname(target), { recursive: true });

@@ -11,8 +11,9 @@
 	import { SELECTOR_VARS } from '$lib/utils/bulk-selector';
 	import { classifyMarker, resolvedRefVarNames } from '$lib/utils/invault-markers';
 	import { applyQuickFix, findingKey } from '$lib/utils/compose-quick-fix';
-	import { Layers, Save, Play, Code, GitGraph, GitBranch, GitCommitHorizontal, Github, Loader2, AlertCircle, X, Sun, Moon, TriangleAlert, GripVertical, GripHorizontal, FolderOpen, Copy, Check, XCircle, MapPin, ArrowRight, ArrowUp, ArrowDown, Info, Box, FolderSync, Archive, Lock, FileText, ListChecks, History, ChevronDown, Settings2, Download } from 'lucide-svelte';
+	import { Layers, Save, Play, Code, GitGraph, GitBranch, GitCommitHorizontal, Github, Loader2, AlertCircle, X, Sun, Moon, TriangleAlert, GripVertical, GripHorizontal, FolderOpen, Copy, Check, XCircle, MapPin, ArrowRight, ArrowDown, Info, Box, FolderSync, Archive, Lock, FileText, ListChecks, History, ChevronDown, Settings2, Download } from 'lucide-svelte';
 	import ComposeValidatePanel from './ComposeValidatePanel.svelte';
+	import StackFileEditor from './StackFileEditor.svelte';
 
 	import BackupPanel from '../containers/BackupPanel.svelte';
 	import DeploysPanel from './DeploysPanel.svelte';
@@ -47,7 +48,8 @@
 	import ComposeGraphViewer from './ComposeGraphViewer.svelte';
 	import RedeployPopover from './RedeployPopover.svelte';
 	import { hasBuildSection as detectBuildSection } from '$lib/utils/compose-build-detect';
-	import type { LinkedFileAction, LinkedFilePostChange } from '$lib/stack-linked-files';
+	import { linkedFileLanguage, type LinkedFileAction, type LinkedFilePostChange } from '$lib/stack-linked-files';
+	import type { StackEditorEntry, StackFileEditorDraft } from '$lib/stack-file-editor';
 	import { isGitStackOverride, mergeGitStackEnvVars } from '$lib/env-merge';
 
 
@@ -191,9 +193,12 @@
 		error?: string;
 	};
 	let linkedEntries = $state<LinkedEditorEntry[]>([]);
+	let createdFolders = $state<string[]>([]);
+	let fileEditorRef = $state<StackFileEditor | null>(null);
 	let activeLinkedPath = $state('');
 	let activeEditorKind = $state<'compose' | 'linked'>('compose');
 	let linkedRoot = $state('');
+	let hasLinkableFile = $state(false);
 	let linkedComposeServices = $state<string[]>([]);
 	let originalComposeContents = $state<Record<string, string>>({});
 	let composeClassifications = $state<Record<string, { tracked?: boolean; ignored?: boolean }>>({});
@@ -415,9 +420,6 @@
 			}
 		}
 	}
-
-	// Drag-and-drop state for compose paths reordering
-	let dragIndex = $state<number | null>(null);
 
 	// Original paths: loaded from server (for dirty/change detection in edit mode)
 	let originalComposePath = $state<string | null>(null);
@@ -680,7 +682,88 @@
 		return appendEnvParam(`/api/stacks/${encodeURIComponent(stackName)}/files/browse`, envId);
 	}
 
+	function editorEntries(): StackEditorEntry[] {
+		return linkedEntries.map((entry) => ({
+			path: entry.path,
+			name: entry.name,
+			kind: 'linked',
+			content: entry.content,
+			originalContent: entry.originalContent,
+			language: entry.language,
+			ownership: entry.ownership,
+			tracked: entry.tracked,
+			ignored: entry.ignored,
+			postChange: entry.postChange,
+			originalPostChange: entry.originalPostChange,
+			revision: entry.revision,
+			error: entry.error
+		}));
+	}
+
+	function applyDraftEditor(draft: StackFileEditorDraft) {
+		workingComposePaths = [...draft.composePaths];
+		workingComposePath = workingComposePaths[0] ?? '';
+		composeContents = { ...draft.composeContents };
+		if (activeEditorKind === 'linked' && activeLinkedPath) composeContent = draft.linkedFileContents[activeLinkedPath] ?? composeContent;
+		else if (activeComposePath && composeContents[activeComposePath] !== undefined) composeContent = composeContents[activeComposePath];
+		else {
+			activeComposePath = workingComposePaths[0] ?? '';
+			composeContent = activeComposePath ? composeContents[activeComposePath] ?? '' : '';
+		}
+		linkedEntries = draft.linkedFiles.map((file) => {
+			const previous = linkedEntries.find((entry) => entry.path === file.path);
+			const content = draft.linkedFileContents[file.path] ?? previous?.content ?? '';
+			return {
+				path: file.path,
+				name: file.path.split('/').pop() ?? file.path,
+				content,
+				originalContent: previous?.originalContent ?? '',
+				language: linkedFileLanguage(file.path),
+				ownership: file.ownership,
+				tracked: draft.classifications.find((entry) => entry.path === file.path)?.tracked,
+				ignored: draft.classifications.find((entry) => entry.path === file.path)?.ignored,
+				postChange: file.postChange,
+				originalPostChange: previous?.originalPostChange ?? structuredClone(file.postChange),
+				revision: draft.revisions[file.path] ?? previous?.revision
+			};
+		});
+		createdFolders = [...draft.createdFolders];
+		isDirty = true;
+	}
+
+	function applyPersistedEditor(draft: StackFileEditorDraft) {
+		workingComposePaths = [...draft.composePaths];
+		workingComposePath = workingComposePaths[0] ?? '';
+		composeContents = { ...draft.composeContents };
+		if (activeEditorKind === 'linked' && activeLinkedPath) composeContent = draft.linkedFileContents[activeLinkedPath] ?? composeContent;
+		else if (activeComposePath && composeContents[activeComposePath] !== undefined) composeContent = composeContents[activeComposePath];
+		linkedEntries = draft.linkedFiles.map((file) => {
+			const previous = linkedEntries.find((entry) => entry.path === file.path);
+			return {
+				path: file.path,
+				name: file.path.split('/').pop() ?? file.path,
+				content: draft.linkedFileContents[file.path] ?? previous?.content ?? '',
+				originalContent: previous?.originalContent ?? '',
+				language: linkedFileLanguage(file.path),
+				ownership: file.ownership,
+				tracked: draft.classifications.find((entry) => entry.path === file.path)?.tracked ?? previous?.tracked,
+				ignored: draft.classifications.find((entry) => entry.path === file.path)?.ignored ?? previous?.ignored,
+				postChange: file.postChange,
+				originalPostChange: previous?.originalPostChange ?? structuredClone(file.postChange),
+				revision: draft.revisions[file.path] ?? previous?.revision
+			};
+		});
+		createdFolders = [...draft.createdFolders];
+		isDirty = true;
+	}
+
+	function handleSharedEditorPath(path: string) {
+		if (linkedEntries.some((entry) => entry.path === path)) switchLinkedFile(path);
+		else switchComposeFile(path);
+	}
+
 	async function loadLinkedFiles(envId: number | null, preserveDirty = false) {
+		hasLinkableFile = false;
 		try {
 			const response = await fetch(appendEnvParam(`/api/stacks/${encodeURIComponent(stackName)}/files`, envId));
 			if (!response.ok) return;
@@ -717,6 +800,14 @@
 			} else {
 				linkedEntries = loaded;
 			}
+			const browseResponse = await fetch(linkedBrowseApiUrl());
+			if (browseResponse.ok) {
+				const browseData = await browseResponse.json();
+				const composeNames = new Set(workingComposePaths.map((path) => path.split('/').pop()?.toLocaleLowerCase()));
+				hasLinkableFile = (Array.isArray(browseData.entries) ? browseData.entries : []).some((entry: any) =>
+					entry.type === 'file' && entry.name.toLocaleLowerCase() !== '.env' && !composeNames.has(entry.name.toLocaleLowerCase())
+				);
+			}
 		} catch (e) {
 			console.warn('Failed to load linked stack files:', e);
 		}
@@ -732,6 +823,27 @@
 	}
 
 	async function openLinkedFileBrowser() {
+		if (mode === 'create') {
+			const root = workingComposePath.replace(/\/[^/]+$/, '') || '/';
+			fileBrowserConfig = {
+				title: 'Link configuration file',
+				description: 'Choose a text file below the primary Compose directory.',
+				initialPath: root,
+				apiUrl: '/api/system/files',
+				selectFilter: /.*/,
+				selectMode: 'file',
+				onSelect: async (path) => {
+					showFileBrowser = false;
+					const response = await fetch(`/api/system/files/content?path=${encodeURIComponent(path)}`);
+					const data = await response.json().catch(() => ({}));
+					if (!response.ok) throw new Error(data.error || 'Failed to read file');
+					const relativePath = root && path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path;
+					fileEditorRef?.addLinkedFile({ path: relativePath, content: data.content, ownership: 'local' });
+				}
+			};
+			showFileBrowser = true;
+			return;
+		}
 		if (!stackName) return;
 		fileBrowserConfig = {
 			title: 'Link configuration file',
@@ -916,98 +1028,6 @@
 		} catch (e) {
 			console.warn('Failed to detect compose overrides:', e);
 		}
-	}
-
-	function browseForRow(index: number) {
-		fileBrowserConfig = {
-			title: 'Select compose file',
-			selectFilter: /\.ya?ml$/,
-			selectMode: 'file',
-			onSelect: async (path: string) => {
-				const oldPath = workingComposePaths[index];
-				const newPaths = [...workingComposePaths];
-				newPaths[index] = path;
-				setComposePathList(newPaths, {
-					rename: oldPath && oldPath !== path ? { from: oldPath, to: path } : undefined,
-					active: path
-				});
-				showFileBrowser = false;
-				isDirty = true;
-				if (index === 0) {
-					if (mode === 'create') maybeDeriveStackNameFromCompose(path);
-					await addDetectedComposeOverrides(path);
-				}
-			},
-		};
-		showFileBrowser = true;
-	}
-
-	function addComposePath() {
-		setComposePathList([...workingComposePaths, '']);
-		isDirty = true;
-	}
-
-	function renameComposePathAt(index: number, newPath: string) {
-		const oldPath = workingComposePaths[index];
-		if (oldPath === newPath) return;
-		const newPaths = [...workingComposePaths];
-		newPaths[index] = newPath;
-		setComposePathList(newPaths, { rename: { from: oldPath, to: newPath } });
-		isDirty = true;
-	}
-
-	function removeComposePath(index: number) {
-		if (workingComposePaths.length <= 1) return;
-		const removedPath = workingComposePaths[index];
-		setComposePathList(workingComposePaths.filter((_, i) => i !== index));
-		// Keep a tombstone so the server truncates a removed file instead of leaving
-		// stale override settings on disk.
-		if (removedPath) composeContents = { ...composeContents, [removedPath]: '' };
-		isDirty = true;
-	}
-
-	function movePathUp(index: number) {
-		if (index <= 0) return;
-		const newPaths = [...workingComposePaths];
-		[newPaths[index - 1], newPaths[index]] = [newPaths[index], newPaths[index - 1]];
-		setComposePathList(newPaths);
-		isDirty = true;
-	}
-
-	function movePathDown(index: number) {
-		if (index >= workingComposePaths.length - 1) return;
-		const newPaths = [...workingComposePaths];
-		[newPaths[index], newPaths[index + 1]] = [newPaths[index + 1], newPaths[index]];
-		setComposePathList(newPaths);
-		isDirty = true;
-	}
-
-	function dragStart(e: DragEvent, index: number) {
-		dragIndex = index;
-		if (e.dataTransfer) {
-			e.dataTransfer.effectAllowed = 'move';
-			e.dataTransfer.setData('text/plain', String(index));
-		}
-	}
-
-	function dragOver(e: DragEvent, index: number) {
-		e.preventDefault();
-		if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-		if (dragIndex === null || dragIndex === index) return;
-		const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-		const before = e.clientY < rect.top + rect.height / 2;
-		const targetIndex = before ? index : index + 1;
-		const newPaths = [...workingComposePaths];
-		const [moved] = newPaths.splice(dragIndex, 1);
-		const insertAt = dragIndex < targetIndex ? targetIndex - 1 : targetIndex;
-		newPaths.splice(insertAt, 0, moved);
-		setComposePathList(newPaths);
-		dragIndex = insertAt;
-		isDirty = true;
-	}
-
-	function dragEnd() {
-		dragIndex = null;
 	}
 
 	function openEnvBrowser() {
@@ -1701,7 +1721,6 @@
 	// Display title
 	const displayName = $derived(mode === 'edit' ? stackName : (newStackName || 'New stack'));
 
-	const composePathsLocked = $derived(readonly || (mode === 'edit' && !needsFileLocation));
 	const isGitView = $derived(
 		readonly &&
 			(stackSource?.sourceType === 'git' ||
@@ -2021,6 +2040,7 @@
 			loading = false;
 			if (isGitView) {
 				envVars = loadedVars;
+				await populateGitEnvVars(loadedVars, false);
 			} else {
 				let loadedRawContent = '';
 				if (rawEnvResponse.ok) {
@@ -2102,9 +2122,13 @@
 			isDirty = wasDirty;
 			if (notify) toast.success(`Loaded ${Object.keys(composeContents).length} compose files and ${Object.keys(gitFileEnvVars).length} environment variables from Git`);
 		} catch (e) {
-			toast.error('Failed to populate environment variables', {
-				description: e instanceof Error ? e.message : undefined
-			});
+			if (notify) {
+				toast.error('Failed to populate environment variables', {
+					description: e instanceof Error ? e.message : undefined
+				});
+			} else {
+				console.error('Failed to populate Git environment variables:', e);
+			}
 		} finally {
 			populatingGitEnvVars = false;
 		}
@@ -2326,6 +2350,11 @@
 
 			// Include custom paths if specified (skip rows still being typed)
 			applyComposePayload(requestBody, 'compose');
+			if (linkedEntries.length > 0 || createdFolders.length > 0) {
+				requestBody.linkedFiles = linkedEntries.map(({ path, ownership, postChange }) => ({ path, ownership, postChange }));
+				requestBody.linkedFileContents = Object.fromEntries(linkedEntries.map((entry) => [entry.path, entry.content]));
+				requestBody.createdFolders = [...createdFolders];
+			}
 			// Use working env path or suggested path
 			const envPathToSave = workingEnvPath.trim() || suggestedEnvPath || '';
 			if (envPathToSave) {
@@ -2697,6 +2726,8 @@
 		composeContents = {};
 		activeComposePath = '';
 		linkedEntries = [];
+		hasLinkableFile = false;
+		createdFolders = [];
 		activeLinkedPath = '';
 		activeEditorKind = 'compose';
 		linkedRoot = '';
@@ -2788,6 +2819,10 @@
 			} else if (mode === 'create') {
 				// Set default compose content for create mode (library templates override default)
 				composeContent = initialCompose || defaultCompose;
+				workingComposePaths = ['compose.yaml'];
+				workingComposePath = 'compose.yaml';
+				activeComposePath = 'compose.yaml';
+				composeContents = { 'compose.yaml': composeContent };
 				if (initialStackName) {
 					newStackName = initialStackName;
 					stackNameUserEdited = true;
@@ -2855,12 +2890,15 @@
 		// User selected a specific file - paths are locked, don't touch them
 		if (pathSource === 'custom') return;
 
-		// No name entered yet - clear paths but preserve the editor content
+		// No name entered yet - keep a relative draft entry visible; it is resolved to
+		// the selected stack directory when the name is entered or the request is sent.
 		if (!name) {
-			workingComposePaths = [];
-			workingComposePath = '';
-			activeComposePath = '';
-			composeContents = {};
+			if (workingComposePaths.length === 0) {
+				workingComposePaths = ['compose.yaml'];
+				workingComposePath = 'compose.yaml';
+				activeComposePath = 'compose.yaml';
+				composeContents = { 'compose.yaml': composeContent };
+			}
 			workingEnvPath = '';
 			autoComputedComposePath = '';
 			if (!browsedBaseDirectory) {
@@ -3200,7 +3238,98 @@
 
 				<!-- Content area -->
 		<div bind:this={containerRef} class="flex-1 min-h-0 flex flex-col {isDraggingSplit ? 'select-none' : ''}">
-			{#if activeTab === 'editor'}
+			{#if activeTab === 'editor' && (mode === 'create' || (mode === 'edit' && !needsFileLocation))}
+				<div class="flex min-h-0 flex-1 flex-col max-md:flex-col">
+					<div class="flex items-center gap-1 border-b border-zinc-200 px-4 dark:border-zinc-700 md:hidden">
+						<button type="button" class="flex-1 py-2 text-sm {mobilePane === 'compose' ? 'border-b-2 border-primary' : ''}" onclick={() => mobilePane = 'compose'}><Code class="mr-1 inline h-3.5 w-3.5" />Compose</button>
+						<button type="button" class="flex-1 py-2 text-sm {mobilePane === 'vars' ? 'border-b-2 border-primary' : ''}" onclick={() => mobilePane = 'vars'}><FileText class="mr-1 inline h-3.5 w-3.5" />Variables</button>
+					</div>
+					<div class="flex min-h-0 flex-1 max-md:flex-col">
+						<div class="flex min-h-0 min-w-0 flex-shrink-0 flex-col max-md:w-full! {mobilePane === 'compose' ? 'max-md:flex-1' : 'max-md:hidden'}" style="width: {splitRatio}%">
+							<StackFileEditor
+								bind:this={fileEditorRef}
+								composePaths={workingComposePaths}
+								composeContents={{ ...composeContents, ...(activeComposePath ? { [activeComposePath]: composeContent } : {}) }}
+								linkedEntries={editorEntries()}
+								{createdFolders}
+								readonly={readonly}
+								initialPath={activeEditorPath}
+								onActivePathChange={handleSharedEditorPath}
+								onChange={mode === 'create' ? applyDraftEditor : applyPersistedEditor}
+								onRequestLink={openLinkedFileBrowser}
+								canLink={hasLinkableFile || linkedEntries.some((entry) => entry.path.split('/').pop()?.toLocaleLowerCase() !== '.env')}
+								canCreate={mode !== 'create' || !!newStackName.trim()}
+								onCreateFile={mode === 'edit' ? createLinkedFileFromPrompt : undefined}
+								onCreateFolder={mode === 'edit' ? createLinkedFolderFromPrompt : undefined}
+								onUnlink={mode === 'edit' ? unlinkActiveLinkedFile : undefined}
+								onPolicyChange={mode === 'edit' ? updateLinkedPolicy : undefined}
+								variableMarkers={variableMarkers}
+								lintMarkers={validateMarkers}
+								onLintClick={openValidateAtLine}
+								theme={editorTheme}
+							>
+								{#snippet headerActions()}
+									<div class="flex items-center gap-1">
+										{#if mode === 'edit' && !readonly}
+											<button type="button" class="rounded border px-2 py-1 text-xs text-muted-foreground hover:text-foreground" onclick={openChangeLocationBrowser}><FolderSync class="mr-1 inline h-3.5 w-3.5" />Relocate</button>
+										{/if}
+										<Button variant="ghost" size="sm" class="h-7 px-2 text-xs text-muted-foreground" onclick={runComposeValidate} disabled={!composeContent || activeEditorKind === 'linked'} title="Check this compose for problems before deploy">
+											{#if validateLoading}<Loader2 class="h-3 w-3 animate-spin" />{:else}<ListChecks class="h-3 w-3" />{/if}
+											Validate
+										</Button>
+										<Button variant="ghost" size="sm" class="h-7 px-2 text-xs text-muted-foreground" onclick={() => copyText(composeContent, (value) => composeContentCopied = value)} disabled={!composeContent}>
+											{#if composeContentCopied === 'ok'}<Check class="h-3 w-3 text-green-500" />{:else if composeContentCopied === 'error'}<XCircle class="h-3 w-3 text-red-500" />{:else}<Copy class="h-3 w-3" />{/if}
+											{composeContentCopied === 'ok' ? 'Copied' : composeContentCopied === 'error' ? 'Failed' : 'Copy'}
+										</Button>
+									</div>
+								{/snippet}
+								{#snippet editorOverlay()}
+									{#if validatePanelOpen}
+										<div class="absolute inset-y-0 right-0 z-20 max-w-full max-md:w-full" style="width: {validatePanelWidth}px">
+											<ComposeValidatePanel bind:this={validatePanelRef} report={validateReport} loading={validateLoading} error={validateError} activeLine={validateActiveLine} onClose={closeValidatePanel} onJumpToLine={jumpToComposeLine} onRevalidate={runComposeValidate} onApplyFix={applyValidateFix} />
+										</div>
+									{/if}
+								{/snippet}
+							</StackFileEditor>
+						</div>
+						<div class="w-1 flex-shrink-0 cursor-col-resize bg-zinc-200 transition-colors hover:bg-blue-400 dark:bg-zinc-700 dark:hover:bg-blue-500 max-md:hidden" role="separator" aria-orientation="vertical" onmousedown={startSplitDrag} tabindex="0"></div>
+							<div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden {mobilePane === 'vars' ? 'max-md:flex-1' : 'max-md:hidden'}">
+							<div class="flex min-h-0 flex-1 flex-col px-4 py-4 sm:px-8 sm:py-6">
+								{#if !isGitView}<SecretProviderPicker bind:secretProviderId={formSecretProviderId} bind:envVars providers={secretProviders} onchange={() => { markDirty(); debouncedValidate(); }} />{/if}
+								<div class="mb-5 flex items-center gap-3 rounded-lg border border-zinc-200 bg-zinc-50 px-3.5 py-3 dark:border-zinc-700 dark:bg-zinc-800/40">
+									<FileText class="h-4 w-4 shrink-0 text-muted-foreground" />
+									<div class="min-w-0 flex-1">
+										<div class="text-[11px] text-muted-foreground">Env file</div>
+										<div class="truncate font-mono text-xs text-zinc-600 dark:text-zinc-300" title={displayEnvPath}>
+											{displayEnvPath || 'Enter stack name above'}
+										</div>
+									</div>
+									{#if mode === 'create' && !isGitView}
+										<button type="button" onclick={openEnvBrowser} class="shrink-0 rounded p-1.5 text-muted-foreground hover:bg-zinc-200 dark:hover:bg-zinc-700 max-md:flex max-md:h-11 max-md:w-11 max-md:items-center max-md:justify-center" title="Browse for env file">
+											<FolderOpen class="h-3.5 w-3.5" />
+										</button>
+									{/if}
+									<button
+										type="button"
+										onclick={() => copyText(displayEnvPath, (value) => envPathCopied = value)}
+										class="shrink-0 rounded p-1.5 text-muted-foreground hover:bg-zinc-200 dark:hover:bg-zinc-700 max-md:flex max-md:h-11 max-md:w-11 max-md:items-center max-md:justify-center {!displayEnvPath ? 'cursor-not-allowed opacity-40' : ''}"
+										aria-label="Copy environment file path"
+										title="Copy path"
+										disabled={!displayEnvPath}
+									>
+										{#if envPathCopied === 'ok'}
+											<Check class="h-3.5 w-3.5 text-green-500" />
+										{:else}
+											<Copy class="h-3.5 w-3.5" />
+										{/if}
+									</button>
+								</div>
+								<StackEnvVarsPanel bind:this={envVarsPanelRef} bind:variables={envVars} bind:rawContent={rawEnvContent} validation={effectiveValidation} existingSecretKeys={mode === 'edit' ? existingSecretKeys : new Set()} injectedSecretKeys={mode === 'edit' ? injectedSecretKeys : []} providerType={selectedProviderType} providerName={selectedProviderName} {probeError} {providerKeySet} readonly={readonly && !isGitView} hideHeader onchange={() => { markDirty(); debouncedValidate(); }} theme={editorTheme} infoText={isGitView ? "Repository values are read-only defaults. Changed, new, and secret values are saved as Dockhand overrides and applied on the next deploy." : "These variables will be written to a .env file in the stack directory and passed to the compose command."} class="min-h-0 flex-1" />
+							</div>
+						</div>
+					</div>
+				</div>
+			{:else if activeTab === 'editor'}
 				{#if mode === 'edit' && needsFileLocation && !composeContent && !readonly}
 					<div class="flex min-h-0 flex-1 items-start justify-center overflow-auto px-4 py-8 sm:items-center sm:px-8 sm:py-10">
 						<div class="w-full max-w-4xl">
@@ -3295,63 +3424,6 @@
 									</div>
 									</div>
 
-									{#if !composePathsLocked}
-										<div class="mb-3 space-y-1.5 rounded-lg border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-700 dark:bg-zinc-800/40">
-											{#each workingComposePaths as path, i}
-												{@const total = workingComposePaths.length}
-												{@const isDragging = dragIndex === i}
-												<div
-													class="flex min-w-0 items-center gap-1 overflow-hidden {isDragging ? 'opacity-40' : ''}"
-													draggable={mode === 'create' || needsFileLocation}
-													ondragstart={(e) => dragStart(e, i)}
-													ondragover={(e) => dragOver(e, i)}
-													ondrop={(e) => e.preventDefault()}
-													ondragend={dragEnd}
-												>
-													{#if total > 1}
-														<div class="flex shrink-0 flex-col -space-y-0.5">
-															<button type="button" title="Move up" disabled={i === 0} onclick={() => movePathUp(i)} class="p-0 max-md:p-2 hover:text-muted-foreground disabled:cursor-default disabled:opacity-30">
-																<ArrowUp class="h-3 w-3" />
-															</button>
-															<button type="button" title="Move down" disabled={i === total - 1} onclick={() => movePathDown(i)} class="p-0 max-md:p-2 hover:text-muted-foreground disabled:cursor-default disabled:opacity-30">
-																<ArrowDown class="h-3 w-3" />
-															</button>
-														</div>
-														<GripVertical class="h-3.5 w-3.5 shrink-0 cursor-grab text-muted-foreground/40" />
-													{/if}
-															<input
-																type="text"
-																value={workingComposePaths[i]}
-																aria-label={`Compose file path ${i + 1}`}
-														placeholder={i === 0 ? '/path/to/compose.yaml' : 'compose.override.yaml'}
-														class="min-w-0 flex-1 rounded border bg-background px-2 py-1 text-xs max-md:h-11 max-md:text-sm"
-														oninput={(e) => renameComposePathAt(i, e.currentTarget.value)}
-													/>
-													<button type="button" onclick={() => browseForRow(i)} class="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted max-md:flex max-md:h-11 max-md:w-11 max-md:items-center max-md:justify-center" title="Browse for file">
-														<FolderOpen class="h-3.5 w-3.5" />
-													</button>
-													{#if total > 1}
-														<button type="button" onclick={() => removeComposePath(i)} class="shrink-0 rounded p-1 text-muted-foreground hover:bg-red-100 hover:text-red-500 dark:hover:bg-red-900/30 max-md:flex max-md:h-11 max-md:w-11 max-md:items-center max-md:justify-center" title="Remove">
-															<X class="h-3.5 w-3.5" />
-														</button>
-													{/if}
-												</div>
-											{:else}
-												<div class="flex items-center gap-1">
-													<input type="text" readonly placeholder={mode === 'create' ? 'Enter stack name above' : 'Not specified'} class="min-w-0 flex-1 rounded border bg-muted/50 px-2 py-1 text-xs text-muted-foreground max-md:h-11 max-md:text-sm" />
-													<button type="button" onclick={openComposeBrowser} class="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted max-md:flex max-md:h-11 max-md:w-11 max-md:items-center max-md:justify-center" title="Browse for file">
-														<FolderOpen class="h-3.5 w-3.5" />
-													</button>
-												</div>
-											{/each}
-											{#if workingComposePaths.length > 0}
-												<button type="button" onclick={() => addComposePath()} class="inline-flex items-center gap-1 rounded border bg-muted px-2 py-0.5 text-xs text-muted-foreground hover:bg-muted/80 max-md:h-11">
-													+ Add compose file
-												</button>
-											{/if}
-										</div>
-									{/if}
-
 									{#if workingComposePaths.filter((p) => p.trim()).length > 0 || linkedEntries.length > 0}
 										<Tabs.Root
 											value={activeEditorPath}
@@ -3438,30 +3510,33 @@
 															<span class="min-w-0 max-w-[45%] truncate text-muted-foreground/70" title={`Compose file on the Hawser node: ${remoteComposePath}`}>(Hawser: {remoteComposePath})</span>
 														{/if}
 													</div>
-															<div class="flex items-center gap-1">
-																{#if activeEditorKind === 'linked' && !readonly}
-																	<select class="h-7 max-md:h-11 rounded border bg-background px-1 text-xs" value={activeLinkedEntry?.postChange.target ?? 'stack'} onchange={(event) => { const value = (event.currentTarget as HTMLSelectElement).value as 'stack' | 'services'; updateLinkedPolicy({ target: value, action: value === 'services' ? 'restart' : activeLinkedEntry?.postChange.action ?? 'none', services: value === 'services' ? activeLinkedEntry?.postChange.services ?? [] : [] }); }}>
-																	<option value="stack">Whole stack</option>
-																	<option value="services">Selected services</option>
-																</select>
-																	<select class="h-7 max-md:h-11 rounded border bg-background px-1 text-xs" value={activeLinkedEntry?.postChange.action ?? 'none'} onchange={(event) => updateLinkedPolicy({ action: (event.currentTarget as HTMLSelectElement).value as LinkedFileAction })}>
-														{#if activeLinkedEntry?.postChange.target === 'stack'}<option value="none">No action</option>{/if}
-																		<option value="restart">Restart</option>
-																		{#if activeLinkedEntry?.postChange.target === 'stack'}<option value="ordered">Ordered restart</option>{/if}
-																		<option value="recreate">Recreate</option>
-																	</select>
-																	{#if activeLinkedEntry?.postChange.target === 'services'}
-												<select multiple class="h-7 max-md:h-11 max-w-36 rounded border bg-background px-1 text-xs" aria-label="Services affected by this file" onchange={(event) => updateLinkedPolicy({ services: [...(event.currentTarget as HTMLSelectElement).selectedOptions].map((option) => option.value) })}>
-																			{#each linkedComposeServices as service}
-																				<option value={service} selected={activeLinkedEntry.postChange.services.includes(service)}>{service}</option>
-																			{/each}
+									<div class="flex flex-wrap items-center justify-end gap-1.5">
+										{#if activeEditorKind === 'linked' && !readonly}
+											<span class="text-xs text-muted-foreground">When modified:</span>
+											<select aria-label="Action when linked file is modified" class="h-7 max-md:h-11 rounded border bg-background px-1 text-xs" value={activeLinkedEntry?.postChange.action ?? 'none'} onchange={(event) => { const action = (event.currentTarget as HTMLSelectElement).value as LinkedFileAction; updateLinkedPolicy(action === 'none' ? { action, target: 'stack', services: [] } : { action, ...(action === 'ordered' ? { target: 'stack' as const, services: [] } : {}) }); }}>
+												<option value="none">No action</option>
+												<option value="restart">Restart</option>
+												<option value="ordered">Ordered restart</option>
+												<option value="recreate">Recreate</option>
+											</select>
+											{#if activeLinkedEntry?.postChange.action !== 'none'}
+											<select aria-label="Scope affected when linked file is modified" class="h-7 max-md:h-11 rounded border bg-background px-1 text-xs" value={activeLinkedEntry?.postChange.target ?? 'stack'} onchange={(event) => { const value = (event.currentTarget as HTMLSelectElement).value as 'stack' | 'services'; updateLinkedPolicy({ target: value, services: value === 'services' ? linkedComposeServices.slice(0, 1) : [] }); }}>
+												<option value="stack">Whole stack</option>
+												<option value="services" disabled={activeLinkedEntry?.postChange.action === 'ordered' || linkedComposeServices.length === 0}>Selected services</option>
+											</select>
+											{#if activeLinkedEntry?.postChange.target === 'services'}
+												<select class="h-7 max-md:h-11 max-w-36 rounded border bg-background px-1 text-xs" aria-label="Service affected when linked file is modified" value={activeLinkedEntry?.postChange.services[0] ?? ''} onchange={(event) => updateLinkedPolicy({ services: [(event.currentTarget as HTMLSelectElement).value] })}>
+													{#each linkedComposeServices as service}
+														<option value={service}>{service}</option>
+													{/each}
 												</select>
 												{#if activeLinkedEntry.postChange.services.some((service) => !linkedComposeServices.includes(service))}
 													<span class="text-xs text-destructive">Missing service: {activeLinkedEntry.postChange.services.filter((service) => !linkedComposeServices.includes(service)).join(', ')}</span>
 												{/if}
-																	{/if}
-																	<button type="button" class="rounded border px-2 py-1 text-xs text-muted-foreground hover:text-destructive" onclick={unlinkActiveLinkedFile}>Unlink</button>
-																{/if}
+											{/if}
+											{/if}
+											<button type="button" class="rounded border px-2 py-1 text-xs text-muted-foreground hover:text-destructive" onclick={unlinkActiveLinkedFile}>Unlink</button>
+										{/if}
 																<Button
 															variant="ghost"
 															size="sm"
@@ -3590,7 +3665,7 @@
 												{displayEnvPath || (mode === 'create' ? 'Enter stack name above' : 'Not specified')}
 											</div>
 										</div>
-										{#if !readonly}
+										{#if mode === 'create' && !isGitView}
 											<button type="button" onclick={openEnvBrowser} class="shrink-0 rounded p-1.5 text-muted-foreground hover:bg-zinc-200 dark:hover:bg-zinc-700 max-md:flex max-md:h-11 max-md:w-11 max-md:items-center max-md:justify-center" title="Browse for env file">
 												<FolderOpen class="h-3.5 w-3.5" />
 											</button>

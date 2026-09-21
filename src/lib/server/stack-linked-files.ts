@@ -60,6 +60,12 @@ interface WorkspaceRoots {
 	git: boolean;
 }
 
+export interface DraftLinkedFilesInput {
+	linkedFiles?: unknown;
+	linkedFileContents?: unknown;
+	createdFolders?: unknown;
+}
+
 function revision(content: string): string {
 	return createHash('sha256').update(content, 'utf8').digest('hex');
 }
@@ -115,6 +121,83 @@ function relativePath(root: string, path: string): string {
 function resolveRootPath(root: string, path: string, label: string): string {
 	const normalized = normalizeLinkedPath(path);
 	return assertContained(join(root, ...normalized.split('/')), root, label);
+}
+
+function draftContents(value: unknown): Record<string, string> {
+	if (value === undefined || value === null) return {};
+	if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('linkedFileContents must be an object');
+	const contents: Record<string, string> = {};
+	for (const [path, content] of Object.entries(value)) {
+		contents[normalizeLinkedPath(path)] = typeof content === 'string' ? content : (() => { throw new Error(`Invalid text content for linked file: ${path}`); })();
+	}
+	return contents;
+}
+
+/** Validate a create-flow draft before the Compose writer mutates the workspace. */
+export function validateDraftLinkedFiles(
+	root: string,
+	input: DraftLinkedFilesInput,
+	options: { reservedPaths?: Iterable<string>; forceLocalOwnership?: boolean } = {}
+): { linkedFiles: LinkedStackFile[]; linkedFileContents: Record<string, string>; createdFolders: string[] } {
+	const linkedFiles = normalizeLinkedFiles(input.linkedFiles ?? [], options);
+	const linkedFileContents = draftContents(input.linkedFileContents);
+	const createdFolders = Array.isArray(input.createdFolders) ? input.createdFolders.map(normalizeLinkedPath) : input.createdFolders === undefined || input.createdFolders === null ? [] : (() => { throw new Error('createdFolders must be an array'); })();
+	const filePaths = new Set(linkedFiles.map((file) => file.path));
+	const reserved = new Set((options.reservedPaths ?? []).map(normalizeLinkedPath));
+	const folded = new Set<string>();
+	for (const path of [...createdFolders, ...linkedFiles.map((file) => file.path)]) {
+		const key = path.toLocaleLowerCase();
+		if (folded.has(key)) throw new Error(`Case-colliding draft path: ${path}`);
+		folded.add(key);
+		if (reserved.has(path)) throw new Error(`Draft path duplicates a configured Compose or environment file: ${path}`);
+	}
+	for (const path of Object.keys(linkedFileContents)) {
+		if (!filePaths.has(path)) throw new Error(`Content supplied for an unlinked file: ${path}`);
+		const content = linkedFileContents[path];
+		if (Buffer.byteLength(content, 'utf8') > MAX_LINKED_FILE_SIZE || content.includes('\0')) throw new Error(`Invalid text content for linked file: ${path}`);
+	}
+	for (const folder of createdFolders) {
+		const target = resolveRootPath(root, folder, 'Folder path');
+		if (existsSync(target) && !lstatSync(target).isDirectory()) throw new Error(`Folder path is occupied by a file: ${folder}`);
+	}
+	for (const file of linkedFiles) {
+		const target = resolveRootPath(root, file.path, 'Linked file path');
+		if (existsSync(target)) {
+			assertRegularText(target);
+		} else if (linkedFileContents[file.path] === undefined) {
+			throw new Error(`Linked file does not exist and has no staged content: ${file.path}`);
+		}
+	}
+	return { linkedFiles, linkedFileContents, createdFolders };
+}
+
+/** Publish a validated initial-deployment draft under an already resolved Compose root. */
+export function publishDraftLinkedFiles(
+	root: string,
+	input: DraftLinkedFilesInput,
+	options: { reservedPaths?: Iterable<string>; forceLocalOwnership?: boolean } = {}
+): { linkedFiles: LinkedStackFile[]; createdFolders: string[] } {
+	const draft = validateDraftLinkedFiles(root, input, options);
+	const createdDirectories: string[] = [];
+	try {
+		for (const folder of draft.createdFolders) {
+			const target = resolveRootPath(root, folder, 'Folder path');
+			if (!existsSync(target)) {
+				mkdirSync(target, { recursive: true });
+				createdDirectories.push(target);
+			}
+		}
+		const writes = draft.linkedFiles
+			.filter((file) => draft.linkedFileContents[file.path] !== undefined)
+			.map((file) => ({ root, path: file.path, content: draft.linkedFileContents[file.path] }));
+		publishAtomically(writes);
+		return { linkedFiles: draft.linkedFiles, createdFolders: draft.createdFolders };
+	} catch (error) {
+		for (const directory of createdDirectories.reverse()) {
+			try { rmSync(directory, { recursive: true, force: true }); } catch { /* best effort */ }
+		}
+		throw error;
+	}
 }
 
 async function resolveWorkspaceRoots(stackName: string, envId?: number | null): Promise<WorkspaceRoots> {

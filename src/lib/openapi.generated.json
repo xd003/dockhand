@@ -14418,6 +14418,84 @@
         ]
       }
     },
+    "/api/git/repositories/{id}/draft-files": {
+      "get": {
+        "operationId": "get_api_git_repositories_id_draft-files",
+        "tags": [
+          "git"
+        ],
+        "summary": "GET /api/git/repositories/{id}/draft-files (auto-generated — no @openapi annotation yet)",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Path parameter \"id\" (auto-detected from the handler's source - no @openapi annotation for this parameter yet)"
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Query parameter \"path\" (auto-detected from the handler's source - no @openapi annotation for this parameter yet)"
+          },
+          {
+            "name": "paths",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Query parameter \"paths\" (auto-detected from the handler's source - no @openapi annotation for this parameter yet)"
+          },
+          {
+            "name": "pending",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Query parameter \"pending\" (auto-detected from the handler's source - no @openapi annotation for this parameter yet)"
+          },
+          {
+            "name": "token",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Query parameter \"token\" (auto-detected from the handler's source - no @openapi annotation for this parameter yet)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "400": {
+            "description": "Error response (auto-detected status code — no @openapi annotation for this response yet)"
+          },
+          "403": {
+            "description": "Error response (auto-detected status code — no @openapi annotation for this response yet)"
+          },
+          "404": {
+            "description": "Error response (auto-detected status code — no @openapi annotation for this response yet)"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
     "/api/git/repositories/{id}/sync": {
       "get": {
         "operationId": "get_api_git_repositories_id_sync",
@@ -25540,6 +25618,23 @@
                     "type": "object",
                     "properties": {}
                   },
+                  "linkedFiles": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {}
+                    }
+                  },
+                  "linkedFileContents": {
+                    "type": "object",
+                    "properties": {}
+                  },
+                  "createdFolders": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
                   "envPath": {
                     "type": "string"
                   },
@@ -25588,6 +25683,13 @@
                   "string"
                 ],
                 "composeContents": {},
+                "linkedFiles": [
+                  {}
+                ],
+                "linkedFileContents": {},
+                "createdFolders": [
+                  "string"
+                ],
                 "envPath": "string",
                 "envVars": [
                   {}
@@ -25818,7 +25920,7 @@
         "tags": [
           "stacks"
         ],
-        "summary": "Get a stack's compose file content plus its resolved compose/env paths",
+        "summary": "Get a stack's compose file content plus its Dockhand staging compose/env paths",
         "parameters": [
           {
             "name": "name",

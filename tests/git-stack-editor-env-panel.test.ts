@@ -14,6 +14,12 @@ describe('Git stack draft editor', () => {
 		expect(modal).toContain("mobilePane === 'vars'");
 	});
 
+	test('shows compose variable markers without a successful-load toast', () => {
+		expect(modal).toContain('const variableMarkers = $derived.by<VariableMarker[]>');
+		expect(modal).toContain('{variableMarkers}');
+		expect(modal).not.toContain('toast.success(`Loaded ${count} variable');
+	});
+
 	test('keeps the settings tab selected after choosing a compose file', () => {
 		const loadEditor = modal.slice(modal.indexOf('async function loadGitDraftEditor()'), modal.indexOf('function applyGitDraftEditor'));
 		expect(loadEditor).not.toContain("activeTab = 'editor'");

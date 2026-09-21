@@ -19,6 +19,7 @@
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import CronEditor from '$lib/components/cron-editor.svelte';
 	import StackEnvVarsPanel from '$lib/components/StackEnvVarsPanel.svelte';
+	import type { VariableMarker } from '$lib/components/CodeEditor.svelte';
 	import SecretProviderPicker from '$lib/components/SecretProviderPicker.svelte';
 	import BranchCombobox from './BranchCombobox.svelte';
 	import IconPickerModal from './IconPickerModal.svelte';
@@ -593,6 +594,31 @@
 	let previewRequestSeq = 0;
 	let envValidationSeq = 0;
 	let skipNextEnvValidationEffect = false;
+	const envVarMap = $derived(new Map(envVars.filter((v) => v.key.trim()).map((v) => [v.key.trim(), v])));
+	const variableMarkers = $derived.by<VariableMarker[]>(() => {
+		if (!envValidation) return [];
+
+		return [
+			...envValidation.missing.map((name) => ({
+				name,
+				type: 'missing' as const,
+				value: envVarMap.get(name)?.value,
+				isSecret: envVarMap.get(name)?.isSecret
+			})),
+			...envValidation.required.filter((name) => !envValidation!.missing.includes(name)).map((name) => ({
+				name,
+				type: 'required' as const,
+				value: envVarMap.get(name)?.value,
+				isSecret: envVarMap.get(name)?.isSecret
+			})),
+			...envValidation.optional.map((name) => ({
+				name,
+				type: 'optional' as const,
+				value: envVarMap.get(name)?.value,
+				isSecret: envVarMap.get(name)?.isSecret
+			}))
+		];
+	});
 
 	// Resizable split panel state
 	let splitRatio = $state(60); // percentage for form panel
@@ -965,14 +991,9 @@
 			fileEnvVars = vars;
 			envVars = nextEnvVars;
 
-			const count = Object.keys(vars).length;
-			if (count === 0) {
+			if (Object.keys(vars).length === 0) {
 				toast.info('No environment variables found', {
 					description: 'No .env files found in the repository. Required compose variables will still be shown as missing.'
-				});
-			} else {
-				toast.success(`Loaded ${count} variable${count === 1 ? '' : 's'}`, {
-					description: 'You can now customize values before deploying'
 				});
 			}
 
@@ -1770,6 +1791,7 @@
 							linkedEntries={draftLinkedEntries}
 							createdFolders={draftFolders}
 							folderWarning="Empty folders are local only because Git does not track directories."
+							{variableMarkers}
 							onChange={applyGitDraftEditor}
 							onRequestLink={requestGitDraftLink}
 							canLink={draftHasLinkableFile || draftLinkedEntries.some((entry) => entry.path.split('/').pop()?.toLocaleLowerCase() !== '.env')}

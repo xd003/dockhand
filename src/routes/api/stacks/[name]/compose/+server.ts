@@ -58,7 +58,8 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 			composePaths: result.composePaths?.length ? result.composePaths : null,
 			envPath: result.envPath,
 			suggestedEnvPath: result.suggestedEnvPath,
-			remoteComposePath
+			remoteComposePath,
+			remoteStackDir: remotePaths.remoteStackDir
 		});
 	} catch (error: any) {
 		console.error(`Error getting compose file for stack ${name}:`, error);

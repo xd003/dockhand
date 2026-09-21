@@ -72,7 +72,7 @@ async function readWorkspace(stackName: string, envId: number | undefined) {
 
 /**
  * @openapi
- * summary: List a stack's Compose and explicitly linked configuration files
+ * summary: List a stack's Compose and explicitly linked managed files
  * path: name:string The stack name
  * query: env:integer Environment id
  * resp-403: Permission denied (needs stacks:view)
@@ -123,13 +123,7 @@ export const POST: RequestHandler = async ({ params, request, url, cookies, ...e
 		}
 		let result: unknown;
 		if (operation === 'link') {
-			const { workspace, git } = await readWorkspace(params.name, envId);
-			let ownership: 'local' | 'git' | undefined;
-			if (git) {
-				const classification = (await classifyGitFiles(git.repoPath, [git.relativePath(path)], git.credential))[0];
-				ownership = classification.tracked ? 'git' : 'local';
-			}
-			result = await linkStackFile(params.name, envId, path, postChange!, ownership);
+			result = await linkStackFile(params.name, envId, path, postChange!, 'local');
 		} else if (operation === 'create-file') {
 			result = await createLinkedFile(params.name, envId, path, typeof body.content === 'string' ? body.content : '', postChange!);
 		} else if (operation === 'create-folder') {

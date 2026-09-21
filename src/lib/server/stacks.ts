@@ -87,6 +87,7 @@ import { cleanPem } from '$lib/utils/pem';
 import { rewriteComposeVolumePaths, getHostDataDir } from './host-path';
 import { getOrderValue } from './container-labels';
 import { pendingRowsToClear } from './pending-updates-core';
+import { normalizeBaseDir, stackDirIn } from './stack-paths';
 import { buildDockhandOverrideFile } from './dockhand-override-file';
 import { prepareHawserStackDirAdoption, type HawserStackDirAdoptionRequest } from './hawser-stack-adoption';
 
@@ -782,8 +783,7 @@ type HawserEnvLike = { connectionType?: string | null };
 async function resolveHawserStackDirPair(
 	stackName: string,
 	environmentId: number,
-	env?: HawserEnvLike | null,
-	hints?: { workingDir: string | null; configFiles: string[] | null } | null
+	env?: HawserEnvLike | null
 ): Promise<{ stagingStackDir: string; remoteStackDir: string } | null> {
 	const resolvedEnv = env ?? (await getEnvironment(environmentId));
 	if (!isHawserConnection(resolvedEnv)) return null;
@@ -792,15 +792,15 @@ async function resolveHawserStackDirPair(
 		(await findStackDir(stackName, environmentId)) ?? (await getStackDir(stackName, environmentId))
 	);
 
-	let remoteStackDir: string | null = null;
-	const pathHints = hints ?? (await getStackPathHints(stackName, environmentId));
-	if (pathHints.workingDir) {
-		remoteStackDir = pathHints.workingDir;
-	} else if (pathHints.configFiles?.length) {
-		remoteStackDir = dirname(pathHints.configFiles[0]);
+	let stacksDir: string | undefined;
+	if (resolvedEnv?.connectionType === 'hawser-edge') {
+		const { getEdgeConnectionInfo } = await import('./hawser');
+		stacksDir = getEdgeConnectionInfo(environmentId)?.stacksDir;
+	} else {
+		const { getHawserInfo } = await import('./docker');
+		stacksDir = (await getHawserInfo(environmentId))?.stacksDir;
 	}
-
-	if (!remoteStackDir) return null;
+	const remoteStackDir = stackDirIn(stacksDir?.trim() || '/data/stacks', stackName);
 	return { stagingStackDir, remoteStackDir: resolve(remoteStackDir) };
 }
 
@@ -813,11 +813,10 @@ export async function remapHawserStagingDisplayPaths(
 	stackName: string,
 	environmentId: number | null | undefined,
 	paths: { composePath: string | null; composePaths: string[] },
-	env?: HawserEnvLike | null,
-	hints?: { workingDir: string | null; configFiles: string[] | null } | null
-): Promise<{ composePath: string | null; composePaths: string[] }> {
-	if (!paths.composePath && paths.composePaths.length === 0) return paths;
-	if (environmentId == null) return paths;
+	env?: HawserEnvLike | null
+): Promise<{ composePath: string | null; composePaths: string[]; remoteStackDir: string | null }> {
+	if (!paths.composePath && paths.composePaths.length === 0) return { ...paths, remoteStackDir: null };
+	if (environmentId == null) return { ...paths, remoteStackDir: null };
 
 	const pathList =
 		paths.composePaths.length > 0
@@ -826,20 +825,21 @@ export async function remapHawserStagingDisplayPaths(
 				? [paths.composePath]
 				: [];
 
-	const pair = await resolveHawserStackDirPair(stackName, environmentId, env, hints);
-	if (!pair) return paths;
+	const pair = await resolveHawserStackDirPair(stackName, environmentId, env);
+	if (!pair) return { ...paths, remoteStackDir: null };
 
 	const { stagingStackDir, remoteStackDir } = pair;
 	const usesStaging = pathList.some((p) => {
 		const resolved = resolve(p);
 		return isPathUnderRoot(resolved, stagingStackDir) || isManagedStagingDir(dirname(resolved));
 	});
-	if (!usesStaging) return paths;
+	if (!usesStaging) return { ...paths, remoteStackDir };
 
 	const remapped = remapPathsBetweenDirs(stagingStackDir, remoteStackDir, pathList);
 	return {
 		composePath: remapped[0] ?? null,
-		composePaths: remapped
+		composePaths: remapped,
+		remoteStackDir
 	};
 }
 

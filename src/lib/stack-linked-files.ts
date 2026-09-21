@@ -1,5 +1,3 @@
-import { createHash } from 'node:crypto';
-
 export const LINKED_FILES_VERSION = 1;
 export const MAX_LINKED_FILE_SIZE = 10 * 1024 * 1024;
 
@@ -134,10 +132,6 @@ export function parseLinkedFiles(value: string | null | undefined): LinkedStackF
 
 export function parseLinkedFilesUpdate(value: unknown): LinkedStackFile[] {
 	return normalizeLinkedFiles(value);
-}
-
-export function linkedFileRevision(content: string): string {
-	return createHash('sha256').update(content, 'utf8').digest('hex');
 }
 
 export function linkedFileLanguage(path: string): string {

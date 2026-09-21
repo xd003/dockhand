@@ -4417,6 +4417,7 @@ export async function getHawserInfo(envId: number): Promise<{
 	hawserVersion: string;
 	mode: string;
 	uptime: number;
+	stacksDir?: string;
 } | null> {
 	for (let attempt = 0; attempt < 2; attempt++) {
 		try {

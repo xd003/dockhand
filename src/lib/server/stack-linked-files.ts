@@ -2,9 +2,10 @@ import { chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, mkdt
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { getStackComposeFile, getStackDir, withStackLock } from './stacks';
-import { getStackLinkedFiles, getStackSource, updateStackSource } from './db';
+import { getStackComposePaths, getStackLinkedFiles, getStackSource, updateStackSource } from './db';
 import { getRepoPath } from './git';
 import { getStackRepoPath } from './git-stack';
+import { repoFilePath } from './git-url-safety';
 import { isProtectedPath } from './fs-guard';
 import {
 	MAX_LINKED_FILE_SIZE,
@@ -58,6 +59,12 @@ interface WorkspaceRoots {
 	composePath: string;
 	linkedFiles: LinkedStackFile[];
 	git: boolean;
+}
+
+export interface DraftLinkedFilesInput {
+	linkedFiles?: unknown;
+	linkedFileContents?: unknown;
+	createdFolders?: unknown;
 }
 
 function revision(content: string): string {
@@ -117,6 +124,83 @@ function resolveRootPath(root: string, path: string, label: string): string {
 	return assertContained(join(root, ...normalized.split('/')), root, label);
 }
 
+function draftContents(value: unknown): Record<string, string> {
+	if (value === undefined || value === null) return {};
+	if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('linkedFileContents must be an object');
+	const contents: Record<string, string> = {};
+	for (const [path, content] of Object.entries(value)) {
+		contents[normalizeLinkedPath(path)] = typeof content === 'string' ? content : (() => { throw new Error(`Invalid text content for linked file: ${path}`); })();
+	}
+	return contents;
+}
+
+/** Validate a create-flow draft before the Compose writer mutates the workspace. */
+export function validateDraftLinkedFiles(
+	root: string,
+	input: DraftLinkedFilesInput,
+	options: { reservedPaths?: Iterable<string>; forceLocalOwnership?: boolean } = {}
+): { linkedFiles: LinkedStackFile[]; linkedFileContents: Record<string, string>; createdFolders: string[] } {
+	const linkedFiles = normalizeLinkedFiles(input.linkedFiles ?? [], options);
+	const linkedFileContents = draftContents(input.linkedFileContents);
+	const createdFolders = Array.isArray(input.createdFolders) ? input.createdFolders.map(normalizeLinkedPath) : input.createdFolders === undefined || input.createdFolders === null ? [] : (() => { throw new Error('createdFolders must be an array'); })();
+	const filePaths = new Set(linkedFiles.map((file) => file.path));
+	const reserved = new Set((options.reservedPaths ?? []).map(normalizeLinkedPath));
+	const folded = new Set<string>();
+	for (const path of [...createdFolders, ...linkedFiles.map((file) => file.path)]) {
+		const key = path.toLocaleLowerCase();
+		if (folded.has(key)) throw new Error(`Case-colliding draft path: ${path}`);
+		folded.add(key);
+		if (reserved.has(path)) throw new Error(`Draft path duplicates a configured Compose or environment file: ${path}`);
+	}
+	for (const path of Object.keys(linkedFileContents)) {
+		if (!filePaths.has(path)) throw new Error(`Content supplied for an unlinked file: ${path}`);
+		const content = linkedFileContents[path];
+		if (Buffer.byteLength(content, 'utf8') > MAX_LINKED_FILE_SIZE || content.includes('\0')) throw new Error(`Invalid text content for linked file: ${path}`);
+	}
+	for (const folder of createdFolders) {
+		const target = resolveRootPath(root, folder, 'Folder path');
+		if (existsSync(target) && !lstatSync(target).isDirectory()) throw new Error(`Folder path is occupied by a file: ${folder}`);
+	}
+	for (const file of linkedFiles) {
+		const target = resolveRootPath(root, file.path, 'Linked file path');
+		if (existsSync(target)) {
+			assertRegularText(target);
+		} else if (linkedFileContents[file.path] === undefined) {
+			throw new Error(`Linked file does not exist and has no staged content: ${file.path}`);
+		}
+	}
+	return { linkedFiles, linkedFileContents, createdFolders };
+}
+
+/** Publish a validated initial-deployment draft under an already resolved Compose root. */
+export function publishDraftLinkedFiles(
+	root: string,
+	input: DraftLinkedFilesInput,
+	options: { reservedPaths?: Iterable<string>; forceLocalOwnership?: boolean } = {}
+): { linkedFiles: LinkedStackFile[]; createdFolders: string[] } {
+	const draft = validateDraftLinkedFiles(root, input, options);
+	const createdDirectories: string[] = [];
+	try {
+		for (const folder of draft.createdFolders) {
+			const target = resolveRootPath(root, folder, 'Folder path');
+			if (!existsSync(target)) {
+				mkdirSync(target, { recursive: true });
+				createdDirectories.push(target);
+			}
+		}
+		const writes = draft.linkedFiles
+			.filter((file) => draft.linkedFileContents[file.path] !== undefined)
+			.map((file) => ({ root, path: file.path, content: draft.linkedFileContents[file.path] }));
+		publishAtomically(writes);
+		return { linkedFiles: draft.linkedFiles, createdFolders: draft.createdFolders };
+	} catch (error) {
+		for (const directory of createdDirectories.reverse()) {
+			try { rmSync(directory, { recursive: true, force: true }); } catch { /* best effort */ }
+		}
+		throw error;
+	}
+}
+
 async function resolveWorkspaceRoots(stackName: string, envId?: number | null): Promise<WorkspaceRoots> {
 	const source = await getStackSource(stackName, envId);
 	if (!source) throw new Error(`Stack not found: ${stackName}`);
@@ -126,22 +210,20 @@ async function resolveWorkspaceRoots(stackName: string, envId?: number | null): 
 	}
 	const git = source.sourceType === 'git';
 	let gitRoot: string | null = null;
-	let repoPath: string | null = null;
+	let composePaths = (compose.composePaths?.length ? compose.composePaths : [compose.composePath]).map((path) => resolve(path));
+	let envPath = compose.envPath ? resolve(compose.envPath) : null;
 	if (git && source.gitStack) {
-		repoPath = source.gitStack.engine === 'centralized'
+		const repoPath = source.gitStack.engine === 'centralized'
 			? getRepoPath(source.gitStack.repository.name)
 			: await getStackRepoPath(source.gitStack.id, source.gitStack.stackName, source.gitStack.environmentId);
-		gitRoot = resolve(compose.stackDir);
-		// getStackComposeFile already resolves the selected primary file inside the
-		// operational checkout; linked paths are relative to that file's directory.
-		if (!isInside(gitRoot, resolve(repoPath))) throw new Error('Git Compose directory is outside the repository checkout');
+		composePaths = getStackComposePaths(source.gitStack).map((path) => repoFilePath(repoPath, path, 'Compose path'));
+		gitRoot = dirname(composePaths[0]);
+		envPath = source.gitStack.envFilePath ? repoFilePath(repoPath, source.gitStack.envFilePath, 'Env file path') : null;
 	}
 	const localStackRoot = git ? await getStackDir(stackName, envId) : compose.stackDir;
-	const localRoot = git && repoPath ? join(localStackRoot, relative(repoPath, gitRoot!)) : localStackRoot;
-	const composePaths = (compose.composePaths?.length ? compose.composePaths : [compose.composePath]).map((path) => resolve(path));
-	const envPath = compose.envPath ? resolve(compose.envPath) : null;
+	const localRoot = localStackRoot;
 	const linkedFiles = getStackLinkedFiles(source).map((file) => git ? file : { ...file, ownership: 'local' as const });
-	return { localRoot: resolve(localRoot), gitRoot, composePaths, envPath, composePath: resolve(compose.composePath), linkedFiles, git };
+	return { localRoot: resolve(localRoot), gitRoot, composePaths, envPath, composePath: composePaths[0], linkedFiles, git };
 }
 
 function parseComposeServices(content: string): string[] {
@@ -227,7 +309,7 @@ export async function listStackFileDirectory(
 ): Promise<{ path: string; rootPath: string; parent: string | null; entries: StackFileDirectoryEntry[] }> {
 	return withStackLock(stackName, async () => {
 		const roots = await resolveWorkspaceRoots(stackName, envId);
-		const rootPath = roots.git ? roots.gitRoot! : roots.localRoot;
+		const rootPath = roots.localRoot;
 		const directory = requestedPath ? assertContained(requestedPath, rootPath, 'Directory') : rootPath;
 		if (!existsSync(directory) || !lstatSync(directory).isDirectory()) throw new Error('Directory not found');
 		const entries = readdirSync(directory, { withFileTypes: true })
@@ -361,10 +443,11 @@ export async function linkStackFile(stackName: string, envId: number | null | un
 	return withStackLock(stackName, async () => {
 		const roots = await resolveWorkspaceRoots(stackName, envId);
 		const normalizedPath = normalizeLinkedPath(path);
-		const root = roots.gitRoot ?? roots.localRoot;
+		const resolvedOwnership = ownership ?? 'local';
+		const root = resolvedOwnership === 'git' && roots.gitRoot ? roots.gitRoot : roots.localRoot;
 		const target = resolveRootPath(root, normalizedPath, 'Linked file path');
 		const data = assertRegularText(target);
-		const linked = normalizeLinkedFile({ path: normalizedPath, ownership: ownership ?? (roots.git ? 'git' : 'local'), postChange });
+		const linked = normalizeLinkedFile({ path: normalizedPath, ownership: resolvedOwnership, postChange });
 		const next = normalizeLinkedFiles([...roots.linkedFiles, linked], { reservedPaths: reservedPaths(roots), forceLocalOwnership: !roots.git });
 		const localTarget = resolveRootPath(roots.localRoot, normalizedPath, 'Linked file path');
 		const previous = existsSync(localTarget) ? readFileSync(localTarget) : null;

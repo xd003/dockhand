@@ -9,6 +9,9 @@ import { createJobResponse } from '$lib/server/sse';
 import { createRunRecorder } from '$lib/server/deploy-run-record';
 import { hashComposeContent, hashEnvFingerprint } from '$lib/server/deploy-run-record-core';
 import { parseEnvFileContent } from '$lib/server/git';
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { getStackDir } from '$lib/server/stacks';
+import { publishDraftLinkedFiles, validateDraftLinkedFiles } from '$lib/server/stack-linked-files';
 import type { RequestHandler } from './$types';
 
 /**
@@ -90,7 +93,7 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
  * summary: Create and (optionally) deploy a compose stack
  * description: Writes the compose + .env to the stack dir, stores secrets in the DB, and with start deploys it. Can bind a secret provider. Target environment comes from the env query param, or from envId/environmentId in the body when the query is absent.
  * query: env:integer Target environment id (takes precedence over envId/environmentId in the body)
- * body: {name:string!, compose:string!, composePath:string, composePaths:array<string>, composeContents:object, envPath:string, envVars:array<object>, rawEnvContent:string, secretProviderId:integer, start:boolean, envId:integer, environmentId:integer, pull:boolean, build:boolean, forceRecreate:boolean}
+ * body: {name:string!, compose:string!, composePath:string, composePaths:array<string>, composeContents:object, linkedFiles:array<object>, linkedFileContents:object, createdFolders:array<string>, envPath:string, envVars:array<object>, rawEnvContent:string, secretProviderId:integer, start:boolean, envId:integer, environmentId:integer, pull:boolean, build:boolean, forceRecreate:boolean}
  * resp-400: Invalid request (e.g. missing name/compose, or secretProviderId wrong type)
  * resp-403: Permission denied (needs stacks:create; binding a secret provider also needs secrets:view)
  * resp-500: Failed to create or deploy the stack
@@ -124,7 +127,7 @@ export const POST: RequestHandler = async (event) => {
 	}
 
 	try {
-		const { name, compose, composeContents, start, envVars, rawEnvContent, composePath, composePaths, envPath, secretProviderId, pull, build, forceRecreate } = body;
+		const { name, compose, composeContents, linkedFiles, linkedFileContents, createdFolders, start, envVars, rawEnvContent, composePath, composePaths, envPath, secretProviderId, pull, build, forceRecreate } = body;
 
 		if (!name || typeof name !== 'string') {
 			return json({ error: 'Stack name is required' }, { status: 400 });
@@ -148,6 +151,25 @@ export const POST: RequestHandler = async (event) => {
 			return json({ error: 'composePath must match composePaths[0] (the primary compose file)' }, { status: 400 });
 		}
 		const effectiveComposePath = composePath || primaryFromPaths;
+		const draftRoot = effectiveComposePath && isAbsolute(effectiveComposePath)
+			? dirname(resolve(effectiveComposePath))
+			: await getStackDir(name, envIdNum);
+		const draftRelativePath = (path: string): string => {
+			if (!isAbsolute(path)) return path;
+			const rel = relative(draftRoot, resolve(path)).split(sep).join('/');
+			if (!rel || rel.startsWith('../') || rel === '..') throw new Error(`Draft path must remain inside the Compose directory: ${path}`);
+			return rel;
+		};
+		let normalizedDraft: ReturnType<typeof validateDraftLinkedFiles>;
+		try {
+			const reservedPaths = [
+				...(Array.isArray(composePaths) ? composePaths : effectiveComposePath ? [effectiveComposePath] : []),
+				...(typeof envPath === 'string' && envPath.trim() ? [envPath] : [])
+			].map(draftRelativePath);
+			normalizedDraft = validateDraftLinkedFiles(draftRoot, { linkedFiles, linkedFileContents, createdFolders }, { reservedPaths, forceLocalOwnership: true });
+		} catch (error) {
+			return json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 });
+		}
 
 		if (
 			'secretProviderId' in body &&
@@ -185,6 +207,7 @@ export const POST: RequestHandler = async (event) => {
 			if (!result.success) {
 				return json({ error: result.error }, { status: 400 });
 			}
+			const published = publishDraftLinkedFiles(result.composePath ? dirname(result.composePath) : draftRoot, normalizedDraft, { reservedPaths: [], forceLocalOwnership: true });
 
 			// Save environment variables
 			// - rawEnvContent → .env file (non-secrets with comments)
@@ -212,7 +235,8 @@ export const POST: RequestHandler = async (event) => {
 				composePath: effectiveComposePath || result.composePath || undefined,
 				composePaths: composePaths || undefined,
 				envPath: envPath || undefined,
-				secretProviderId
+				secretProviderId,
+				linkedFiles: published.linkedFiles
 			});
 
 			// Audit log
@@ -224,12 +248,14 @@ export const POST: RequestHandler = async (event) => {
 		// ALWAYS save compose file first - deployStack expects it to exist
 		const saveResult = await saveStackComposeFile(name, compose, true, envIdNum, {
 			composePath: effectiveComposePath || undefined,
+			composePaths: composePaths || undefined,
 			composeContents: composeContents || undefined,
 			envPath: envPath || undefined
 		});
 		if (!saveResult.success) {
 			return json({ error: saveResult.error }, { status: 400 });
 		}
+		const published = publishDraftLinkedFiles(saveResult.composePath ? dirname(saveResult.composePath) : draftRoot, normalizedDraft, { reservedPaths: [], forceLocalOwnership: true });
 
 		// Save environment variables BEFORE deploying so they're available during start
 		if (rawEnvContent || (envVars && Array.isArray(envVars) && envVars.length > 0)) {
@@ -257,7 +283,8 @@ export const POST: RequestHandler = async (event) => {
 			composePath: effectiveComposePath || saveResult.composePath || undefined,
 			composePaths: composePaths || undefined,
 			envPath: envPath || undefined,
-			secretProviderId
+			secretProviderId,
+			linkedFiles: published.linkedFiles
 		});
 
 		// This endpoint has no requireComposeFile() call to hash the way the

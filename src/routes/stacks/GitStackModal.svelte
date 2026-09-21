@@ -19,6 +19,7 @@
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import CronEditor from '$lib/components/cron-editor.svelte';
 	import StackEnvVarsPanel from '$lib/components/StackEnvVarsPanel.svelte';
+	import type { VariableMarker } from '$lib/components/CodeEditor.svelte';
 	import SecretProviderPicker from '$lib/components/SecretProviderPicker.svelte';
 	import BranchCombobox from './BranchCombobox.svelte';
 	import IconPickerModal from './IconPickerModal.svelte';
@@ -33,6 +34,9 @@
 	import { focusFirstInput } from '$lib/utils';
 	import { readJobResponse } from '$lib/utils/sse-fetch';
 	import FilesystemBrowser from './FilesystemBrowser.svelte';
+	import StackFileEditor from './StackFileEditor.svelte';
+	import type { StackEditorEntry, StackFileEditorDraft } from '$lib/stack-file-editor';
+	import type { LinkedStackFile } from '$lib/stack-linked-files';
 	import WebhookSecretInput from '$lib/components/WebhookSecretInput.svelte';
 	import WebhookUrlCopyField from '$lib/components/WebhookUrlCopyField.svelte';
 	import { ensureWebhookSecret, webhookSecretValidationError } from '$lib/utils/webhook-secret';
@@ -144,7 +148,7 @@
 
 	// Tabs: Settings (the deploy form), Deploys (recorded run history, edit mode),
 	// and Backups (edit mode + feature flag only).
-	let activeTab = $state<'settings' | 'deploys' | 'backups'>('settings');
+	let activeTab = $state<'settings' | 'editor' | 'deploys' | 'backups'>('settings');
 	// Bumped after a deploy finishes so the Deploys tab re-fetches the new run.
 	let deploysReloadKey = $state(0);
 	// Deploys tab badge tally (total + ok/failed). Fetched cheaply when the modal
@@ -242,12 +246,13 @@
 		formComposePaths = [...formComposePaths, ''];
 	}
 
-	function gitRemoveComposePath(index: number) {
+	async function gitRemoveComposePath(index: number) {
 		if (formComposePaths.length <= 1) return;
 		clearPreviewState();
 		const newPaths = formComposePaths.filter((_, i) => i !== index);
 		formComposePaths = newPaths;
 		if (index === 0) formComposePath = newPaths[0] || 'compose.yaml';
+		if (!gitStack) await populateEnvVars();
 	}
 
 	function gitMovePathUp(index: number) {
@@ -298,9 +303,13 @@
 	}
 
 	let gitBrowseForRowIndex = $state<number | null>(null);
+	let gitBrowserPurpose = $state<'compose' | 'link'>('compose');
+	let gitBrowserInitialPath = $state('');
 
 	async function gitBrowseForRow(index: number) {
 		gitBrowserError = null;
+		gitBrowserPurpose = 'compose';
+		gitBrowserInitialPath = '';
 		gitBrowseForRowIndex = index;
 		await openGitRepoBrowser();
 	}
@@ -336,6 +345,7 @@
 					.replace(/^-|-$/g, '');
 			}
 		}
+		if (!gitStack) await loadGitDraftEditor();
 	}
 
 	async function addDetectedGitComposeOverrides(relativePath: string) {
@@ -351,6 +361,10 @@
 				relativePath,
 				entries.filter((entry: any) => entry.type !== 'directory').map((entry: any) => entry.name)
 			);
+			const composeNames = new Set([...formComposePaths, ...overrides].map((path) => path.split('/').pop()?.toLocaleLowerCase()));
+			draftHasLinkableFile = entries.some((entry: any) =>
+				entry.type !== 'directory' && entry.name.toLocaleLowerCase() !== '.env' && !composeNames.has(entry.name.toLocaleLowerCase())
+			);
 			if (overrides.length === 0 || formComposePaths[0] !== relativePath) return;
 			const rest = formComposePaths.slice(1).filter((path) => !overrides.includes(path));
 			formComposePaths = [relativePath, ...overrides, ...rest];
@@ -365,7 +379,7 @@
 		if (gitStack?.engine === 'stack' && formRepositoryId === gitStack.repositoryId) {
 			params.set('stackId', String(gitStack.id));
 		}
-		else if (temporaryCloneToken) params.set('pending', temporaryCloneToken);
+		else if (!isCentralizedMode && temporaryCloneToken) params.set('pending', temporaryCloneToken);
 		const query = params.toString();
 		gitBrowserApiUrl = `/api/git/repositories/${formRepositoryId}/browse${query ? `?${query}` : ''}`;
 		gitBrowserRootPath = '';
@@ -404,6 +418,90 @@
 			cloneError = error instanceof Error ? error.message : 'Failed to clone repository';
 			return false;
 		}
+	}
+
+	async function loadGitDraftEditor() {
+		if (gitStack || !formRepositoryId) return;
+		const seq = ++draftLoadSeq;
+		if (!isCentralizedMode && !(await prepareTemporaryClone(formRepositoryId, formBranch || selectedRepo?.branch))) return;
+		if (seq !== draftLoadSeq || (!isCentralizedMode && !temporaryCloneToken)) return;
+		const paths = formComposePaths.map((path) => path.trim()).filter(Boolean);
+		if (paths.length === 0) return;
+		try {
+			const query = new URLSearchParams(isCentralizedMode ? { shared: '1' } : { token: temporaryCloneToken! });
+			for (const path of paths) query.append('path', path);
+			const response = await fetch(`/api/git/repositories/${formRepositoryId}/draft-files?${query}`);
+			const data = await response.json();
+			if (seq !== draftLoadSeq) return;
+			if (!response.ok) throw new Error(data.error || 'Failed to load Compose files');
+			const entries = Array.isArray(data.entries) ? data.entries : [];
+			const contents = Object.fromEntries(entries.map((entry: any) => [entry.path, entry.content]));
+			draftComposeContents = contents;
+			draftOriginalComposeContents = { ...contents };
+			draftComposeRevisions = Object.fromEntries(entries.filter((entry: any) => typeof entry.revision === 'string').map((entry: any) => [entry.path, entry.revision]));
+			draftComposeClassifications = entries.map((entry: any) => ({ path: entry.path, tracked: entry.tracked === true, ignored: entry.ignored === true }));
+			draftLinkedEntries = [];
+			draftFolders = [];
+			draftEditorDirty = false;
+			draftEditorReady = true;
+			await populateEnvVars();
+		} catch (error) {
+			draftEditorReady = false;
+			formError = error instanceof Error ? error.message : 'Failed to load Compose files';
+		}
+	}
+
+	function applyGitDraftEditor(draft: StackFileEditorDraft) {
+		formComposePaths = [...draft.composePaths];
+		formComposePath = formComposePaths[0] || 'compose.yaml';
+		draftComposeContents = { ...draft.composeContents };
+		draftLinkedEntries = draft.linkedFiles.map((file) => {
+			const previous = draftLinkedEntries.find((entry) => entry.path === file.path);
+			return {
+				path: file.path,
+				name: file.path.split('/').pop() ?? file.path,
+				kind: 'linked',
+				content: draft.linkedFileContents[file.path] ?? previous?.content ?? '',
+				originalContent: previous?.originalContent ?? '',
+				language: file.path.includes('.') ? 'text' : 'text',
+				ownership: file.ownership,
+				tracked: draft.classifications.find((entry) => entry.path === file.path)?.tracked,
+				ignored: draft.classifications.find((entry) => entry.path === file.path)?.ignored,
+				postChange: file.postChange,
+				originalPostChange: previous?.originalPostChange ?? structuredClone(file.postChange),
+				revision: draft.revisions[file.path] ?? previous?.revision
+			};
+		});
+		draftFolders = [...draft.createdFolders];
+		draftEditorDirty = true;
+		previewedComposePaths = [...draft.composePaths];
+		previewedComposeContents = { ...draft.composeContents };
+		previewedComposeContent = draft.composeContents[draft.composePaths[0]] ?? '';
+	}
+
+	async function requestGitDraftLink() {
+		if (!formRepositoryId || (!isCentralizedMode && !temporaryCloneToken)) return;
+		gitBrowserPurpose = 'link';
+		gitBrowseForRowIndex = null;
+		gitBrowserInitialPath = (formComposePaths[0] || formComposePath).replace(/\/[^/]*$/, '');
+		configureGitBrowser();
+		showGitRepoBrowser = true;
+	}
+
+	async function selectGitDraftLink(path: string) {
+		if (!formRepositoryId || (!isCentralizedMode && !temporaryCloneToken)) return;
+		const composeDir = (formComposePaths[0] || formComposePath).replace(/\/[^/]*$/, '');
+		const relativePath = composeDir && path.startsWith(`${composeDir}/`) ? path.slice(composeDir.length + 1) : path;
+		const query = new URLSearchParams(isCentralizedMode ? { shared: '1', path } : { token: temporaryCloneToken!, path });
+		const response = await fetch(`/api/git/repositories/${formRepositoryId}/draft-files?${query}`);
+		const data = await response.json().catch(() => ({}));
+		if (!response.ok || !data.entries?.[0]) {
+			toast.error(data.error || 'Failed to load configuration file');
+			return;
+		}
+		const entry = data.entries[0];
+		draftEditorRef?.addLinkedFile({ path: relativePath, content: entry.content, ownership: 'git', tracked: entry.tracked, ignored: entry.ignored, revision: entry.revision });
+		showGitRepoBrowser = false;
 	}
 
 	let formBuildOnDeploy = $state(false);
@@ -496,6 +594,31 @@
 	let previewRequestSeq = 0;
 	let envValidationSeq = 0;
 	let skipNextEnvValidationEffect = false;
+	const envVarMap = $derived(new Map(envVars.filter((v) => v.key.trim()).map((v) => [v.key.trim(), v])));
+	const variableMarkers = $derived.by<VariableMarker[]>(() => {
+		if (!envValidation) return [];
+
+		return [
+			...envValidation.missing.map((name) => ({
+				name,
+				type: 'missing' as const,
+				value: envVarMap.get(name)?.value,
+				isSecret: envVarMap.get(name)?.isSecret
+			})),
+			...envValidation.required.filter((name) => !envValidation!.missing.includes(name)).map((name) => ({
+				name,
+				type: 'required' as const,
+				value: envVarMap.get(name)?.value,
+				isSecret: envVarMap.get(name)?.isSecret
+			})),
+			...envValidation.optional.map((name) => ({
+				name,
+				type: 'optional' as const,
+				value: envVarMap.get(name)?.value,
+				isSecret: envVarMap.get(name)?.isSecret
+			}))
+		];
+	});
 
 	// Resizable split panel state
 	let splitRatio = $state(60); // percentage for form panel
@@ -514,6 +637,17 @@
 	let temporaryCloneToken = $state<string | null>(null);
 	let temporaryCloneRepositoryId = $state<number | null>(null);
 	let temporaryCloneBranch = $state<string | null>(null);
+	let draftEditorRef = $state<StackFileEditor | null>(null);
+	let draftEditorReady = $state(false);
+	let draftHasLinkableFile = $state(false);
+	let draftEditorDirty = $state(false);
+	let draftComposeContents = $state<Record<string, string>>({});
+	let draftOriginalComposeContents = $state<Record<string, string>>({});
+	let draftComposeRevisions = $state<Record<string, string>>({});
+	let draftComposeClassifications = $state<Array<{ path: string; tracked: boolean; ignored: boolean }>>([]);
+	let draftLinkedEntries = $state<StackEditorEntry[]>([]);
+	let draftFolders = $state<string[]>([]);
+	let draftLoadSeq = 0;
 	/** Tracks whether formComposePath was set by the Browse button (vs. typed manually) */
 	let formComposePathBrowsed = $state(false);
 
@@ -855,14 +989,9 @@
 			fileEnvVars = vars;
 			envVars = nextEnvVars;
 
-			const count = Object.keys(vars).length;
-			if (count === 0) {
+			if (Object.keys(vars).length === 0) {
 				toast.info('No environment variables found', {
 					description: 'No .env files found in the repository. Required compose variables will still be shown as missing.'
-				});
-			} else {
-				toast.success(`Loaded ${count} variable${count === 1 ? '' : 's'}`, {
-					description: 'You can now customize values before deploying'
 				});
 			}
 
@@ -894,6 +1023,16 @@
 	async function resetForm() {
 		// Clear state BEFORE async loads to avoid race conditions
 		activeTab = 'settings';
+		draftEditorReady = false;
+		draftHasLinkableFile = false;
+		draftEditorDirty = false;
+		draftComposeContents = {};
+		draftOriginalComposeContents = {};
+		draftComposeRevisions = {};
+		draftComposeClassifications = [];
+		draftLinkedEntries = [];
+		draftFolders = [];
+		draftLoadSeq++;
 		// Reset the deploy-output overlay so a previous run's window (bound to
 		// outputOpen) can't reappear over a freshly opened modal -- the main modal is
 		// deliberately left open behind it after a deploy, so closing the main modal
@@ -1180,7 +1319,22 @@
 					isSecret: v.isSecret
 				}))
 			};
-			if (temporaryCloneToken && !isCentralizedMode) body.temporaryCloneToken = temporaryCloneToken;
+			if (temporaryCloneToken && !gitStack) body.temporaryCloneToken = temporaryCloneToken;
+			if (!gitStack && draftEditorReady && draftEditorDirty) {
+				body.composeContents = draftComposeContents;
+				body.linkedFiles = draftLinkedEntries.map(({ path, ownership, postChange }) => ({ path, ownership, postChange }));
+				body.linkedFileContents = Object.fromEntries(draftLinkedEntries.map((entry) => [entry.path, entry.content]));
+				body.createdFolders = draftFolders;
+				body.editorRevisions = draftComposeRevisions;
+				body.editorClassifications = [...draftComposeClassifications, ...draftLinkedEntries.map((entry) => ({ path: entry.path, tracked: entry.tracked === true, ignored: entry.ignored === true }))];
+				const commitChanges = window.confirm('Commit and push tracked configuration changes? Cancel keeps them local for this deployment.');
+				body.trackedDecision = commitChanges ? 'commit' : 'internal';
+				const addChanges = window.confirm('Add untracked configuration changes to Git? Cancel keeps them local.');
+				body.untrackedDecision = addChanges ? 'add' : 'local';
+				if (commitChanges || addChanges) {
+					body.commitMessage = window.prompt('Git commit message', `Update ${formStackName} configuration`) || undefined;
+				}
+			}
 
 			if (isCentralizedMode) {
 				// Centralized: stack webhook only under force redeploy; schedules live on the repository.
@@ -1354,6 +1508,8 @@
 
 	async function openGitRepoBrowser() {
 		gitBrowserError = null;
+		gitBrowserPurpose = 'compose';
+		gitBrowserInitialPath = '';
 
 		if (formRepoMode === 'new') {
 			// Validate required fields before creating the repo
@@ -1414,7 +1570,7 @@
 					startPolling(cloneJobId, repoId);
 					return;
 				}
-				if (!isCentralizedMode) {
+				if (!gitStack && !isCentralizedMode) {
 					if (!(await prepareTemporaryClone(repoId, formNewRepoBranch || 'main'))) return;
 				}
 				configureGitBrowser();
@@ -1426,7 +1582,7 @@
 			}
 		} else {
 			if (!formRepositoryId) return;
-			if (!isCentralizedMode && (!gitStack || gitStack.engine !== 'stack' || gitStack.repositoryId !== formRepositoryId)) {
+			if (!gitStack && !isCentralizedMode) {
 				if (!(await prepareTemporaryClone(formRepositoryId, formBranch || selectedRepo?.branch))) return;
 			}
 			configureGitBrowser();
@@ -1435,7 +1591,7 @@
 		}
 	}
 
-	function handleGitMultiBrowseSelect(entries: { path: string; name: string }[]) {
+	async function handleGitMultiBrowseSelect(entries: { path: string; name: string }[]) {
 		clearPreviewState();
 		const newRelativePaths: string[] = [];
 		for (const entry of entries) {
@@ -1465,6 +1621,7 @@
 			}
 		}
 		showGitRepoBrowser = false;
+		if (!gitStack) await loadGitDraftEditor();
 	}
 
 </script>
@@ -1531,9 +1688,10 @@
 			</div>
 		</Dialog.Header>
 
-		<!-- Stack views (edit mode only). Backups remains gated on its feature flag. -->
-		{#if gitStack}
+		<!-- Stack views. A new Git stack gains Editor only after its first Compose load. -->
+		{#if gitStack || draftEditorReady}
 			<div class="flex items-center gap-1 overflow-x-auto border-b border-zinc-200 px-5 dark:border-zinc-700 flex-shrink-0">
+				{#if gitStack}
 				<button
 					type="button"
 					class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 px-3 max-md:px-2 py-2 text-sm transition-colors {activeTab === 'settings' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
@@ -1548,6 +1706,23 @@
 				>
 					<Code class="h-3.5 w-3.5" /> Editor
 				</button>
+				{:else}
+				<button
+					type="button"
+					class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 px-3 max-md:px-2 py-2 text-sm transition-colors {activeTab === 'settings' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
+					onclick={() => (activeTab = 'settings')}
+				>
+					<Settings2 class="h-3.5 w-3.5" /> Settings
+				</button>
+				<button
+					type="button"
+					class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 px-3 max-md:px-2 py-2 text-sm transition-colors {activeTab === 'editor' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
+					onclick={() => (activeTab = 'editor')}
+				>
+					<Code class="h-3.5 w-3.5" /> Editor
+				</button>
+				{/if}
+				{#if gitStack}
 				<button
 					type="button"
 					class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 border-transparent px-3 max-md:px-2 py-2 text-sm text-muted-foreground transition-colors hover:text-foreground"
@@ -1582,6 +1757,7 @@
 						{#if backupTally.failed > 0}<span class="inline-flex items-center gap-0.5 rounded-full bg-red-500/15 px-1.5 text-[10px] font-semibold text-red-500"><X class="w-2.5 h-2.5" />{backupTally.failed}</span>{/if}
 					</button>
 				{/if}
+				{/if}
 			</div>
 		{/if}
 
@@ -1599,30 +1775,49 @@
 			<div class="flex min-h-0 flex-1 flex-col p-5">
 				<DeploysPanel stackName={gitStack.stackName} envId={effectiveEnvId} reloadKey={deploysReloadKey} onTally={(t) => (deploysTally = t)} />
 			</div>
+		{:else if activeTab === 'editor' && !gitStack && draftEditorReady}
+			<div bind:this={containerRef} class="flex min-h-0 flex-1 flex-col {isDraggingSplit ? 'select-none' : ''}">
+				<div class="flex items-center gap-1 border-b border-zinc-200 px-4 dark:border-zinc-700 md:hidden">
+					<button type="button" class="flex-1 py-2 text-sm {mobilePane === 'form' ? 'border-b-2 border-primary' : ''}" onclick={() => mobilePane = 'form'}><Code class="mr-1 inline h-3.5 w-3.5" />Compose</button>
+					<button type="button" class="flex-1 py-2 text-sm {mobilePane === 'vars' ? 'border-b-2 border-primary' : ''}" onclick={() => mobilePane = 'vars'}><FileText class="mr-1 inline h-3.5 w-3.5" />Variables</button>
+				</div>
+				<div class="flex min-h-0 flex-1 max-md:flex-col">
+					<div class="flex min-h-0 min-w-0 flex-shrink-0 flex-col max-md:w-full! {mobilePane === 'form' ? 'max-md:flex-1' : 'max-md:hidden'}" style="width: {splitRatio}%">
+						<StackFileEditor
+							bind:this={draftEditorRef}
+							composePaths={formComposePaths}
+							composeContents={draftComposeContents}
+							linkedEntries={draftLinkedEntries}
+							createdFolders={draftFolders}
+							folderWarning="Empty folders are local only because Git does not track directories."
+							{variableMarkers}
+							onChange={applyGitDraftEditor}
+							onRequestLink={requestGitDraftLink}
+							canLink={draftHasLinkableFile || draftLinkedEntries.some((entry) => entry.path.split('/').pop()?.toLocaleLowerCase() !== '.env')}
+						/>
+					</div>
+					<button type="button" class="w-1 flex-shrink-0 cursor-col-resize bg-zinc-200 transition-colors hover:bg-blue-400 dark:bg-zinc-700 dark:hover:bg-blue-500 max-md:hidden" aria-label="Resize compose and variables panels" onmousedown={startSplitDrag}></button>
+					<div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden {mobilePane === 'vars' ? 'max-md:flex-1' : 'max-md:hidden'}">
+						<SecretProviderPicker bind:secretProviderId={formSecretProviderId} bind:envVars providers={secretProviders} />
+						<div class="flex min-h-0 flex-1 flex-col px-4 py-4 sm:px-6">
+							<StackEnvVarsPanel
+								bind:variables={envVars}
+								validation={envValidation}
+								{existingSecretKeys}
+								{injectedSecretKeys}
+								hideHeader
+								infoText={populatingEnvVars ? 'Loading variables from the repository...' : 'Repository values are defaults. Changed, new, and secret values are saved as Dockhand overrides.'}
+								class="min-h-0 flex-1"
+							/>
+						</div>
+					</div>
+				</div>
+			</div>
 		{:else}
-		<!-- New-stack setup keeps variables beside Settings until an Editor view exists. -->
-		{#if !gitStack}
-		<div class="flex items-center gap-1 border-b border-zinc-200 px-4 dark:border-zinc-700 flex-shrink-0 md:hidden">
-			<button
-				type="button"
-				class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 px-2 py-2.5 text-sm transition-colors {mobilePane === 'form' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
-				onclick={() => mobilePane = 'form'}
-			>
-				<Settings2 class="h-3.5 w-3.5" /> Settings
-			</button>
-			<button
-				type="button"
-				class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 px-2 py-2.5 text-sm transition-colors {mobilePane === 'vars' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
-				onclick={() => mobilePane = 'vars'}
-			>
-				<FileText class="h-3.5 w-3.5" /><span class="max-md:hidden">Environment variables</span><span class="md:hidden">Variables</span>
-			</button>
-		</div>
-		{/if}
 
 		<div bind:this={containerRef} class="flex-1 min-h-0 flex max-md:flex-col {isDraggingSplit ? 'select-none' : ''}">
 			<!-- Left column: Form fields -->
-			<div class="flex-shrink-0 flex flex-col min-w-0 overflow-y-auto max-md:w-full! {gitStack || mobilePane === 'form' ? 'max-md:flex-1' : 'max-md:hidden'}" style="width: {gitStack ? 100 : splitRatio}%">
+			<div class="flex min-w-0 flex-1 flex-col overflow-y-auto">
 				<div class="space-y-4 py-4 px-4 sm:px-6">
 			<!-- Repository selection -->
 			{#if !gitStack}
@@ -2228,73 +2423,6 @@
 				</div>
 			</div>
 
-			{#if !gitStack}
-			<!-- Resizable divider -->
-			<div
-				class="w-1 flex-shrink-0 bg-zinc-200 dark:bg-zinc-700 hover:bg-blue-400 dark:hover:bg-blue-500 cursor-col-resize transition-colors flex items-center justify-center group max-md:hidden {isDraggingSplit ? 'bg-blue-500 dark:bg-blue-400' : ''}"
-				onmousedown={startSplitDrag}
-				role="separator"
-				aria-orientation="vertical"
-				tabindex="0"
-			>
-				<div class="w-4 h-8 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity {isDraggingSplit ? 'opacity-100' : ''}">
-					<GripVertical class="w-3 h-3 text-white" />
-				</div>
-			</div>
-
-			<!-- Right column: Environment Variables -->
-			<div class="flex-1 min-w-0 flex flex-col overflow-hidden bg-zinc-50 dark:bg-zinc-800/50 {mobilePane === 'vars' ? 'max-md:flex-1' : 'max-md:hidden'}">
-				<SecretProviderPicker
-					bind:secretProviderId={formSecretProviderId}
-					bind:envVars
-					providers={secretProviders}
-				/>
-				<StackEnvVarsPanel
-					bind:variables={envVars}
-					class="min-h-0 flex-1"
-					validation={envValidation}
-					injectedSecretKeys={gitStack !== null ? injectedSecretKeys : []}
-					providerType={secretProviders.find((p) => p.id === formSecretProviderId)?.type ?? null}
-					providerName={secretProviders.find((p) => p.id === formSecretProviderId)?.name ?? null}
-					providerBound={formSecretProviderId != null && secretProviders.some((p) => p.id === formSecretProviderId)}
-					placeholder={{ key: 'MY_VAR', value: 'value' }}
-					infoText="Override variables from your repository env files. Non-secrets are saved to <code class='bg-muted px-1 rounded'>.env.dockhand</code> in the stack directory. Secrets are stored in the database and injected via shell environment at deploy time.<br/><br/>Variables are available for <strong>compose file interpolation</strong> using <code class='bg-muted px-1 rounded'>${'{VAR_NAME}'}</code> syntax. They are not automatically injected into containers — use <code class='bg-muted px-1 rounded'>environment:</code> or reference <code class='bg-muted px-1 rounded'>.env.dockhand</code> in <code class='bg-muted px-1 rounded'>env_file:</code> to pass them through."
-					existingSecretKeys={gitStack !== null ? existingSecretKeys : new Set()}
-					showInterpolationHint={true}
-				>
-					{#snippet headerActions()}
-					<div class="flex items-center gap-0.5">
-							<Button
-								type="button"
-								size="sm"
-								variant="ghost"
-								onclick={populateEnvVars}
-								disabled={populatingEnvVars || (formRepoMode === 'existing' && !formRepositoryId) || (formRepoMode === 'new' && !formNewRepoUrl.trim())}
-								class="h-6 text-xs px-2"
-							>
-								{#if populatingEnvVars}
-									<Loader2 class="w-3.5 h-3.5 mr-1 animate-spin" />
-									Loading...
-								{:else}
-									<Download class="w-3.5 h-3.5" />
-									Populate
-								{/if}
-							</Button>
-							<Tooltip.Root>
-								<Tooltip.Trigger>
-									<HelpCircle class="w-3.5 h-3.5 text-muted-foreground cursor-help" />
-								</Tooltip.Trigger>
-								<Tooltip.Content>
-									<div class="w-64">
-										<p class="text-xs">Sync the repository and load environment variables from the <code class="bg-muted px-1 rounded">.env</code> file (in compose directory) and additional env file (if specified), so you can see what you can override.</p>
-									</div>
-								</Tooltip.Content>
-							</Tooltip.Root>
-						</div>
-					{/snippet}
-				</StackEnvVarsPanel>
-			</div>
-			{/if}
 		</div>
 		{/if}
 
@@ -2386,21 +2514,24 @@
 <!-- Opens when user clicks Browse next to the compose file path field -->
 <FilesystemBrowser
 	bind:open={showGitRepoBrowser}
-	title="Select compose file(s)"
+	title={gitBrowserPurpose === 'link' ? 'Link configuration file' : 'Select compose file(s)'}
 	icon={FolderGit2}
-	description="Select one or more compose files from the repository"
-	selectFilter={/\.ya?ml$/i}
+	description={gitBrowserPurpose === 'link' ? 'Choose a text file from the Compose directory' : 'Select one or more compose files from the repository'}
+	initialPath={gitBrowserInitialPath}
+	selectFilter={gitBrowserPurpose === 'link' ? /.*/ : /\.ya?ml$/i}
 	selectMode="file"
 	apiUrl={gitBrowserApiUrl}
 	bind:rootPath={gitBrowserRootPath}
 	bind:cloningMessage={gitBrowserCloningMessage}
-	onSelect={gitBrowseForRowIndex !== null ? gitHandleRowBrowseSelect : ((path, name) => handleGitMultiBrowseSelect([{ path, name }]))}
-	multiSelect={gitBrowseForRowIndex === null}
-	onSelectMany={gitBrowseForRowIndex === null ? handleGitMultiBrowseSelect : undefined}
+	onSelect={gitBrowserPurpose === 'link' ? selectGitDraftLink : gitBrowseForRowIndex !== null ? gitHandleRowBrowseSelect : ((path, name) => handleGitMultiBrowseSelect([{ path, name }]))}
+	multiSelect={gitBrowserPurpose === 'compose' && gitBrowseForRowIndex === null}
+	onSelectMany={gitBrowserPurpose === 'compose' && gitBrowseForRowIndex === null ? handleGitMultiBrowseSelect : undefined}
 	onClose={() => {
 		showGitRepoBrowser = false;
 		gitBrowserCloningMessage = undefined;
 		gitBrowseForRowIndex = null;
+		gitBrowserPurpose = 'compose';
+		gitBrowserInitialPath = '';
 	}}
 />
 

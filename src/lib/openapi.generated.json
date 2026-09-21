@@ -27211,7 +27211,7 @@
         "tags": [
           "stacks"
         ],
-        "summary": "List a stack's Compose and explicitly linked configuration files",
+        "summary": "List a stack's Compose and explicitly linked managed files",
         "parameters": [
           {
             "name": "name",

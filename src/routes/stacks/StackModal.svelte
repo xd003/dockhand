@@ -48,7 +48,7 @@
 	import ComposeGraphViewer from './ComposeGraphViewer.svelte';
 	import RedeployPopover from './RedeployPopover.svelte';
 	import { hasBuildSection as detectBuildSection } from '$lib/utils/compose-build-detect';
-	import { linkedFileLanguage, type LinkedFileAction, type LinkedFilePostChange } from '$lib/stack-linked-files';
+	import { linkedFileLanguage, normalizeLinkedPath, type LinkedFileAction, type LinkedFilePostChange } from '$lib/stack-linked-files';
 	import type { StackEditorEntry, StackFileEditorDraft } from '$lib/stack-file-editor';
 	import { isGitStackOverride, mergeGitStackEnvVars } from '$lib/env-merge';
 
@@ -197,7 +197,7 @@
 	let fileEditorRef = $state<StackFileEditor | null>(null);
 	let activeLinkedPath = $state('');
 	let activeEditorKind = $state<'compose' | 'linked'>('compose');
-	let linkedRoot = $state('');
+	let linkedBrowseRoot = $state('');
 	let hasLinkableFile = $state(false);
 	let linkedComposeServices = $state<string[]>([]);
 	let originalComposeContents = $state<Record<string, string>>({});
@@ -655,6 +655,13 @@
 
 	// Single file browser with dynamic config
 	let showFileBrowser = $state(false);
+	let showDirectUnlinkConfirm = $state(false);
+	type LegacyFileAction = 'file' | 'folder';
+	let legacyFileAction = $state<LegacyFileAction | null>(null);
+	let legacyFileActionPath = $state('');
+	let legacyFileActionContent = $state('');
+	let legacyFileActionError = $state<string | null>(null);
+	let legacyFileActionSubmitting = $state(false);
 	let fileBrowserConfig = $state<{
 		title: string;
 		icon?: Component<{ class?: string }> | ComponentType;
@@ -768,7 +775,6 @@
 			const response = await fetch(appendEnvParam(`/api/stacks/${encodeURIComponent(stackName)}/files`, envId));
 			if (!response.ok) return;
 			const data = await response.json();
-			linkedRoot = typeof data.root === 'string' ? data.root : '';
 			linkedComposeServices = Array.isArray(data.composeServices) ? data.composeServices : [];
 			composeClassifications = Object.fromEntries((Array.isArray(data.entries) ? data.entries : [])
 				.filter((entry: any) => entry.kind === 'compose')
@@ -814,7 +820,7 @@
 	}
 
 	function relativeToLinkedRoot(path: string): string {
-		const root = linkedRoot.replace(/\/$/, '');
+		const root = linkedBrowseRoot.replace(/\/$/, '');
 		return root && path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path;
 	}
 
@@ -845,10 +851,11 @@
 			return;
 		}
 		if (!stackName) return;
+		linkedBrowseRoot = '';
 		fileBrowserConfig = {
 			title: 'Link configuration file',
 			description: 'Choose a text file below the primary Compose directory.',
-			initialPath: linkedRoot || workingComposePath.replace(/\/[^/]+$/, ''),
+			initialPath: '',
 			apiUrl: linkedBrowseApiUrl(),
 			selectFilter: /.*/,
 			selectMode: 'file',
@@ -871,10 +878,7 @@
 		showFileBrowser = true;
 	}
 
-	async function createLinkedFileFromPrompt() {
-		const path = window.prompt('Relative file path under the Compose directory');
-		if (!path) return;
-		const content = window.prompt('Initial file content', '') ?? '';
+	async function createLinkedFile(path: string, content: string) {
 		const response = await fetch(linkedApiUrl(), {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
@@ -888,10 +892,7 @@
 		}
 	}
 
-	async function createLinkedFolderFromPrompt() {
-		if (stackSource?.sourceType === 'git' && !window.confirm('Empty folders are local only because Git does not track directories. Continue?')) return;
-		const path = window.prompt('Relative folder path under the Compose directory');
-		if (!path) return;
+	async function createLinkedFolder(path: string) {
 		const response = await fetch(linkedApiUrl(), {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
@@ -901,16 +902,66 @@
 	}
 
 	async function unlinkActiveLinkedFile() {
-		if (!activeLinkedPath || !window.confirm(`Unlink ${activeLinkedPath}? The file will remain on disk.`)) return;
+		if (!activeLinkedPath) return;
+		const path = activeLinkedPath;
 		const response = await fetch(linkedApiUrl(), {
 			method: 'DELETE',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ path: activeLinkedPath })
+			body: JSON.stringify({ path })
 		});
 		if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'Failed to unlink file');
-		activeLinkedPath = '';
-		activeEditorKind = 'compose';
+		if (activeLinkedPath === path) {
+			activeLinkedPath = '';
+			activeEditorKind = 'compose';
+		}
 		await reloadLinkedFiles(true);
+	}
+
+	function requestDirectUnlink() {
+		if (activeLinkedPath) showDirectUnlinkConfirm = true;
+	}
+
+	async function confirmDirectUnlink() {
+		showDirectUnlinkConfirm = false;
+		try {
+			await unlinkActiveLinkedFile();
+		} catch (error) {
+			operationError = {
+				title: 'Failed to unlink file',
+				message: error instanceof Error ? error.message : String(error)
+			};
+		}
+	}
+
+	function openLegacyFileAction(action: LegacyFileAction) {
+		legacyFileAction = action;
+		legacyFileActionPath = '';
+		legacyFileActionContent = '';
+		legacyFileActionError = null;
+	}
+
+	function closeLegacyFileAction() {
+		if (!legacyFileActionSubmitting) legacyFileAction = null;
+	}
+
+	async function submitLegacyFileAction() {
+		if (!legacyFileAction) return;
+		if (!legacyFileActionPath.trim()) {
+			legacyFileActionError = `${legacyFileAction === 'file' ? 'File' : 'Folder'} path is required.`;
+			return;
+		}
+		legacyFileActionSubmitting = true;
+		legacyFileActionError = null;
+		try {
+			const path = normalizeLinkedPath(legacyFileActionPath);
+			if (legacyFileAction === 'file') await createLinkedFile(path, legacyFileActionContent);
+			else await createLinkedFolder(path);
+			legacyFileAction = null;
+		} catch (error) {
+			legacyFileActionError = error instanceof Error ? error.message : String(error);
+		} finally {
+			legacyFileActionSubmitting = false;
+		}
 	}
 
 	function updateLinkedPolicy(patch: Partial<LinkedFilePostChange>) {
@@ -2730,7 +2781,6 @@
 		createdFolders = [];
 		activeLinkedPath = '';
 		activeEditorKind = 'compose';
-		linkedRoot = '';
 		linkedComposeServices = [];
 		originalComposeContents = {};
 		composeClassifications = {};
@@ -3253,15 +3303,17 @@
 								linkedEntries={editorEntries()}
 								{createdFolders}
 								readonly={readonly}
+								allowFileManagement={isGitView}
 								initialPath={activeEditorPath}
 								onActivePathChange={handleSharedEditorPath}
 								onChange={mode === 'create' ? applyDraftEditor : applyPersistedEditor}
 								onRequestLink={openLinkedFileBrowser}
-								canLink={hasLinkableFile || linkedEntries.some((entry) => entry.path.split('/').pop()?.toLocaleLowerCase() !== '.env')}
+								canLink={isGitView || hasLinkableFile || linkedEntries.some((entry) => entry.path.split('/').pop()?.toLocaleLowerCase() !== '.env')}
 								canCreate={mode !== 'create' || !!newStackName.trim()}
-								onCreateFile={mode === 'edit' ? createLinkedFileFromPrompt : undefined}
-								onCreateFolder={mode === 'edit' ? createLinkedFolderFromPrompt : undefined}
+								onCreateFile={mode === 'edit' ? createLinkedFile : undefined}
+								onCreateFolder={mode === 'edit' ? createLinkedFolder : undefined}
 								onUnlink={mode === 'edit' ? unlinkActiveLinkedFile : undefined}
+								folderWarning={stackSource?.sourceType === 'git' ? 'Empty folders are local only because Git does not track directories.' : undefined}
 								onPolicyChange={mode === 'edit' ? updateLinkedPolicy : undefined}
 								variableMarkers={variableMarkers}
 								lintMarkers={validateMarkers}
@@ -3407,7 +3459,7 @@
 									<div class="mb-3.5 flex flex-wrap items-center justify-between gap-3">
 										<div class="flex items-center gap-2 text-sm font-semibold text-zinc-800 dark:text-zinc-100">
 											<Code class="h-4 w-4 text-muted-foreground" />
-											Configuration files
+											Managed files
 											{#if workingComposePaths.length > 0}
 												<span class="text-xs font-normal text-muted-foreground">({workingComposePaths.length + linkedEntries.length})</span>
 											{/if}
@@ -3418,8 +3470,8 @@
 												<FolderSync class="h-3.5 w-3.5" /> Relocate
 											</button>
 											<button type="button" class="rounded border px-2 py-1 text-xs text-muted-foreground hover:text-foreground" onclick={openLinkedFileBrowser}>+ Link</button>
-											<button type="button" class="rounded border px-2 py-1 text-xs text-muted-foreground hover:text-foreground" onclick={createLinkedFileFromPrompt}>+ File</button>
-											<button type="button" class="rounded border px-2 py-1 text-xs text-muted-foreground hover:text-foreground" onclick={createLinkedFolderFromPrompt}>+ Folder</button>
+											<button type="button" class="rounded border px-2 py-1 text-xs text-muted-foreground hover:text-foreground" onclick={() => openLegacyFileAction('file')}>+ File</button>
+											<button type="button" class="rounded border px-2 py-1 text-xs text-muted-foreground hover:text-foreground" onclick={() => openLegacyFileAction('folder')}>+ Folder</button>
 										{/if}
 									</div>
 									</div>
@@ -3535,7 +3587,7 @@
 												{/if}
 											{/if}
 											{/if}
-											<button type="button" class="rounded border px-2 py-1 text-xs text-muted-foreground hover:text-destructive" onclick={unlinkActiveLinkedFile}>Unlink</button>
+											<button type="button" class="rounded border px-2 py-1 text-xs text-muted-foreground hover:text-destructive" onclick={requestDirectUnlink}>Unlink</button>
 										{/if}
 																<Button
 															variant="ghost"
@@ -4052,6 +4104,56 @@
 	</Dialog.Content>
 </Dialog.Root>
 
+<!-- Unlink confirmation for the legacy editor shown while no compose file is selected -->
+<Dialog.Root bind:open={showDirectUnlinkConfirm}>
+	<Dialog.Content class="max-w-md">
+		<Dialog.Header>
+			<Dialog.Title>Unlink configuration file?</Dialog.Title>
+			<Dialog.Description>
+				The file will remain on disk, but it will no longer be managed as a linked configuration file.
+			</Dialog.Description>
+		</Dialog.Header>
+		<div class="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 font-mono text-xs break-all">{activeLinkedPath}</div>
+		<Dialog.Footer>
+			<Button variant="outline" onclick={() => showDirectUnlinkConfirm = false}>Cancel</Button>
+			<Button variant="destructive" onclick={confirmDirectUnlink}>Unlink file</Button>
+		</Dialog.Footer>
+	</Dialog.Content>
+</Dialog.Root>
+
+<!-- Create dialogs for the legacy editor shown while no compose file is selected -->
+<Dialog.Root open={legacyFileAction !== null} onOpenChange={(open) => { if (!open) closeLegacyFileAction(); }}>
+	{#if legacyFileAction}
+		<Dialog.Content class="max-w-md" showCloseButton={!legacyFileActionSubmitting}>
+			<Dialog.Header>
+				<Dialog.Title>{legacyFileAction === 'file' ? 'Create configuration file' : 'Create configuration folder'}</Dialog.Title>
+				<Dialog.Description>
+					{legacyFileAction === 'file' ? 'Add a file relative to the Compose directory.' : 'Add an empty folder relative to the Compose directory.'}
+				</Dialog.Description>
+			</Dialog.Header>
+			<div class="space-y-2">
+				<Label for="legacy-stack-file-action-path">Relative path</Label>
+				<Input id="legacy-stack-file-action-path" bind:value={legacyFileActionPath} placeholder={legacyFileAction === 'file' ? 'config/settings.env' : 'config'} autofocus disabled={legacyFileActionSubmitting} />
+			</div>
+			{#if legacyFileAction === 'file'}
+				<div class="space-y-2">
+					<Label for="legacy-stack-file-action-content">Initial content</Label>
+					<textarea id="legacy-stack-file-action-content" bind:value={legacyFileActionContent} rows="5" class="border-input bg-background placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 w-full resize-y rounded-md border px-3 py-2 text-sm outline-none focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50" disabled={legacyFileActionSubmitting}></textarea>
+				</div>
+			{:else if stackSource?.sourceType === 'git'}
+				<p class="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-muted-foreground">Empty folders are local only because Git does not track directories.</p>
+			{/if}
+			{#if legacyFileActionError}<p class="text-sm text-destructive">{legacyFileActionError}</p>{/if}
+			<Dialog.Footer>
+				<Button variant="outline" onclick={closeLegacyFileAction} disabled={legacyFileActionSubmitting}>Cancel</Button>
+				<Button type="button" onclick={() => void submitLegacyFileAction()} disabled={legacyFileActionSubmitting}>
+					{legacyFileActionSubmitting ? 'Working...' : legacyFileAction === 'file' ? 'Create file' : 'Create folder'}
+				</Button>
+			</Dialog.Footer>
+		</Dialog.Content>
+	{/if}
+</Dialog.Root>
+
 <!-- Error dialog for failed operations -->
 {#if operationError}
 	{@const errorDialogOpen = true}
@@ -4073,6 +4175,7 @@
 	selectMode={fileBrowserConfig.selectMode}
 	initialPath={fileBrowserConfig.initialPath}
 	apiUrl={fileBrowserConfig.apiUrl}
+	bind:rootPath={linkedBrowseRoot}
 	description={fileBrowserConfig.description}
 	onSelect={fileBrowserConfig.onSelect}
 	onClose={() => showFileBrowser = false}

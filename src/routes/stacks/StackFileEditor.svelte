@@ -3,6 +3,10 @@
 	import yaml from 'js-yaml';
 	import { Code, FolderOpen } from 'lucide-svelte';
 	import CodeEditor, { type LintMarker, type VariableMarker } from '$lib/components/CodeEditor.svelte';
+	import { Button } from '$lib/components/ui/button';
+	import * as Dialog from '$lib/components/ui/dialog';
+	import { Input } from '$lib/components/ui/input';
+	import { Label } from '$lib/components/ui/label';
 	import * as Tabs from '$lib/components/ui/tabs';
 	import {
 		defaultLinkedFilePostChange,
@@ -19,14 +23,16 @@
 		linkedEntries?: StackEditorEntry[];
 		createdFolders?: string[];
 		readonly?: boolean;
+		allowFileManagement?: boolean;
 		theme?: 'light' | 'dark';
 		onChange?: (draft: StackFileEditorDraft) => void;
 		onRequestLink?: () => void;
-		onCreateFile?: () => void;
-		onCreateFolder?: () => void;
+		onCreateFile?: (path: string, content: string) => void | Promise<void>;
+		onCreateFolder?: (path: string) => void | Promise<void>;
 		canLink?: boolean;
 		canCreate?: boolean;
-		onUnlink?: () => void;
+		onUnlink?: () => void | Promise<void>;
+		folderWarning?: string;
 		onPolicyChange?: (patch: Partial<LinkedFilePostChange>) => void;
 		initialPath?: string;
 		onActivePathChange?: (path: string) => void;
@@ -43,6 +49,7 @@
 		linkedEntries = [],
 		createdFolders = [],
 		readonly = false,
+		allowFileManagement = false,
 		theme = 'dark',
 		onChange,
 		onRequestLink,
@@ -51,6 +58,7 @@
 		canLink = false,
 		canCreate = true,
 		onUnlink,
+		folderWarning,
 		onPolicyChange,
 		initialPath = '',
 		onActivePathChange,
@@ -63,6 +71,12 @@
 
 	let activePath = $state('');
 	let draftError = $state<string | null>(null);
+	type ActionDialog = 'file' | 'folder' | 'unlink';
+	let actionDialog = $state<ActionDialog | null>(null);
+	let actionPath = $state('');
+	let actionContent = $state('');
+	let actionError = $state<string | null>(null);
+	let actionSubmitting = $state(false);
 
 	const allPaths = $derived([...composePaths.filter(Boolean), ...linkedEntries.map((entry) => entry.path)]);
 	const activeLinkedEntry = $derived(linkedEntries.find((entry) => entry.path === activePath));
@@ -123,56 +137,65 @@
 		});
 	}
 
-	function createFile() {
-		if (onCreateFile) {
-			onCreateFile();
-			return;
-		}
-		const path = window.prompt('Relative file path under the Compose directory');
-		if (!path) return;
-		const content = window.prompt('Initial file content', '') ?? '';
-		try {
-			const normalized = normalizeLinkedPath(path);
-			const metadata = normalizeLinkedFile({ path: normalized, ownership: 'local', postChange: defaultLinkedFilePostChange() });
-			if (emit((next) => {
-				next.linkedFiles = [...next.linkedFiles, metadata];
-				next.linkedFileContents[normalized] = content;
-			})) activePath = normalized;
-		} catch (error) {
-			draftError = error instanceof Error ? error.message : String(error);
-		}
+	function openActionDialog(action: ActionDialog) {
+		if (action === 'unlink' && !activeLinkedEntry) return;
+		actionDialog = action;
+		actionPath = action === 'unlink' ? activePath : '';
+		actionContent = '';
+		actionError = null;
 	}
 
-	function createFolder() {
-		if (onCreateFolder) {
-			onCreateFolder();
-			return;
-		}
-		const path = window.prompt('Relative folder path under the Compose directory');
-		if (!path) return;
-		try {
-			const normalized = normalizeLinkedPath(path);
-			emit((next) => {
-				if (!next.createdFolders.some((folder) => folder.toLocaleLowerCase() === normalized.toLocaleLowerCase())) next.createdFolders = [...next.createdFolders, normalized];
-			});
-		} catch (error) {
-			draftError = error instanceof Error ? error.message : String(error);
-		}
+	function closeActionDialog() {
+		if (!actionSubmitting) actionDialog = null;
 	}
 
-	function unlink() {
-		if (!activeLinkedEntry || !window.confirm(`Unlink ${activePath}? The file will remain on disk.`)) return;
-		if (onUnlink) {
-			onUnlink();
+	async function submitAction() {
+		if (!actionDialog) return;
+		const action = actionDialog;
+		if (action !== 'unlink' && !actionPath.trim()) {
+			actionError = `${action === 'file' ? 'File' : 'Folder'} path is required.`;
 			return;
 		}
-		emit((next) => {
-			next.linkedFiles = next.linkedFiles.filter((file) => file.path !== activePath);
-			delete next.linkedFileContents[activePath];
-			next.classifications = next.classifications.filter((entry) => entry.path !== activePath);
-			delete next.revisions[activePath];
-		});
-		activePath = composePaths[0] ?? '';
+
+		actionSubmitting = true;
+		actionError = null;
+		try {
+			if (action === 'unlink') {
+				if (onUnlink) await onUnlink();
+				else if (!emit((next) => {
+					next.linkedFiles = next.linkedFiles.filter((file) => file.path !== activePath);
+					delete next.linkedFileContents[activePath];
+					next.classifications = next.classifications.filter((entry) => entry.path !== activePath);
+					delete next.revisions[activePath];
+				})) throw new Error(draftError ?? 'Failed to unlink file');
+				activePath = composePaths[0] ?? '';
+				onActivePathChange?.(activePath);
+			} else {
+				const normalized = normalizeLinkedPath(actionPath);
+				if (action === 'file') {
+					if (onCreateFile) await onCreateFile(normalized, actionContent);
+					else {
+						const metadata = normalizeLinkedFile({ path: normalized, ownership: 'local', postChange: defaultLinkedFilePostChange() });
+						if (!emit((next) => {
+							next.linkedFiles = [...next.linkedFiles, metadata];
+							next.linkedFileContents[normalized] = actionContent;
+						})) throw new Error(draftError ?? 'Failed to create file');
+					}
+					activePath = normalized;
+					onActivePathChange?.(normalized);
+				} else {
+					if (onCreateFolder) await onCreateFolder(normalized);
+					else if (!emit((next) => {
+						if (!next.createdFolders.some((folder) => folder.toLocaleLowerCase() === normalized.toLocaleLowerCase())) next.createdFolders = [...next.createdFolders, normalized];
+					})) throw new Error(draftError ?? 'Failed to create folder');
+				}
+			}
+			actionDialog = null;
+		} catch (error) {
+			actionError = error instanceof Error ? error.message : String(error);
+		} finally {
+			actionSubmitting = false;
+		}
 	}
 
 	function updatePolicy(patch: Partial<LinkedFilePostChange>) {
@@ -200,12 +223,12 @@
 
 <div class="flex min-h-0 flex-1 flex-col px-4 py-4 sm:px-8 sm:py-6">
 	<div class="mb-3.5 flex flex-wrap items-center justify-between gap-3">
-		<div class="flex items-center gap-2 text-sm font-semibold"><Code class="h-4 w-4 text-muted-foreground" />Configuration files <span class="text-xs font-normal text-muted-foreground">({allPaths.length})</span></div>
-		{#if !readonly && (canLink || canCreate)}
+		<div class="flex items-center gap-2 text-sm font-semibold"><Code class="h-4 w-4 text-muted-foreground" />Managed files <span class="text-xs font-normal text-muted-foreground">({allPaths.length})</span></div>
+		{#if (!readonly || allowFileManagement) && (canLink || canCreate)}
 			<div class="flex flex-wrap items-center gap-2">
 				{#if canLink && onRequestLink}<button type="button" class="rounded border px-2 py-1 text-xs text-muted-foreground hover:text-foreground" onclick={onRequestLink}>+ Link</button>{/if}
-				{#if canCreate}<button type="button" class="rounded border px-2 py-1 text-xs text-muted-foreground hover:text-foreground" onclick={createFile}>+ File</button>{/if}
-				{#if canCreate}<button type="button" class="rounded border px-2 py-1 text-xs text-muted-foreground hover:text-foreground" onclick={createFolder}>+ Folder</button>{/if}
+				{#if canCreate}<button type="button" class="rounded border px-2 py-1 text-xs text-muted-foreground hover:text-foreground" onclick={() => openActionDialog('file')}>+ File</button>{/if}
+				{#if canCreate}<button type="button" class="rounded border px-2 py-1 text-xs text-muted-foreground hover:text-foreground" onclick={() => openActionDialog('folder')}>+ Folder</button>{/if}
 			</div>
 		{/if}
 	</div>
@@ -226,7 +249,7 @@
 			<div class="flex items-center justify-between gap-3 border-b border-zinc-200 bg-zinc-100/80 px-3.5 py-2 dark:border-zinc-700 dark:bg-zinc-800/60">
 				<span class="truncate font-mono text-[11px] text-muted-foreground">{activePath}</span>
 				{#if headerActions}{@render headerActions()}{/if}
-				{#if activeLinkedEntry && !readonly}
+				{#if activeLinkedEntry && (!readonly || allowFileManagement)}
 					<div class="flex flex-wrap items-center justify-end gap-1.5">
 						<span class="text-xs text-muted-foreground">When modified:</span>
 						<select aria-label="Action when linked file is modified" class="h-7 rounded border bg-background px-1 text-xs" value={activeLinkedEntry.postChange.action} onchange={(event) => { const action = event.currentTarget.value as LinkedFilePostChange['action']; updatePolicy(action === 'none' ? { action, target: 'stack', services: [] } : { action, ...(action === 'ordered' ? { target: 'stack' as const, services: [] } : {}) }); }}>
@@ -242,7 +265,7 @@
 								</select>
 							{/if}
 						{/if}
-						<button type="button" class="rounded border px-2 py-1 text-xs text-muted-foreground hover:text-destructive" onclick={unlink}>Unlink</button>
+						<button type="button" class="rounded border px-2 py-1 text-xs text-muted-foreground hover:text-destructive" onclick={() => openActionDialog('unlink')}>Unlink</button>
 					</div>
 				{/if}
 			</div>
@@ -259,3 +282,49 @@
 	{/if}
 	{#if draftError}<p class="mt-2 text-xs text-destructive">{draftError}</p>{/if}
 </div>
+
+<Dialog.Root open={actionDialog !== null} onOpenChange={(open) => { if (!open) closeActionDialog(); }}>
+	{#if actionDialog}
+		<Dialog.Content class="max-w-md" showCloseButton={!actionSubmitting}>
+			<Dialog.Header>
+				<Dialog.Title>
+					{actionDialog === 'file' ? 'Create configuration file' : actionDialog === 'folder' ? 'Create configuration folder' : 'Unlink configuration file'}
+				</Dialog.Title>
+				<Dialog.Description>
+					{#if actionDialog === 'file'}
+						Add a file relative to the Compose directory.
+					{:else if actionDialog === 'folder'}
+						Add an empty folder relative to the Compose directory.
+					{:else}
+						The file will remain on disk, but it will no longer be managed as a linked configuration file.
+					{/if}
+				</Dialog.Description>
+			</Dialog.Header>
+
+			{#if actionDialog === 'unlink'}
+				<div class="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 font-mono text-xs text-foreground break-all">{actionPath}</div>
+			{:else}
+				<div class="space-y-2">
+					<Label for="stack-file-editor-action-path">Relative path</Label>
+					<Input id="stack-file-editor-action-path" bind:value={actionPath} placeholder={actionDialog === 'file' ? 'config/settings.env' : 'config'} autofocus disabled={actionSubmitting} />
+				</div>
+				{#if actionDialog === 'file'}
+					<div class="space-y-2">
+						<Label for="stack-file-editor-action-content">Initial content</Label>
+						<textarea id="stack-file-editor-action-content" bind:value={actionContent} rows="5" class="border-input bg-background placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 w-full resize-y rounded-md border px-3 py-2 text-sm outline-none focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50" disabled={actionSubmitting}></textarea>
+					</div>
+				{:else if folderWarning}
+					<p class="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-muted-foreground">{folderWarning}</p>
+				{/if}
+			{/if}
+
+			{#if actionError}<p class="text-sm text-destructive">{actionError}</p>{/if}
+			<Dialog.Footer>
+				<Button variant="outline" type="button" onclick={closeActionDialog} disabled={actionSubmitting}>Cancel</Button>
+				<Button variant={actionDialog === 'unlink' ? 'destructive' : 'default'} type="button" onclick={() => void submitAction()} disabled={actionSubmitting}>
+					{actionSubmitting ? 'Working...' : actionDialog === 'file' ? 'Create file' : actionDialog === 'folder' ? 'Create folder' : 'Unlink file'}
+				</Button>
+			</Dialog.Footer>
+		</Dialog.Content>
+	{/if}
+</Dialog.Root>

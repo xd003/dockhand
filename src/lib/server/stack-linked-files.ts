@@ -2,9 +2,10 @@ import { chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, mkdt
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { getStackComposeFile, getStackDir, withStackLock } from './stacks';
-import { getStackLinkedFiles, getStackSource, updateStackSource } from './db';
+import { getStackComposePaths, getStackLinkedFiles, getStackSource, updateStackSource } from './db';
 import { getRepoPath } from './git';
 import { getStackRepoPath } from './git-stack';
+import { repoFilePath } from './git-url-safety';
 import { isProtectedPath } from './fs-guard';
 import {
 	MAX_LINKED_FILE_SIZE,
@@ -209,22 +210,20 @@ async function resolveWorkspaceRoots(stackName: string, envId?: number | null): 
 	}
 	const git = source.sourceType === 'git';
 	let gitRoot: string | null = null;
-	let repoPath: string | null = null;
+	let composePaths = (compose.composePaths?.length ? compose.composePaths : [compose.composePath]).map((path) => resolve(path));
+	let envPath = compose.envPath ? resolve(compose.envPath) : null;
 	if (git && source.gitStack) {
-		repoPath = source.gitStack.engine === 'centralized'
+		const repoPath = source.gitStack.engine === 'centralized'
 			? getRepoPath(source.gitStack.repository.name)
 			: await getStackRepoPath(source.gitStack.id, source.gitStack.stackName, source.gitStack.environmentId);
-		gitRoot = resolve(compose.stackDir);
-		// getStackComposeFile already resolves the selected primary file inside the
-		// operational checkout; linked paths are relative to that file's directory.
-		if (!isInside(gitRoot, resolve(repoPath))) throw new Error('Git Compose directory is outside the repository checkout');
+		composePaths = getStackComposePaths(source.gitStack).map((path) => repoFilePath(repoPath, path, 'Compose path'));
+		gitRoot = dirname(composePaths[0]);
+		envPath = source.gitStack.envFilePath ? repoFilePath(repoPath, source.gitStack.envFilePath, 'Env file path') : null;
 	}
 	const localStackRoot = git ? await getStackDir(stackName, envId) : compose.stackDir;
-	const localRoot = git && repoPath ? join(localStackRoot, relative(repoPath, gitRoot!)) : localStackRoot;
-	const composePaths = (compose.composePaths?.length ? compose.composePaths : [compose.composePath]).map((path) => resolve(path));
-	const envPath = compose.envPath ? resolve(compose.envPath) : null;
+	const localRoot = localStackRoot;
 	const linkedFiles = getStackLinkedFiles(source).map((file) => git ? file : { ...file, ownership: 'local' as const });
-	return { localRoot: resolve(localRoot), gitRoot, composePaths, envPath, composePath: resolve(compose.composePath), linkedFiles, git };
+	return { localRoot: resolve(localRoot), gitRoot, composePaths, envPath, composePath: composePaths[0], linkedFiles, git };
 }
 
 function parseComposeServices(content: string): string[] {
@@ -310,7 +309,7 @@ export async function listStackFileDirectory(
 ): Promise<{ path: string; rootPath: string; parent: string | null; entries: StackFileDirectoryEntry[] }> {
 	return withStackLock(stackName, async () => {
 		const roots = await resolveWorkspaceRoots(stackName, envId);
-		const rootPath = roots.git ? roots.gitRoot! : roots.localRoot;
+		const rootPath = roots.localRoot;
 		const directory = requestedPath ? assertContained(requestedPath, rootPath, 'Directory') : rootPath;
 		if (!existsSync(directory) || !lstatSync(directory).isDirectory()) throw new Error('Directory not found');
 		const entries = readdirSync(directory, { withFileTypes: true })
@@ -444,10 +443,11 @@ export async function linkStackFile(stackName: string, envId: number | null | un
 	return withStackLock(stackName, async () => {
 		const roots = await resolveWorkspaceRoots(stackName, envId);
 		const normalizedPath = normalizeLinkedPath(path);
-		const root = roots.gitRoot ?? roots.localRoot;
+		const resolvedOwnership = ownership ?? 'local';
+		const root = resolvedOwnership === 'git' && roots.gitRoot ? roots.gitRoot : roots.localRoot;
 		const target = resolveRootPath(root, normalizedPath, 'Linked file path');
 		const data = assertRegularText(target);
-		const linked = normalizeLinkedFile({ path: normalizedPath, ownership: ownership ?? (roots.git ? 'git' : 'local'), postChange });
+		const linked = normalizeLinkedFile({ path: normalizedPath, ownership: resolvedOwnership, postChange });
 		const next = normalizeLinkedFiles([...roots.linkedFiles, linked], { reservedPaths: reservedPaths(roots), forceLocalOwnership: !roots.git });
 		const localTarget = resolveRootPath(roots.localRoot, normalizedPath, 'Linked file path');
 		const previous = existsSync(localTarget) ? readFileSync(localTarget) : null;

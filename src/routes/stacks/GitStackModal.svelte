@@ -1768,6 +1768,7 @@
 							composeContents={draftComposeContents}
 							linkedEntries={draftLinkedEntries}
 							createdFolders={draftFolders}
+							folderWarning="Empty folders are local only because Git does not track directories."
 							onChange={applyGitDraftEditor}
 							onRequestLink={requestGitDraftLink}
 							canLink={draftHasLinkableFile || draftLinkedEntries.some((entry) => entry.path.split('/').pop()?.toLocaleLowerCase() !== '.env')}

@@ -40,6 +40,7 @@ export interface HawserStackDirAdoptionResult {
 	managedDirectory?: string;
 	managedComposeFiles?: string[];
 	managedEnvRelativePath?: string;
+	managedEnvContent?: string;
 	output?: string;
 	error?: string;
 	exitCode?: number;

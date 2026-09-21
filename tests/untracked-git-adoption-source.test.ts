@@ -44,7 +44,22 @@ describe('external Git adoption wiring', () => {
 
 	it('stores an explicit env file relative to the managed stack root', () => {
 		expect(adoption).toContain('join(preflight.destinationDir, syncResult.envFileName)');
-		expect(adoption).not.toContain('join(targetComposeDir, syncResult.envFileName)');
+	});
+
+	it('persists resolved managed compose paths for the converted source', () => {
+		expect(adoption).toContain('composePaths: resolveGitStackPaths(');
+	});
+
+	it('deploys via the shared Git path without relocating the source', () => {
+		expect(adoption).toContain('await deployStackFromSync({');
+		expect(adoption).toContain('copyPaths: input.copyPaths');
+		expect(adoption).not.toContain('prepareStackDirectoryRelocation');
+		expect(adoption).not.toContain('finalizeHawserStackDirAdoption');
+	});
+
+	it('handles conversion as a deploy and closes it with the normal deploy policy', () => {
+		expect(modal).toContain('const deploying = deployAfterSave || isAdopting;');
+		expect(modal).toContain('saveCloseTiming(deploying, true)');
 	});
 
 	it('adopts and cleans the temporary repository checkout', () => {
@@ -57,18 +72,20 @@ describe('external Git adoption wiring', () => {
 		expect(adoption).toContain('resolveComposePathHints(hints.workingDir, hints.configFiles)');
 	});
 
-	it('does not require Hawser host paths to exist on the Dockhand filesystem', () => {
-		expect(adoption).toContain('isHawserConnection(await getEnvironment(environmentId))');
-		expect(adoption).toContain('if (!remoteSource) {');
-		expect(adoption).toContain('if (!preflight.remoteSource) {');
+	it('does not require a resolvable host path for conversion', () => {
+		expect(adoption).toContain('composePath: composePaths[0] ?? null');
+		expect(adoption).not.toContain('sourceDirectoryState');
 	});
 
-	it('allows adoption when the external directory is already the managed destination', () => {
-		expect(adoption).toContain('const sameDirectory = resolve(sourceState.sourceDir) === destinationDir');
-		expect(adoption).toContain('!sameDirectory && sourceDirOverlaps');
-		expect(adoption).toContain('!sameDirectory && existsSync(destinationDir)');
-		expect(adoption).toContain('allowExistingStackDir: true');
+	it('keeps normal Git deployment and its collision checks', () => {
 		expect(sharedDeploy).toContain('allowExistingStackDir: args.allowExistingStackDir');
 		expect(stacks).toContain('if (!allowExistingDir && existsSync(flatDir))');
+		expect(modal).toContain('Originals are never moved');
+	});
+
+	it('browses the host that performs the copy and warns about Git overlays', () => {
+		expect(modal).toContain("appendEnvParam('/api/stacks/host-files', effectiveEnvId)");
+		expect(modal).toContain('copyPaths: hostCopyPaths');
+		expect(modal).toContain('Files tracked by Git may be overwritten');
 	});
 });

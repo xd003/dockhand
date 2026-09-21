@@ -110,7 +110,6 @@
 	const isAdopting = $derived(adoptionTarget !== null && gitStack === null);
 	function openStackView(tab: 'editor' | 'graph') {
 		onOpenStackView?.(tab);
-		onClose();
 	}
 
 	// Per-stack icon override (same name-based /icon endpoint as internal stacks, #1473).

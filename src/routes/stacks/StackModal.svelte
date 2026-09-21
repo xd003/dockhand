@@ -90,7 +90,6 @@
 	let gitCommitCopied = $state<'ok' | 'error' | null>(null);
 	function openGitSettings() {
 		onEditGitSettings?.();
-		onClose();
 	}
 
 	// Local effective state - can transition from create → edit after failed deploy

@@ -3,7 +3,7 @@
 </svelte:head>
 
 <script lang="ts">
-	import { onMount, onDestroy, tick } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import { goto, afterNavigate } from '$app/navigation';
 	import { page } from '$app/stores';
 	import { toast } from 'svelte-sonner';
@@ -1208,10 +1208,7 @@ let gitMigratingStackId = $state<number | null>(null);
 		}
 	}
 
-	async function openGitModal(gitStack?: any, target?: { stackName: string; environmentId: number | null; displayName?: string; envPath?: string | null }) {
-		editingGitStack = target ? null : (gitStack || null);
-		adoptionTarget = target ?? null;
-		// Fetch repositories and credentials before opening modal
+	async function loadGitModalData() {
 		try {
 			const [reposRes, credsRes] = await Promise.all([
 				fetch('/api/git/repositories'),
@@ -1224,6 +1221,13 @@ let gitMigratingStackId = $state<number | null>(null);
 			gitRepositories = [];
 			gitCredentials = [];
 		}
+	}
+
+	async function openGitModal(gitStack?: any, target?: { stackName: string; environmentId: number | null; displayName?: string; envPath?: string | null }) {
+		editingGitStack = target ? null : (gitStack || null);
+		adoptionTarget = target ?? null;
+		// Fetch repositories and credentials before opening a new modal.
+		await loadGitModalData();
 		showGitModal = true;
 	}
 
@@ -1471,20 +1475,20 @@ let gitMigratingStackId = $state<number | null>(null);
 		showEditModal = true;
 	}
 
-	async function openGitStackView(tab: 'editor' | 'graph') {
+	function openGitStackView(tab: 'editor' | 'graph') {
 		if (!editingGitStack) return;
-		const stack = editingGitStack;
+		viewGitStack(editingGitStack.stackName, tab);
 		showGitModal = false;
-		await tick();
-		await new Promise((resolve) => setTimeout(resolve, 200));
-		viewGitStack(stack.stackName, tab);
 	}
 
 	function openCurrentGitSettings() {
 		const gitStack = stackModalSource?.gitStack;
 		if (!gitStack) return;
+		editingGitStack = gitStack;
+		adoptionTarget = null;
+		showGitModal = true;
 		showEditModal = false;
-		void openGitModal(gitStack);
+		void loadGitModalData();
 	}
 
 	function getStatusClasses(status: string): string {

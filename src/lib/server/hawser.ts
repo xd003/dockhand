@@ -44,6 +44,7 @@ export interface EdgeConnection {
 	agentVersion: string;
 	dockerVersion: string;
 	hostname: string;
+	stacksDir?: string;
 	capabilities: string[];
 	connectedAt: Date;
 	lastHeartbeat: number;
@@ -519,6 +520,7 @@ export function handleEdgeConnection(
 		agentVersion: hello.version,
 		dockerVersion: hello.dockerVersion,
 		hostname: hello.hostname,
+		stacksDir: hello.stacksDir,
 		capabilities: hello.capabilities,
 		connectedAt: new Date(),
 		lastHeartbeat: Date.now(),
@@ -976,6 +978,7 @@ export interface HelloMessage {
 	token: string;
 	dockerVersion: string;
 	hostname: string;
+	stacksDir?: string;
 	capabilities: string[];
 }
 

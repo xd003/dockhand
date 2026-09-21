@@ -378,6 +378,8 @@
 	let workingComposePath = $state('');
 	let workingEnvPath = $state('');
 	let remoteComposePath = $state<string | null>(null);
+	let remoteStackDir = $state<string | null>(null);
+	let localStackDir = $state('');
 
 	// Multi compose paths (ordered list)
 	let workingComposePaths = $state<string[]>([]);
@@ -1780,6 +1782,14 @@
 	const gitStackId = $derived(stackSource?.gitStack?.id ?? null);
 	const activeComposeDisplayPath = $derived(activeComposePath || workingComposePaths[0] || workingComposePath || '');
 	const activeEditorPath = $derived(activeEditorKind === 'linked' ? activeLinkedPath : activeComposeDisplayPath);
+	const activeHostPath = $derived.by(() => {
+		if (!remoteStackDir || !activeEditorPath) return null;
+		if (activeEditorKind === 'linked') return `${remoteStackDir.replace(/\/$/, '')}/${activeEditorPath.replace(/^\//, '')}`;
+		if (remoteComposePath && activeEditorPath === activeComposeDisplayPath) return remoteComposePath;
+		const localRoot = localStackDir.replace(/\/$/, '');
+		if (!localRoot || !activeEditorPath.startsWith(`${localRoot}/`)) return null;
+		return `${remoteStackDir.replace(/\/$/, '')}/${activeEditorPath.slice(localRoot.length + 1)}`;
+	});
 	const activeLinkedEntry = $derived(linkedEntries.find((entry) => entry.path === activeLinkedPath));
 	const activeEditorLanguage = $derived(activeEditorKind === 'linked' ? (activeLinkedEntry?.language ?? 'text') : 'yaml');
 	const hasStaleLinkedPolicy = $derived(linkedEntries.some((entry) => entry.postChange.target === 'services' && entry.postChange.services.some((service) => !linkedComposeServices.includes(service))));
@@ -1931,6 +1941,8 @@
 		error = null;
 		needsFileLocation = false;
 		remoteComposePath = null;
+		remoteStackDir = null;
+		localStackDir = '';
 		linkedEntries = [];
 		activeLinkedPath = '';
 		activeEditorKind = 'compose';
@@ -2026,6 +2038,8 @@
 			workingComposePath = data.composePath || '';
 			workingEnvPath = data.envPath || '';
 			remoteComposePath = data.remoteComposePath || null;
+			remoteStackDir = data.remoteStackDir || null;
+			localStackDir = data.stackDir || '';
 			// The compose endpoint returns resolved paths as an array; retain support
 			// for the persisted JSON string used by older responses.
 			if (Array.isArray(data.composePaths)) {
@@ -3305,6 +3319,7 @@
 								readonly={readonly}
 								allowFileManagement={isGitView}
 								initialPath={activeEditorPath}
+								hostPath={activeHostPath}
 								onActivePathChange={handleSharedEditorPath}
 								onChange={mode === 'create' ? applyDraftEditor : applyPersistedEditor}
 								onRequestLink={openLinkedFileBrowser}
@@ -3558,9 +3573,6 @@
 												<div class="flex items-center justify-between gap-3 border-b border-zinc-200 bg-zinc-100/80 px-3.5 py-2 dark:border-zinc-700 dark:bg-zinc-800/60">
 													<div class="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden font-mono text-[11px] text-muted-foreground">
 														<span class="truncate" title={activeEditorPath}>{activeEditorPath || 'No file selected'}</span>
-														{#if remoteComposePath}
-															<span class="min-w-0 max-w-[45%] truncate text-muted-foreground/70" title={`Compose file on the Hawser node: ${remoteComposePath}`}>(Hawser: {remoteComposePath})</span>
-														{/if}
 													</div>
 									<div class="flex flex-wrap items-center justify-end gap-1.5">
 										{#if activeEditorKind === 'linked' && !readonly}

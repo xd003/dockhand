@@ -41,6 +41,7 @@
 		onLintClick?: (line: number) => void;
 		headerActions?: Snippet;
 		editorOverlay?: Snippet;
+		hostPath?: string | null;
 	}
 
 	let {
@@ -66,7 +67,8 @@
 		lintMarkers = [],
 		onLintClick,
 		headerActions,
-		editorOverlay
+		editorOverlay,
+		hostPath = null
 	}: Props = $props();
 
 	let activePath = $state('');
@@ -247,7 +249,14 @@
 
 		<div class="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-zinc-200 bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900/40">
 			<div class="flex items-center justify-between gap-3 border-b border-zinc-200 bg-zinc-100/80 px-3.5 py-2 dark:border-zinc-700 dark:bg-zinc-800/60">
-				<span class="truncate font-mono text-[11px] text-muted-foreground">{activePath}</span>
+				<div class="min-w-0 flex-1 space-y-1 text-[11px] text-muted-foreground">
+					{#if hostPath}
+						<div class="flex min-w-0 gap-2"><span class="shrink-0 font-medium">Dockhand path</span><span class="truncate font-mono" title={activePath}>{activePath}</span></div>
+						<div class="flex min-w-0 gap-2"><span class="shrink-0 font-medium">Hawser host path</span><span class="truncate font-mono text-muted-foreground/70" title={hostPath}>{hostPath}</span></div>
+					{:else}
+						<div class="truncate font-mono" title={activePath}>{activePath}</div>
+					{/if}
+				</div>
 				{#if headerActions}{@render headerActions()}{/if}
 				{#if activeLinkedEntry && (!readonly || allowFileManagement)}
 					<div class="flex flex-wrap items-center justify-end gap-1.5">

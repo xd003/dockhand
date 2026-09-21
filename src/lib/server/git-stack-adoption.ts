@@ -1,14 +1,12 @@
-import { accessSync, constants as fsConstants, existsSync, lstatSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { isAbsolute, join, dirname, resolve } from 'node:path';
 import {
 	createGitRepository,
 	createGitStack,
 	deleteGitRepository,
 	deleteGitStack,
-	getEnvironment,
 	getGitCredentials,
 	getGitRepository,
+	getEnvironment,
 	getGitStacksByRepositoryId,
 	getStackEnvVars,
 	getStackSource,
@@ -20,12 +18,13 @@ import { assertSafeGitRef, assertSafeRepoUrl } from './git-url-safety';
 import { deleteRepositoryFiles, getEngineForStack } from './git';
 import { adoptPendingGitClone, discardPendingGitClone } from './git-stack';
 import { deployStackFromSync } from './git-deploy-shared';
-import { getStackDir, getStackPathHints, isHawserConnection, validateStackPath, withStackLock } from './stacks';
-import { isPathUnderRoot, prepareStackDirectoryRelocation, resolveComposePathHints, type StackDirectoryRelocation } from './stack-path-utils';
+import { getStackDir, getStackPathHints, isHawserConnection, listComposeStacks, validateStackPath, withStackLock } from './stacks';
+import { dockerFetch } from './docker';
+import { isProtectedPath } from './fs-guard';
+import { realpathSync } from 'node:fs';
+import { resolveComposePathHints, resolveGitStackPaths } from './stack-path-utils';
 import { parseComposePathsColumn, validateComposePathsInput } from './compose-files';
 import { registerSchedule, unregisterSchedule } from './scheduler';
-import { isProtectedPath } from './fs-guard';
-import { finalizeHawserStackDirAdoption, hawserSupportsStackDirAdoption, rollbackHawserStackDirAdoption } from './hawser-stack-adoption';
 
 export interface GitStackAdoptionInput {
 	stackName: string;
@@ -51,6 +50,7 @@ export interface GitStackAdoptionInput {
 	engine?: 'stack' | 'centralized';
 	envVars?: Array<{ key?: string; value?: string; isSecret?: boolean }>;
 	temporaryCloneToken?: string;
+	copyPaths?: string[];
 }
 
 export type GitStackAdoptionPreflight = {
@@ -58,11 +58,7 @@ export type GitStackAdoptionPreflight = {
 	stackName: string;
 	environmentId: number | null;
 	composePath: string;
-	sourceDir: string;
 	destinationDir: string;
-	source: ExternalAdoptionSource;
-	remoteSource: boolean;
-	remoteComposePaths?: string[];
 } | {
 	ok: false;
 	status: number;
@@ -88,19 +84,6 @@ function validateRepoRelativePath(value: unknown, label: string, allowEmpty = fa
 	return null;
 }
 
-function sourceDirectoryState(sourcePath: string): { sourceDir: string; error?: string } {
-	const sourceDir = dirname(resolve(sourcePath));
-	try {
-		if (!existsSync(sourceDir) || !lstatSync(sourceDir).isDirectory()) {
-			return { sourceDir, error: `Stack source directory is not accessible: ${sourceDir}` };
-		}
-		accessSync(sourceDir, fsConstants.R_OK | fsConstants.X_OK);
-	} catch {
-		return { sourceDir, error: `Stack source directory is not readable: ${sourceDir}` };
-	}
-	return { sourceDir };
-}
-
 async function getExternalAdoptionSource(
 	stackName: string,
 	environmentId: number | null
@@ -108,20 +91,20 @@ async function getExternalAdoptionSource(
 	const source = await getStackSource(stackName, environmentId);
 	if (source && source.sourceType !== 'external') return source;
 
-	const hints = await getStackPathHints(stackName, environmentId);
+	const hints = await getStackPathHints(stackName, environmentId).catch(() => ({ workingDir: null, configFiles: null }));
 	const composePaths = resolveComposePathHints(hints.workingDir, hints.configFiles);
 	if (source && composePaths.length === 0) return source;
-	if (composePaths.length === 0) return null;
+	if (!source && !(await listComposeStacks(environmentId)).some((stack) => stack.name === stackName)) return null;
 	if (source) {
 		return {
 			...source,
-			composePath: source.composePath ?? composePaths[0],
+			composePath: source.composePath ?? composePaths[0] ?? null,
 			composePaths: source.composePaths ?? JSON.stringify(composePaths)
 		};
 	}
 	return {
 		sourceType: 'external',
-		composePath: composePaths[0],
+		composePath: composePaths[0] ?? null,
 		composePaths: JSON.stringify(composePaths),
 		envPath: null
 	};
@@ -139,29 +122,6 @@ export async function validateExternalGitAdoption(
 	const source = await getExternalAdoptionSource(stackName, environmentId);
 	if (!source) return invalid(`Stack "${stackName}" was not found`, 404);
 	if (source.sourceType !== 'external') return invalid('Only an external stack can be adopted from Git', 409);
-	const remoteSource = typeof environmentId === 'number'
-		&& isHawserConnection(await getEnvironment(environmentId));
-	const remoteHints = remoteSource ? await getStackPathHints(stackName, environmentId) : null;
-	const remoteComposePaths = remoteHints
-		? resolveComposePathHints(remoteHints.workingDir, remoteHints.configFiles)
-		: [];
-	if (!source.composePath && remoteComposePaths.length === 0) return invalid('The external stack has no authoritative compose path', 409);
-	if (remoteSource && remoteComposePaths.length === 0) return invalid('Docker did not provide authoritative Compose paths for the remote stack', 409);
-	if (remoteSource && !(await hawserSupportsStackDirAdoption(environmentId!))) {
-		return invalid('This remote stack cannot be adopted because the Hawser agent does not support stack directory adoption. Update Hawser to a version with the "stack-dir-adoption" capability and reconnect the environment.', 426);
-	}
-
-	const sourcePath = resolve(remoteSource ? remoteComposePaths[0]! : source.composePath!);
-	const sourceState = remoteSource
-		? { sourceDir: dirname(sourcePath) }
-		: sourceDirectoryState(sourcePath);
-	if (!remoteSource) {
-		if (!existsSync(sourcePath) || !lstatSync(sourcePath).isFile()) {
-			return invalid(`Compose file is not accessible on the Dockhand filesystem: ${sourcePath}`, 400);
-		}
-		if (sourceState.error) return invalid(sourceState.error, 403);
-		if (isProtectedPath(sourceState.sourceDir)) return invalid('The external compose directory is protected and cannot be relocated', 403);
-	}
 
 	const composePaths = Array.isArray(input.composePaths) && input.composePaths.length > 0
 		? input.composePaths
@@ -173,6 +133,21 @@ export async function validateExternalGitAdoption(
 		validateRepoRelativePath(input.contextDir, 'contextDir', true)
 	].filter(Boolean);
 	if (pathErrors.length > 0) return invalid(pathErrors[0]!);
+	if (input.copyPaths !== undefined && (!Array.isArray(input.copyPaths) || input.copyPaths.length > 100 || input.copyPaths.some((path) => typeof path !== 'string' || !isAbsolute(path) || path === '/' || !path.split('/').pop()))) {
+		return invalid('copyPaths must contain at most 100 absolute file or directory paths');
+	}
+	if (input.copyPaths?.length && typeof environmentId === 'number' && isHawserConnection(await getEnvironment(environmentId))) {
+		try {
+			const response = await dockerFetch('/_hawser/host-files?path=%2F', { method: 'GET' }, environmentId);
+			if (!response.ok) return invalid('Update Hawser to copy host items during Git conversion', 426);
+		} catch {
+			return invalid('Hawser cannot browse host files for copying', 426);
+		}
+	}
+	else if (input.copyPaths?.some((path) => {
+		try { return isProtectedPath(path) || isProtectedPath(realpathSync(path)); }
+		catch { return isProtectedPath(path); } // The copier reports missing paths before Compose runs.
+	})) return invalid('Protected paths cannot be copied', 403);
 	if (input.envFilePath) {
 		const envPathValidation = await validateStackPath(input.envFilePath);
 		if (!envPathValidation.ok) return invalid(envPathValidation.error || 'Invalid envFilePath');
@@ -198,39 +173,13 @@ export async function validateExternalGitAdoption(
 	}
 
 	const destinationDir = resolve(await getStackDir(stackName, environmentId));
-	const sameDirectory = resolve(sourceState.sourceDir) === destinationDir;
-	if (!remoteSource && !sameDirectory && sourceDirOverlaps(sourceState.sourceDir, destinationDir)) {
-		return invalid('The managed Git directory overlaps the existing compose directory', 403);
-	}
-	if (!remoteSource && !sameDirectory && existsSync(destinationDir)) return invalid(`Managed Git directory already exists: ${destinationDir}`, 409);
 	return {
 		ok: true,
 		stackName,
 		environmentId,
-		composePath: sourcePath,
-		sourceDir: sourceState.sourceDir,
+		composePath: source.composePath || '',
 		destinationDir,
-		source,
-		remoteSource,
-		remoteComposePaths: remoteSource ? remoteComposePaths : undefined
 	};
-}
-
-function sourceDirOverlaps(sourceDir: string, destinationDir: string): boolean {
-	return isPathUnderRoot(sourceDir, destinationDir) || isPathUnderRoot(destinationDir, sourceDir);
-}
-
-function adoptionEnvPath(
-	source: { envPath?: string | null } | null,
-	sourceDir: string,
-	destinationDir: string
-): { path?: string; relativePath?: string } {
-	if (!source || source.envPath === '') return {};
-	const configured = source.envPath ?? join(sourceDir, '.env');
-	if (source.envPath == null && !existsSync(configured)) return {};
-	const relativePath = relative(sourceDir, resolve(configured));
-	if (relativePath.startsWith('..') || isAbsolute(relativePath)) return { path: configured };
-	return { path: resolve(join(destinationDir, relativePath)), relativePath };
 }
 
 async function cleanupProvisionalGitState(
@@ -262,8 +211,7 @@ async function cleanupProvisionalGitState(
 }
 
 /**
- * Adopt an external stack while holding its stack lock from validation through
- * Compose, source conversion, and relocation commit.
+ * Convert an external stack without touching its original Compose directory.
  */
 export async function adoptExternalGitStack(
 	input: GitStackAdoptionInput,
@@ -276,19 +224,13 @@ export async function adoptExternalGitStack(
 	const run = async () => {
 		const preflight = await validateExternalGitAdoption(input);
 		if (!preflight.ok) return { success: false, error: preflight.error, status: preflight.status };
-		const source = preflight.source;
 
 		let repositoryId = input.repositoryId;
 		let repositoryCreated = false;
 		let gitStackId: number | undefined;
-		let relocation: StackDirectoryRelocation | undefined;
 		let sourceCommitted = false;
 		let deployReturned = false;
 		let composeStarted = false;
-		let remoteAdoptionId: string | undefined;
-		let remoteManagedDirectory: string | undefined;
-		let remoteManagedEnvRelativePath: string | undefined;
-		let remoteManagedComposeFiles: string[] | undefined;
 		let envVarsChanged = false;
 		const temporaryCloneToken = input.engine === 'stack' && typeof input.temporaryCloneToken === 'string'
 			? input.temporaryCloneToken.trim()
@@ -371,34 +313,6 @@ export async function adoptExternalGitStack(
 				throw new Error(`Git sync failed before Compose ran: ${syncResult.error || 'The repository did not contain a usable compose file'}`);
 			}
 
-			onProgress?.({ status: 'connecting', message: 'Staging the existing compose directory...', step: 4, totalSteps: 5 });
-			const preservedEnv = preflight.remoteSource
-				? {}
-				: adoptionEnvPath(source, preflight.sourceDir, preflight.destinationDir);
-			if (!preflight.remoteSource) {
-				relocation = prepareStackDirectoryRelocation(preflight.sourceDir, preflight.destinationDir);
-			}
-			const targetComposePath = join(preflight.destinationDir, syncResult.composeFileName);
-			const targetEnvPath = input.envFilePath && syncResult.envFileName
-				? join(preflight.destinationDir, syncResult.envFileName)
-				: preservedEnv.path;
-			if (preflight.remoteSource) remoteAdoptionId = randomUUID();
-			const explicitGitEnvRelativePath = input.envFilePath && syncResult.envFileName
-				? join(dirname(syncResult.composeFileName), syncResult.envFileName).split('\\').join('/')
-				: null;
-			const remotePreservedEnvRelativePath = preflight.remoteSource
-				? source.envPath === ''
-					? undefined
-					: source.envPath
-						? (() => {
-							const relativePath = relative(preflight.sourceDir, resolve(source.envPath!));
-							return relativePath && !relativePath.startsWith('..') && !isAbsolute(relativePath)
-								? relativePath.split('\\').join('/')
-								: undefined;
-						})()
-					: '.env'
-				: undefined;
-
 			const result = await deployStackFromSync({
 				stackId: gitStack.id,
 				gitStack,
@@ -409,54 +323,23 @@ export async function adoptExternalGitStack(
 				onProgress,
 				logPrefix: `[Stack:${stackName}]`,
 				lockHeld: true,
-				preserveEnvPath: input.envFilePath ? undefined : preservedEnv.path,
-				allowExistingStackDir: true,
-				remoteAdoption: preflight.remoteSource
-					? {
-						adoptionId: remoteAdoptionId!,
-						sourceDir: preflight.sourceDir,
-						sourceComposeFiles: preflight.remoteComposePaths ?? [preflight.composePath],
-						sourceEnvPath: source.envPath,
-						preservedEnvRelativePath: remotePreservedEnvRelativePath,
-						preserveExistingEnv: source.envPath !== '',
-						explicitGitEnvRelativePath,
-						onRemoteAdoptionPrepared: (remoteResult) => {
-							remoteManagedDirectory = remoteResult.managedDirectory;
-							remoteManagedEnvRelativePath = remoteResult.managedEnvRelativePath;
-							remoteManagedComposeFiles = remoteResult.managedComposeFiles;
-						}
-					}
-					: undefined,
-				// The deploy helper uses this path for Compose interpolation while the
-				// overlay skips it when Git did not explicitly select an env file.
+				copyPaths: input.copyPaths,
 				sourceCommit: async () => {
-					if (preflight.remoteSource && (!remoteManagedDirectory || !remoteManagedComposeFiles?.length)) {
-						throw new Error('Hawser did not return the managed remote stack path');
-					}
-					try {
-						await upsertStackSource({
-							stackName,
-							environmentId,
-							sourceType: 'git',
-							gitRepositoryId: gitStack.repositoryId,
-							gitStackId: gitStack.id,
-							composePath: preflight.remoteSource
-								? (remoteManagedDirectory && remoteManagedComposeFiles?.[0]
-									? join(remoteManagedDirectory, remoteManagedComposeFiles[0])
-									: targetComposePath)
-								: targetComposePath,
-							composePaths: preflight.remoteSource
-								? (remoteManagedDirectory && remoteManagedComposeFiles?.length
-									? remoteManagedComposeFiles.map((path) => join(remoteManagedDirectory!, path))
-									: parseComposePathsColumn(gitStack.composePaths))
-								: parseComposePathsColumn(gitStack.composePaths),
-							envPath: preflight.remoteSource
-								? (remoteManagedDirectory && remoteManagedEnvRelativePath ? join(remoteManagedDirectory, remoteManagedEnvRelativePath) : null)
-								: targetEnvPath ?? (input.envFilePath ? null : preservedEnv.path ?? source.envPath ?? null)
-						});
-					} catch (error) {
-						throw new Error(`docker compose up succeeded but the Git source could not be committed: ${error instanceof Error ? error.message : String(error)}`);
-					}
+					await upsertStackSource({
+						stackName,
+						environmentId,
+						sourceType: 'git',
+						gitRepositoryId: gitStack.repositoryId,
+						gitStackId: gitStack.id,
+						composePath: join(preflight.destinationDir, syncResult.composeFileName!),
+						composePaths: resolveGitStackPaths(
+							parseComposePathsColumn(gitStack.composePaths),
+							gitStack.contextDir ?? dirname(gitStack.composePath),
+							preflight.destinationDir
+						),
+						envPath: input.envFilePath && syncResult.envFileName
+							? join(preflight.destinationDir, syncResult.envFileName) : null
+					});
 					sourceCommitted = true;
 				}
 			});
@@ -469,12 +352,6 @@ export async function adoptExternalGitStack(
 						isSecret: variable.isSecret
 					}))).catch((restoreError) => {
 						console.error('[Git adoption] Failed to restore environment variables:', restoreError);
-					});
-				}
-				if (relocation) relocation.rollback();
-				if (preflight.remoteSource && remoteAdoptionId) {
-					await rollbackHawserStackDirAdoption(environmentId!, remoteAdoptionId).catch((rollbackError) => {
-						console.error('[Git adoption] Failed to roll back remote directory adoption:', rollbackError);
 					});
 				}
 				await cleanupProvisionalGitState(gitStack.id, repositoryId, repositoryCreated, stackName, environmentId);
@@ -492,19 +369,6 @@ export async function adoptExternalGitStack(
 				await registerSchedule(gitStack.id, 'git_stack_sync', gitStack.environmentId);
 			}
 			onProgress?.({ status: 'complete', message: `Successfully adopted ${stackName}` });
-			try {
-				if (preflight.remoteSource && remoteAdoptionId) {
-					const finalized = await finalizeHawserStackDirAdoption(environmentId!, remoteAdoptionId);
-					if (!finalized.success) throw new Error(finalized.error || 'Hawser could not remove the original directory');
-				}
-				relocation?.commit();
-			} catch (error) {
-				return {
-					success: true,
-					output: result.output,
-					warning: `Git deployment succeeded, but the original directory could not be removed: ${error instanceof Error ? error.message : String(error)}`
-				};
-			}
 			return { success: true, output: result.output };
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
@@ -517,14 +381,6 @@ export async function adoptExternalGitStack(
 						isSecret: variable.isSecret
 					}))).catch((restoreError) => {
 						console.error('[Git adoption] Failed to restore environment variables:', restoreError);
-					});
-				}
-				try { relocation?.rollback(); } catch (rollbackError) {
-					console.error('[Git adoption] Failed to remove staged directory:', rollbackError);
-				}
-				if (preflight.remoteSource && remoteAdoptionId) {
-					await rollbackHawserStackDirAdoption(environmentId!, remoteAdoptionId).catch((rollbackError) => {
-						console.error('[Git adoption] Failed to roll back remote directory adoption:', rollbackError);
 					});
 				}
 				if (gitStackId || repositoryCreated) {

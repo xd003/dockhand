@@ -6,6 +6,7 @@
  */
 
 import { existsSync, mkdirSync, rmSync, readdirSync, cpSync, statSync, unlinkSync, renameSync, readFileSync, writeFileSync, realpathSync, accessSync, constants as fsConstants } from 'node:fs';
+import { copyStackItems } from './stack-copy-items';
 import { join, resolve, dirname, basename, relative, isAbsolute, normalize as pathNormalize, sep as pathSep } from 'node:path';
 import { spawn as nodeSpawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
@@ -127,6 +128,7 @@ export interface StackOperationResult {
 	adoptionId?: string;
 	/** Environment path retained or created by Hawser adoption. */
 	managedEnvRelativePath?: string;
+	managedEnvContent?: string;
 	/** Managed stack directory reported by Hawser. */
 	managedDirectory?: string;
 	/** Compose files retained or created by Hawser adoption. */
@@ -216,6 +218,7 @@ export interface DeployStackOptions {
 	preserveEnvPath?: string;
 	/** Adoption preflight already validated and snapshotted the existing managed directory. */
 	allowExistingStackDir?: boolean;
+	copyPaths?: string[];
 	/** Remote Hawser adoption transaction. */
 	remoteAdoption?: {
 		adoptionId: string;
@@ -225,7 +228,7 @@ export interface DeployStackOptions {
 		preservedEnvRelativePath?: string;
 		preserveExistingEnv: boolean;
 		explicitGitEnvRelativePath?: string | null;
-		onRemoteAdoptionPrepared?: (result: { managedDirectory?: string; managedEnvRelativePath?: string; managedComposeFiles?: string[] }) => void;
+		onRemoteAdoptionPrepared?: (result: { managedDirectory?: string; managedEnvRelativePath?: string; managedEnvContent?: string; managedComposeFiles?: string[] }) => void;
 	};
 }
 
@@ -1523,6 +1526,7 @@ interface ComposeCommandOptions {
 	pullPolicy?: string; // Pull policy: 'always' | 'missing' | 'never'
 	removeVolumes?: boolean;
 	stackFiles?: Record<string, string>; // All files to send to Hawser
+	copyPaths?: string[]; // Host items to copy once during Git conversion
 	stackFileModifiedTimes?: Record<string, number>; // Source mtimes; Hawser keeps the newest copy
 	/** Working directory for compose execution (for imported stacks) */
 	workingDir?: string;
@@ -2078,7 +2082,8 @@ async function executeComposeViaHawser(
 	pullPolicy?: string,
 	filesToDelete?: FileToDelete[],
 	removeFiles?: boolean,
-	onLine?: (line: string) => void
+	onLine?: (line: string) => void,
+	copyPaths?: string[]
 ): Promise<StackOperationResult> {
 	const logPrefix = `[Stack:${stackName}]`;
 	// Import dockerFetch dynamically to avoid circular dependency
@@ -2156,6 +2161,7 @@ async function executeComposeViaHawser(
 			envVars: allEnvVars, // All vars (including secrets) - Hawser injects via shell env
 			files, // Files including .env (secrets NOT in .env file)
 			fileModifiedTimes: stackFileModifiedTimes,
+			copyPaths,
 			forceRecreate: forceRecreate || false,
 			removeVolumes: removeVolumes || false,
 			build: build || false,
@@ -2307,7 +2313,7 @@ async function executeComposeCommand(
 	secretVars?: Record<string, string>,
 	onLine?: (line: string) => void
 ): Promise<StackOperationResult> {
-	const { stackName, envId, forceRecreate, build, noBuildCache, pullPolicy, removeVolumes, stackFiles, stackFileModifiedTimes, workingDir, composePath, composePaths, envPath, useOverrideFile, serviceName, serviceNames, noDeps, composeFileName, filesToDelete, removeFiles } = options;
+	const { stackName, envId, forceRecreate, build, noBuildCache, pullPolicy, removeVolumes, stackFiles, stackFileModifiedTimes, workingDir, composePath, composePaths, envPath, useOverrideFile, serviceName, serviceNames, noDeps, composeFileName, filesToDelete, removeFiles, copyPaths } = options;
 
 	// Get environment configuration
 	const env = envId ? await getEnvironment(envId) : null;
@@ -2438,7 +2444,8 @@ async function executeComposeCommand(
 				pullPolicy,
 				filesToDelete,
 				removeFiles,
-				onLine
+				onLine,
+				copyPaths
 			);
 		}
 
@@ -3714,7 +3721,7 @@ export async function deployStack(options: DeployStackOptions): Promise<StackOpe
 
 /** Deploy body for callers that already hold the per-stack lock. */
 export async function deployStackUnlocked(options: DeployStackOptions): Promise<StackOperationResult> {
-	const { name, compose, envId, sourceDir, forceRecreate, build, noBuildCache, pullPolicy, composePath, composePaths, envPath, composeFileName, envFileName, filesToDelete, isGitDeploy, onLine, onComposeStarted, preserveEnvPath, allowExistingStackDir, remoteAdoption } = options;
+	const { name, compose, envId, sourceDir, forceRecreate, build, noBuildCache, pullPolicy, composePath, composePaths, envPath, composeFileName, envFileName, filesToDelete, isGitDeploy, onLine, onComposeStarted, preserveEnvPath, allowExistingStackDir, remoteAdoption, copyPaths } = options;
 	const logPrefix = `[Stack:${name}]`;
 
 	console.log(`${logPrefix} ========================================`);
@@ -3798,6 +3805,9 @@ export async function deployStackUnlocked(options: DeployStackOptions): Promise<
 			if (!remoteAdoption) {
 				console.log(`${logPrefix} Copying source directory to stack directory...`);
 				mkdirSync(workingDir, { recursive: true });
+				if (copyPaths?.length && !isHawserConnection(typeof envId === 'number' ? await getEnvironment(envId) : null)) {
+					copyStackItems(copyPaths, workingDir);
+				}
 				const preservePath = preserveEnvPath ? resolve(preserveEnvPath) : null;
 				cpSync(sourceDir, workingDir, {
 					recursive: true,
@@ -4060,12 +4070,14 @@ export async function deployStackUnlocked(options: DeployStackOptions): Promise<
 					adoptionId: adoption.adoptionId || remoteAdoption.adoptionId,
 					managedDirectory: adoption.managedDirectory,
 					managedEnvRelativePath: adoption.managedEnvRelativePath,
+					managedEnvContent: adoption.managedEnvContent,
 					managedComposeFiles: adoption.managedComposeFiles,
 					exitCode: adoption.exitCode
 				};
 				remoteAdoption.onRemoteAdoptionPrepared?.({
 					managedDirectory: operationResult.managedDirectory,
 					managedEnvRelativePath: operationResult.managedEnvRelativePath,
+					managedEnvContent: adoption.managedEnvContent,
 					managedComposeFiles: operationResult.managedComposeFiles
 				});
 				return operationResult;
@@ -4095,6 +4107,7 @@ export async function deployStackUnlocked(options: DeployStackOptions): Promise<
 			pullPolicy,
 			stackFiles,
 			stackFileModifiedTimes,
+			copyPaths,
 			workingDir,
 			composePath: actualComposePath,
 			composePaths: actualComposePaths,

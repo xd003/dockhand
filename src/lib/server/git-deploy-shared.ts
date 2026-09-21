@@ -60,6 +60,8 @@ export interface DeployStackFromSyncArgs {
 	logPrefix: string;
 	/** Set by adoption, which already holds the stack lock. */
 	lockHeld?: boolean;
+	/** Host files copied once into the managed destination during conversion. */
+	copyPaths?: string[];
 	/** Preserve the existing environment file during the first Git overlay. */
 	preserveEnvPath?: string;
 	/** Adoption preflight already validated the existing managed directory. */
@@ -75,7 +77,7 @@ export interface DeployStackFromSyncArgs {
 		preservedEnvRelativePath?: string;
 		preserveExistingEnv: boolean;
 		explicitGitEnvRelativePath?: string | null;
-		onRemoteAdoptionPrepared?: (result: { managedDirectory?: string; managedEnvRelativePath?: string; managedComposeFiles?: string[] }) => void;
+		onRemoteAdoptionPrepared?: (result: { managedDirectory?: string; managedEnvRelativePath?: string; managedEnvContent?: string; managedComposeFiles?: string[] }) => void;
 	};
 }
 
@@ -217,6 +219,7 @@ export async function deployStackFromSync(args: DeployStackFromSyncArgs): Promis
 			onComposeStarted: args.onComposeStarted,
 			preserveEnvPath: args.preserveEnvPath,
 			allowExistingStackDir: args.allowExistingStackDir,
+			copyPaths: args.copyPaths,
 			envPath: args.remoteAdoption ? undefined : args.preserveEnvPath,
 			remoteAdoption: args.remoteAdoption
 				? { ...args.remoteAdoption, onRemoteAdoptionPrepared: args.remoteAdoption.onRemoteAdoptionPrepared }

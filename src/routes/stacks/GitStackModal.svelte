@@ -630,6 +630,8 @@
 
 	// Git repository browse state
 	let showGitRepoBrowser = $state(false);
+	let showHostCopyBrowser = $state(false);
+	let hostCopyPaths = $state<string[]>([]);
 	let gitBrowserApiUrl = $state('');
 	let gitBrowserRootPath = $state('');
 	let gitBrowserCloningMessage = $state<string | undefined>(undefined);
@@ -1021,6 +1023,7 @@
 	});
 
 	async function resetForm() {
+		hostCopyPaths = [];
 		// Clear state BEFORE async loads to avoid race conditions
 		activeTab = 'settings';
 		draftEditorReady = false;
@@ -1217,6 +1220,7 @@
 	}
 
 	async function saveGitStack(deployAfterSave: boolean = false) {
+		const deploying = deployAfterSave || isAdopting;
 		errors = {};
 		let hasErrors = false;
 
@@ -1312,6 +1316,7 @@
 				forceRedeploy: formForceRedeploy,
 				deployNow: isAdopting ? true : deployAfterSave,
 				adoptExternal: isAdopting,
+				...(isAdopting ? { copyPaths: hostCopyPaths } : {}),
 				secretProviderId: formSecretProviderId,
 				envVars: overrideVars.map(v => ({
 					key: v.key.trim(),
@@ -1376,7 +1381,7 @@
 			// Live-stream the compose output into the shared window when deploying, so
 			// "Save and deploy" shows progress like StackModal's "Save & redeploy".
 			// (A plain save with no deploy has no output to show.)
-			if (deployAfterSave) {
+			if (deploying) {
 				outputTitle = `Deploying ${formStackName.trim()}`;
 				outputLines = [];
 				outputRunning = true;
@@ -1393,12 +1398,12 @@
 				body: JSON.stringify(body)
 			});
 
-			const data = deployAfterSave
+			const data = deploying
 				? await readJobResponse(response, (line) => (outputLines = [...outputLines, line]))
 				: await readJobResponse(response);
 
 			if (!response.ok) {
-				if (deployAfterSave) {
+				if (deploying) {
 					// A pre-deploy failure (e.g. git sync) streams no lines, so surface
 					// the error text in the window instead of "No logs available".
 					if (outputLines.length === 0 && data.error) outputLines = String(data.error).split('\n');
@@ -1412,7 +1417,7 @@
 
 			// Check if deployment failed
 			const deployResult = data.deployResult as { success?: boolean; error?: string } | undefined;
-			if (deployAfterSave) {
+			if (deploying) {
 				const ok = !(deployResult && !deployResult.success);
 				// The sync phase (clone/pull) fails before any compose line streams, so
 				// on a failure with no streamed output, show the error text.
@@ -1435,11 +1440,7 @@
 
 			deploysReloadKey++; // a new run was recorded; refresh the Deploys tab
 			onSaved();
-			if (isAdopting) {
-				onClose();
-				return;
-			}
-			switch (saveCloseTiming(deployAfterSave, true)) {
+			switch (saveCloseTiming(deploying, true)) {
 				case 'close':
 					onClose();
 					break;
@@ -1655,10 +1656,10 @@
 					{/if}
 					<div>
 						<Dialog.Title class="text-sm font-semibold text-zinc-800 dark:text-zinc-100">
-							{isAdopting ? 'Adopt stack from Git' : gitStack ? 'Edit git stack' : 'Deploy from Git'}
+							{isAdopting ? 'Convert to Git' : gitStack ? 'Edit git stack' : 'Deploy from Git'}
 						</Dialog.Title>
 						<Dialog.Description class="text-xs text-zinc-500 dark:text-zinc-400">
-							{isAdopting ? 'Reuse the running Compose project while moving its files into Dockhand\'s managed Git location' : gitStack ? 'Update git stack settings' : 'Deploy a compose stack from a Git repository'}
+							{isAdopting ? 'Reuse the running Compose project without moving its original files' : gitStack ? 'Update git stack settings' : 'Deploy a compose stack from a Git repository'}
 						</Dialog.Description>
 						<div class="flex items-center gap-2 mt-1">
 							<Badge variant="outline" class="text-2xs py-0 px-1.5">
@@ -2075,7 +2076,15 @@
 			{#if isAdopting}
 				<div class="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-muted-foreground">
 					<p class="font-medium text-foreground">Existing services stay running.</p>
-					<p class="mt-1">Compose <code class="rounded bg-muted px-1">up</code> reuses project "{adoptionTarget?.stackName}". The current compose directory, including relative bind data, will move into Dockhand's managed Git location after a successful deployment. The current environment file is preserved unless you explicitly select a Git env file below.</p>
+					<p class="mt-1">Compose <code class="rounded bg-muted px-1">up</code> reuses project "{adoptionTarget?.stackName}". The original directory stays in place. Select any host files you need in the Git-managed directory below.</p>
+				</div>
+				<div class="space-y-2">
+					<Label>Copy host files or directories (optional)</Label>
+					<Button variant="outline" type="button" onclick={() => showHostCopyBrowser = true}>Browse host files</Button>
+					{#each hostCopyPaths as path}
+						<div class="flex items-center gap-2 text-xs"><span class="break-all">{path}</span><button type="button" aria-label="Remove {path}" onclick={() => hostCopyPaths = hostCopyPaths.filter((item) => item !== path)}><X class="h-3 w-3" /></button></div>
+					{/each}
+					<p class="text-xs text-amber-700 dark:text-amber-300">Files tracked by Git may be overwritten by normal Git deployments. Originals are never moved.</p>
 				</div>
 			{/if}
 
@@ -2511,6 +2520,17 @@
 />
 
 <!-- Git repository filesystem browser -->
+<FilesystemBrowser
+	bind:open={showHostCopyBrowser}
+	title="Select host files or directories to copy"
+	description="Browse the filesystem visible to the process that will copy these items"
+	selectMode="file_or_directory"
+	multiSelect
+	apiUrl={appendEnvParam('/api/stacks/host-files', effectiveEnvId)}
+	onSelect={(path) => hostCopyPaths = [...new Set([...hostCopyPaths, path])]}
+	onSelectMany={(entries) => hostCopyPaths = [...new Set([...hostCopyPaths, ...entries.map((entry) => entry.path)])]}
+	onClose={() => showHostCopyBrowser = false}
+/>
 <!-- Opens when user clicks Browse next to the compose file path field -->
 <FilesystemBrowser
 	bind:open={showGitRepoBrowser}

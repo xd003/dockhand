@@ -149,6 +149,12 @@
 
 		if (entry.type === 'directory') {
 			if (selectMode === 'file_or_directory' && !doubleClick) {
+				if (multiSelect) {
+					selectedEntries = selectedEntries.some((item) => item.path === entry.path)
+						? selectedEntries.filter((item) => item.path !== entry.path)
+						: [...selectedEntries, entry];
+					return;
+				}
 				selectedPath = entry.path;
 				selectedName = entry.name;
 			} else {

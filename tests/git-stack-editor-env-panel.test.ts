@@ -13,6 +13,21 @@ describe('Git stack draft editor', () => {
 		expect(modal).toContain("mobilePane === 'vars'");
 	});
 
+	test('shows the effective repository env file path in the variables pane', () => {
+		expect(modal).toContain('const displayEnvFilePath = $derived(');
+		expect(modal).toContain(".replace(/(^|\\/)[^/]+$/, '$1.env')");
+		expect(modal).toContain('title={displayEnvFilePath}');
+		expect(modal).toContain('>Env file</div>');
+		expect(modal).not.toContain('Repository env file');
+	});
+
+	test('offers compose validation and copy actions in the editor', () => {
+		expect(modal).toContain('async function validateGitDraft()');
+		expect(modal).toContain('async function copyDraftCompose()');
+		expect(modal).toContain('{#snippet headerActions()}');
+		expect(modal).toContain('<ComposeValidatePanel report={draftValidateReport}');
+	});
+
 	test('shows compose variable markers without a successful-load toast', () => {
 		expect(modal).toContain('const variableMarkers = $derived.by<VariableMarker[]>');
 		expect(modal).toContain('{variableMarkers}');

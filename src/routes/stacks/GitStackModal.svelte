@@ -8,7 +8,7 @@
 	import { Label } from '$lib/components/ui/label';
 	import { Input } from '$lib/components/ui/input';
 	import { TogglePill } from '$lib/components/ui/toggle-pill';
-	import { Loader2, GitBranch, RefreshCw, Webhook, Rocket, RefreshCcw, Copy, Check, XCircle, FolderGit2, Github, Key, KeyRound, Lock, FileText, HelpCircle, GripVertical, X, Download, Hammer, ArrowDownToLine, Zap, FolderOpen, Ban, TriangleAlert, Settings2, Archive, History, GitFork, ArrowUp, ArrowDown, Code, GitGraph } from 'lucide-svelte';
+	import { Loader2, GitBranch, RefreshCw, Webhook, Rocket, RefreshCcw, Copy, Check, XCircle, FolderGit2, Github, Key, KeyRound, Lock, FileText, HelpCircle, GripVertical, X, Download, Hammer, ArrowDownToLine, Zap, FolderOpen, Ban, TriangleAlert, Settings2, Archive, History, GitFork, ArrowUp, ArrowDown, Code, GitGraph, ListChecks } from 'lucide-svelte';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import { page } from '$app/stores'; // BETA GATE: backups feature flag
 	import BackupPanel from '../containers/BackupPanel.svelte';
@@ -35,6 +35,7 @@
 	import { readJobResponse } from '$lib/utils/sse-fetch';
 	import FilesystemBrowser from './FilesystemBrowser.svelte';
 	import StackFileEditor from './StackFileEditor.svelte';
+	import ComposeValidatePanel from './ComposeValidatePanel.svelte';
 	import type { StackFileEditorDraft } from '$lib/stack-file-editor';
 	import WebhookSecretInput from '$lib/components/WebhookSecretInput.svelte';
 	import WebhookUrlCopyField from '$lib/components/WebhookUrlCopyField.svelte';
@@ -433,6 +434,7 @@
 			draftOriginalComposeContents = { ...contents };
 			draftComposeRevisions = Object.fromEntries(entries.filter((entry: any) => typeof entry.revision === 'string').map((entry: any) => [entry.path, entry.revision]));
 			draftComposeClassifications = entries.map((entry: any) => ({ path: entry.path, tracked: entry.tracked === true, ignored: entry.ignored === true }));
+			draftActiveComposePath = paths[0];
 			draftEditorDirty = false;
 			draftEditorReady = true;
 			await populateEnvVars();
@@ -450,6 +452,48 @@
 		previewedComposePaths = [...draft.composePaths];
 		previewedComposeContents = { ...draft.composeContents };
 		previewedComposeContent = draft.composeContents[draft.composePaths[0]] ?? '';
+	}
+
+	async function copyDraftCompose() {
+		const ok = await copyToClipboard(draftActiveContent);
+		draftContentCopied = ok ? 'ok' : 'error';
+		setTimeout(() => (draftContentCopied = null), 1500);
+	}
+
+	async function validateGitDraft() {
+		const primaryPath = formComposePaths.find((path) => path.trim()) || formComposePath;
+		const primaryContent = draftComposeContents[primaryPath] ?? '';
+		if (!primaryContent.trim()) return;
+		draftValidateLoading = true;
+		draftValidateError = null;
+		draftValidatePanelOpen = true;
+		const seq = ++draftValidateSeq;
+		try {
+			const validationEnvVars = Object.fromEntries(envVars.filter((variable) => variable.key.trim()).map((variable) => [variable.key.trim(), variable.value ?? '']));
+			const response = await fetch(appendEnvParam(`/api/stacks/${encodeURIComponent(formStackName.trim() || 'stack')}/validate`, effectiveEnvId), {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ compose: primaryContent, composePaths: formComposePaths.filter((path) => path.trim()), composeContents: draftComposeContents, envVars: validationEnvVars, existing: false })
+			});
+			if (!response.ok) {
+				const body = await response.json().catch(() => ({}));
+				throw new Error(body.error || `Validation failed (${response.status})`);
+			}
+			if (seq === draftValidateSeq) draftValidateReport = await response.json();
+		} catch (error) {
+			if (seq === draftValidateSeq) {
+				draftValidateError = error instanceof Error ? error.message : 'Validation failed';
+				draftValidateReport = null;
+			}
+		} finally {
+			if (seq === draftValidateSeq) draftValidateLoading = false;
+		}
+	}
+
+	function closeDraftValidatePanel() {
+		draftValidatePanelOpen = false;
+		draftValidateReport = null;
+		draftValidateError = null;
 	}
 
 	let formBuildOnDeploy = $state(false);
@@ -528,6 +572,9 @@
 
 	// Environment variables state
 	let formEnvFilePath = $state<string | null>(null);
+	const displayEnvFilePath = $derived(
+		formEnvFilePath?.trim() || (formComposePaths[0]?.trim() || formComposePath.trim() || 'compose.yaml').replace(/(^|\/)[^/]+$/, '$1.env')
+	);
 	let envFiles = $state<string[]>([]);
 	let loadingEnvFiles = $state(false);
 	let envVars = $state<EnvVar[]>([]);
@@ -593,6 +640,19 @@
 	let draftOriginalComposeContents = $state<Record<string, string>>({});
 	let draftComposeRevisions = $state<Record<string, string>>({});
 	let draftComposeClassifications = $state<Array<{ path: string; tracked: boolean; ignored: boolean }>>([]);
+	let draftActiveComposePath = $state('');
+	let draftContentCopied = $state<'ok' | 'error' | null>(null);
+	let draftValidatePanelOpen = $state(false);
+	let draftValidateLoading = $state(false);
+	let draftValidateError = $state<string | null>(null);
+	let draftValidateReport = $state<import('./ComposeValidatePanel.svelte').ValidateReport | null>(null);
+	let draftValidateSeq = 0;
+	const draftActiveContent = $derived(draftComposeContents[draftActiveComposePath] ?? '');
+	const draftValidateMarkers = $derived(
+		(draftValidateReport?.findings ?? [])
+			.filter((finding) => typeof finding.line === 'number' && (!finding.source || finding.source === draftActiveComposePath || finding.source === 'compose'))
+			.map((finding) => ({ line: finding.line!, severity: finding.severity, ruleId: finding.ruleId, message: finding.message }))
+	);
 	let draftLoadSeq = 0;
 	/** Tracks whether formComposePath was set by the Browse button (vs. typed manually) */
 	let formComposePathBrowsed = $state(false);
@@ -976,6 +1036,10 @@
 		draftOriginalComposeContents = {};
 		draftComposeRevisions = {};
 		draftComposeClassifications = [];
+		draftActiveComposePath = '';
+		draftContentCopied = null;
+		closeDraftValidatePanel();
+		draftValidateSeq++;
 		draftLoadSeq++;
 		// Reset the deploy-output overlay so a previous run's window (bound to
 		// outputOpen) can't reappear over a freshly opened modal -- the main modal is
@@ -1725,13 +1789,44 @@
 							composePaths={formComposePaths}
 							composeContents={draftComposeContents}
 							{variableMarkers}
+							lintMarkers={draftValidateMarkers}
+							initialPath={draftActiveComposePath}
+							onActivePathChange={(path) => (draftActiveComposePath = path)}
+							onLintClick={() => (draftValidatePanelOpen = true)}
 							onChange={applyGitDraftEditor}
-						/>
+						>
+							{#snippet headerActions()}
+								<Button variant="ghost" size="sm" class="h-7 px-2 text-xs text-muted-foreground" onclick={validateGitDraft} disabled={!draftActiveContent} title="Check this compose for problems before deploy">
+									{#if draftValidateLoading}<Loader2 class="h-3 w-3 animate-spin" />{:else}<ListChecks class="h-3 w-3" />{/if}
+									Validate
+								</Button>
+								<Button variant="ghost" size="sm" class="h-7 px-2 text-xs text-muted-foreground" onclick={copyDraftCompose} disabled={!draftActiveContent}>
+									{#if draftContentCopied === 'ok'}<Check class="h-3 w-3 text-green-500" />{:else if draftContentCopied === 'error'}<XCircle class="h-3 w-3 text-red-500" />{:else}<Copy class="h-3 w-3" />{/if}
+									{draftContentCopied === 'ok' ? 'Copied' : draftContentCopied === 'error' ? 'Failed' : 'Copy'}
+								</Button>
+							{/snippet}
+							{#snippet editorOverlay()}
+								{#if draftValidatePanelOpen}
+									<div class="absolute inset-y-0 right-0 z-20 max-w-full max-md:w-full" style="width: 420px">
+										<ComposeValidatePanel report={draftValidateReport} loading={draftValidateLoading} error={draftValidateError} onClose={closeDraftValidatePanel} onRevalidate={validateGitDraft} />
+									</div>
+								{/if}
+							{/snippet}
+						</StackFileEditor>
 					</div>
 					<button type="button" class="w-1 flex-shrink-0 cursor-col-resize bg-zinc-200 transition-colors hover:bg-blue-400 dark:bg-zinc-700 dark:hover:bg-blue-500 max-md:hidden" aria-label="Resize compose and variables panels" onmousedown={startSplitDrag}></button>
 					<div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden {mobilePane === 'vars' ? 'max-md:flex-1' : 'max-md:hidden'}">
-						<SecretProviderPicker bind:secretProviderId={formSecretProviderId} bind:envVars providers={secretProviders} />
-						<div class="flex min-h-0 flex-1 flex-col px-4 py-4 sm:px-6">
+						<div class="flex min-h-0 flex-1 flex-col px-4 py-4 sm:px-8 sm:py-6">
+							<div class="mb-5 flex items-center gap-3 rounded-lg border border-zinc-200 bg-zinc-50 px-3.5 py-3 dark:border-zinc-700 dark:bg-zinc-800/40">
+								<FileText class="h-4 w-4 shrink-0 text-muted-foreground" />
+								<div class="min-w-0 flex-1">
+									<div class="text-[11px] text-muted-foreground">Env file</div>
+									<div class="truncate font-mono text-xs text-zinc-600 dark:text-zinc-300" title={displayEnvFilePath}>
+										{displayEnvFilePath}
+									</div>
+								</div>
+							</div>
+							<SecretProviderPicker bind:secretProviderId={formSecretProviderId} bind:envVars providers={secretProviders} />
 							<StackEnvVarsPanel
 								bind:variables={envVars}
 								validation={envValidation}

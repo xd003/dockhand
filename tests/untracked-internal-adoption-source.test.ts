@@ -9,11 +9,11 @@ const modal = readFileSync(join(root, 'src/routes/stacks/StackModal.svelte'), 'u
 describe('untracked internal adoption wiring', () => {
 	it('adopts the selected compose file before saving stack data', () => {
 		const adoption = modal.indexOf("await fetch('/api/stacks/adopt'");
-		const preflight = modal.indexOf('await preflightLinkedSave(restart)', adoption);
+		const requestBody = modal.indexOf('const requestBody:', adoption);
 
 		expect(adoption).toBeGreaterThan(-1);
-		expect(preflight).toBeGreaterThan(adoption);
-		expect(modal.slice(adoption, preflight)).toContain('needsFileLocation = false');
+		expect(requestBody).toBeGreaterThan(adoption);
+		expect(modal.slice(adoption, requestBody)).toContain('needsFileLocation = false');
 	});
 
 	it('keeps the stack untracked after loading the selected file', () => {

@@ -15,16 +15,14 @@ export interface ComposeOperationArgOptions {
 	noBuildCache?: boolean;
 	pullPolicy?: string;
 	serviceName?: string;
-	serviceNames?: string[];
-	noDeps?: boolean;
 }
 
 export function buildComposeOperationArgs(
 	operation: 'up' | 'down' | 'stop' | 'start' | 'restart' | 'pull' | 'build',
 	options: ComposeOperationArgOptions = {}
 ): string[] {
-	const { forceRecreate, removeVolumes, build, noBuildCache, pullPolicy, serviceName, serviceNames, noDeps } = options;
-	const targets = serviceNames?.length ? serviceNames : serviceName ? [serviceName] : [];
+	const { forceRecreate, removeVolumes, build, noBuildCache, pullPolicy, serviceName } = options;
+	const targets = serviceName ? [serviceName] : [];
 	const args: string[] = [];
 
 	switch (operation) {
@@ -35,7 +33,6 @@ export function buildComposeOperationArgs(
 			// also carry --build (and never --no-cache, which up doesn't accept).
 			if (build && !noBuildCache) args.push('--build');
 			if (pullPolicy) args.push('--pull', pullPolicy);
-			if (noDeps) args.push('--no-deps');
 			args.push(...targets);
 			break;
 		case 'down':

@@ -4,7 +4,6 @@ import { join } from 'node:path';
 
 const modal = readFileSync(join(import.meta.dir, '../src/routes/stacks/GitStackModal.svelte'), 'utf8');
 const stackModal = readFileSync(join(import.meta.dir, '../src/routes/stacks/StackModal.svelte'), 'utf8');
-const fileEditor = readFileSync(join(import.meta.dir, '../src/routes/stacks/StackFileEditor.svelte'), 'utf8');
 
 describe('Git stack draft editor', () => {
 	test('loads and renders environment variables beside the compose editor', () => {
@@ -34,12 +33,4 @@ describe('Git stack draft editor', () => {
 		expect(stackModal).toContain('await populateGitEnvVars(loadedVars, false);');
 	});
 
-	test('allows deployed Git stacks to manage linked files while compose content stays read-only', () => {
-		expect(stackModal).toContain('allowFileManagement={isGitView}');
-		expect(stackModal).toContain('canLink={isGitView || hasLinkableFile');
-		expect(stackModal).toContain("initialPath: '',\n\t\t\tapiUrl: linkedBrowseApiUrl()");
-		expect(stackModal).toContain('bind:rootPath={linkedBrowseRoot}');
-		expect(fileEditor).toContain('(!readonly || allowFileManagement) && (canLink || canCreate)');
-		expect(fileEditor).toContain('activeLinkedEntry && (!readonly || allowFileManagement)');
-	});
 });

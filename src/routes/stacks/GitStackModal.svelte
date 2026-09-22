@@ -35,8 +35,7 @@
 	import { readJobResponse } from '$lib/utils/sse-fetch';
 	import FilesystemBrowser from './FilesystemBrowser.svelte';
 	import StackFileEditor from './StackFileEditor.svelte';
-	import type { StackEditorEntry, StackFileEditorDraft } from '$lib/stack-file-editor';
-	import type { LinkedStackFile } from '$lib/stack-linked-files';
+	import type { StackFileEditorDraft } from '$lib/stack-file-editor';
 	import WebhookSecretInput from '$lib/components/WebhookSecretInput.svelte';
 	import WebhookUrlCopyField from '$lib/components/WebhookUrlCopyField.svelte';
 	import { ensureWebhookSecret, webhookSecretValidationError } from '$lib/utils/webhook-secret';
@@ -303,12 +302,10 @@
 	}
 
 	let gitBrowseForRowIndex = $state<number | null>(null);
-	let gitBrowserPurpose = $state<'compose' | 'link'>('compose');
 	let gitBrowserInitialPath = $state('');
 
 	async function gitBrowseForRow(index: number) {
 		gitBrowserError = null;
-		gitBrowserPurpose = 'compose';
 		gitBrowserInitialPath = '';
 		gitBrowseForRowIndex = index;
 		await openGitRepoBrowser();
@@ -360,10 +357,6 @@
 			const overrides = detectedComposeOverridePaths(
 				relativePath,
 				entries.filter((entry: any) => entry.type !== 'directory').map((entry: any) => entry.name)
-			);
-			const composeNames = new Set([...formComposePaths, ...overrides].map((path) => path.split('/').pop()?.toLocaleLowerCase()));
-			draftHasLinkableFile = entries.some((entry: any) =>
-				entry.type !== 'directory' && entry.name.toLocaleLowerCase() !== '.env' && !composeNames.has(entry.name.toLocaleLowerCase())
 			);
 			if (overrides.length === 0 || formComposePaths[0] !== relativePath) return;
 			const rest = formComposePaths.slice(1).filter((path) => !overrides.includes(path));
@@ -440,8 +433,6 @@
 			draftOriginalComposeContents = { ...contents };
 			draftComposeRevisions = Object.fromEntries(entries.filter((entry: any) => typeof entry.revision === 'string').map((entry: any) => [entry.path, entry.revision]));
 			draftComposeClassifications = entries.map((entry: any) => ({ path: entry.path, tracked: entry.tracked === true, ignored: entry.ignored === true }));
-			draftLinkedEntries = [];
-			draftFolders = [];
 			draftEditorDirty = false;
 			draftEditorReady = true;
 			await populateEnvVars();
@@ -455,53 +446,10 @@
 		formComposePaths = [...draft.composePaths];
 		formComposePath = formComposePaths[0] || 'compose.yaml';
 		draftComposeContents = { ...draft.composeContents };
-		draftLinkedEntries = draft.linkedFiles.map((file) => {
-			const previous = draftLinkedEntries.find((entry) => entry.path === file.path);
-			return {
-				path: file.path,
-				name: file.path.split('/').pop() ?? file.path,
-				kind: 'linked',
-				content: draft.linkedFileContents[file.path] ?? previous?.content ?? '',
-				originalContent: previous?.originalContent ?? '',
-				language: file.path.includes('.') ? 'text' : 'text',
-				ownership: file.ownership,
-				tracked: draft.classifications.find((entry) => entry.path === file.path)?.tracked,
-				ignored: draft.classifications.find((entry) => entry.path === file.path)?.ignored,
-				postChange: file.postChange,
-				originalPostChange: previous?.originalPostChange ?? structuredClone(file.postChange),
-				revision: draft.revisions[file.path] ?? previous?.revision
-			};
-		});
-		draftFolders = [...draft.createdFolders];
 		draftEditorDirty = true;
 		previewedComposePaths = [...draft.composePaths];
 		previewedComposeContents = { ...draft.composeContents };
 		previewedComposeContent = draft.composeContents[draft.composePaths[0]] ?? '';
-	}
-
-	async function requestGitDraftLink() {
-		if (!formRepositoryId || (!isCentralizedMode && !temporaryCloneToken)) return;
-		gitBrowserPurpose = 'link';
-		gitBrowseForRowIndex = null;
-		gitBrowserInitialPath = (formComposePaths[0] || formComposePath).replace(/\/[^/]*$/, '');
-		configureGitBrowser();
-		showGitRepoBrowser = true;
-	}
-
-	async function selectGitDraftLink(path: string) {
-		if (!formRepositoryId || (!isCentralizedMode && !temporaryCloneToken)) return;
-		const composeDir = (formComposePaths[0] || formComposePath).replace(/\/[^/]*$/, '');
-		const relativePath = composeDir && path.startsWith(`${composeDir}/`) ? path.slice(composeDir.length + 1) : path;
-		const query = new URLSearchParams(isCentralizedMode ? { shared: '1', path } : { token: temporaryCloneToken!, path });
-		const response = await fetch(`/api/git/repositories/${formRepositoryId}/draft-files?${query}`);
-		const data = await response.json().catch(() => ({}));
-		if (!response.ok || !data.entries?.[0]) {
-			toast.error(data.error || 'Failed to load configuration file');
-			return;
-		}
-		const entry = data.entries[0];
-		draftEditorRef?.addLinkedFile({ path: relativePath, content: entry.content, ownership: 'git', tracked: entry.tracked, ignored: entry.ignored, revision: entry.revision });
-		showGitRepoBrowser = false;
 	}
 
 	let formBuildOnDeploy = $state(false);
@@ -639,16 +587,12 @@
 	let temporaryCloneToken = $state<string | null>(null);
 	let temporaryCloneRepositoryId = $state<number | null>(null);
 	let temporaryCloneBranch = $state<string | null>(null);
-	let draftEditorRef = $state<StackFileEditor | null>(null);
 	let draftEditorReady = $state(false);
-	let draftHasLinkableFile = $state(false);
 	let draftEditorDirty = $state(false);
 	let draftComposeContents = $state<Record<string, string>>({});
 	let draftOriginalComposeContents = $state<Record<string, string>>({});
 	let draftComposeRevisions = $state<Record<string, string>>({});
 	let draftComposeClassifications = $state<Array<{ path: string; tracked: boolean; ignored: boolean }>>([]);
-	let draftLinkedEntries = $state<StackEditorEntry[]>([]);
-	let draftFolders = $state<string[]>([]);
 	let draftLoadSeq = 0;
 	/** Tracks whether formComposePath was set by the Browse button (vs. typed manually) */
 	let formComposePathBrowsed = $state(false);
@@ -1027,14 +971,11 @@
 		// Clear state BEFORE async loads to avoid race conditions
 		activeTab = 'settings';
 		draftEditorReady = false;
-		draftHasLinkableFile = false;
 		draftEditorDirty = false;
 		draftComposeContents = {};
 		draftOriginalComposeContents = {};
 		draftComposeRevisions = {};
 		draftComposeClassifications = [];
-		draftLinkedEntries = [];
-		draftFolders = [];
 		draftLoadSeq++;
 		// Reset the deploy-output overlay so a previous run's window (bound to
 		// outputOpen) can't reappear over a freshly opened modal -- the main modal is
@@ -1327,11 +1268,8 @@
 			if (temporaryCloneToken && !gitStack) body.temporaryCloneToken = temporaryCloneToken;
 			if (!gitStack && draftEditorReady && draftEditorDirty) {
 				body.composeContents = draftComposeContents;
-				body.linkedFiles = draftLinkedEntries.map(({ path, ownership, postChange }) => ({ path, ownership, postChange }));
-				body.linkedFileContents = Object.fromEntries(draftLinkedEntries.map((entry) => [entry.path, entry.content]));
-				body.createdFolders = draftFolders;
 				body.editorRevisions = draftComposeRevisions;
-				body.editorClassifications = [...draftComposeClassifications, ...draftLinkedEntries.map((entry) => ({ path: entry.path, tracked: entry.tracked === true, ignored: entry.ignored === true }))];
+				body.editorClassifications = draftComposeClassifications;
 				const commitChanges = window.confirm('Commit and push tracked configuration changes? Cancel keeps them local for this deployment.');
 				body.trackedDecision = commitChanges ? 'commit' : 'internal';
 				const addChanges = window.confirm('Add untracked configuration changes to Git? Cancel keeps them local.');
@@ -1509,7 +1447,6 @@
 
 	async function openGitRepoBrowser() {
 		gitBrowserError = null;
-		gitBrowserPurpose = 'compose';
 		gitBrowserInitialPath = '';
 
 		if (formRepoMode === 'new') {
@@ -1785,16 +1722,10 @@
 				<div class="flex min-h-0 flex-1 max-md:flex-col">
 					<div class="flex min-h-0 min-w-0 flex-shrink-0 flex-col max-md:w-full! {mobilePane === 'form' ? 'max-md:flex-1' : 'max-md:hidden'}" style="width: {splitRatio}%">
 						<StackFileEditor
-							bind:this={draftEditorRef}
 							composePaths={formComposePaths}
 							composeContents={draftComposeContents}
-							linkedEntries={draftLinkedEntries}
-							createdFolders={draftFolders}
-							folderWarning="Empty folders are local only because Git does not track directories."
 							{variableMarkers}
 							onChange={applyGitDraftEditor}
-							onRequestLink={requestGitDraftLink}
-							canLink={draftHasLinkableFile || draftLinkedEntries.some((entry) => entry.path.split('/').pop()?.toLocaleLowerCase() !== '.env')}
 						/>
 					</div>
 					<button type="button" class="w-1 flex-shrink-0 cursor-col-resize bg-zinc-200 transition-colors hover:bg-blue-400 dark:bg-zinc-700 dark:hover:bg-blue-500 max-md:hidden" aria-label="Resize compose and variables panels" onmousedown={startSplitDrag}></button>
@@ -2534,23 +2465,22 @@
 <!-- Opens when user clicks Browse next to the compose file path field -->
 <FilesystemBrowser
 	bind:open={showGitRepoBrowser}
-	title={gitBrowserPurpose === 'link' ? 'Link configuration file' : 'Select compose file(s)'}
+	title="Select compose file(s)"
 	icon={FolderGit2}
-	description={gitBrowserPurpose === 'link' ? 'Choose a text file from the Compose directory' : 'Select one or more compose files from the repository'}
+	description="Select one or more compose files from the repository"
 	initialPath={gitBrowserInitialPath}
-	selectFilter={gitBrowserPurpose === 'link' ? /.*/ : /\.ya?ml$/i}
+	selectFilter={/\.ya?ml$/i}
 	selectMode="file"
 	apiUrl={gitBrowserApiUrl}
 	bind:rootPath={gitBrowserRootPath}
 	bind:cloningMessage={gitBrowserCloningMessage}
-	onSelect={gitBrowserPurpose === 'link' ? selectGitDraftLink : gitBrowseForRowIndex !== null ? gitHandleRowBrowseSelect : ((path, name) => handleGitMultiBrowseSelect([{ path, name }]))}
-	multiSelect={gitBrowserPurpose === 'compose' && gitBrowseForRowIndex === null}
-	onSelectMany={gitBrowserPurpose === 'compose' && gitBrowseForRowIndex === null ? handleGitMultiBrowseSelect : undefined}
+	onSelect={gitBrowseForRowIndex !== null ? gitHandleRowBrowseSelect : ((path, name) => handleGitMultiBrowseSelect([{ path, name }]))}
+	multiSelect={gitBrowseForRowIndex === null}
+	onSelectMany={gitBrowseForRowIndex === null ? handleGitMultiBrowseSelect : undefined}
 	onClose={() => {
 		showGitRepoBrowser = false;
 		gitBrowserCloningMessage = undefined;
 		gitBrowseForRowIndex = null;
-		gitBrowserPurpose = 'compose';
 		gitBrowserInitialPath = '';
 	}}
 />

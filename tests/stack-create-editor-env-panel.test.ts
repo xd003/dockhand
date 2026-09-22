@@ -7,7 +7,7 @@ const modal = readFileSync(join(import.meta.dir, '../src/routes/stacks/StackModa
 describe('local stack create editor', () => {
 	test('uses the shared compose and environment variables split', () => {
 		expect(modal).toContain("activeTab === 'editor' && (mode === 'create' || (mode === 'edit' && !needsFileLocation))");
-		expect(modal).toContain("onChange={mode === 'create' ? applyDraftEditor : applyPersistedEditor}");
+		expect(modal).toContain('onChange={applyEditorDraft}');
 		expect(modal).not.toContain("{#if mode === 'create' && activeTab === 'editor'}");
 	});
 

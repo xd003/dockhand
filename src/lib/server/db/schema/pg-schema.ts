@@ -386,8 +386,6 @@ export const stackSources = pgTable('stack_sources', {
 	// Per-stack icon: a lucide name ('server'), 'selfhst:<ref>', or 'custom:<file>'.
 	// Null -> UI falls back to a generic icon.
 	icon: text('icon'),
-	// Versioned JSON document containing explicit linked config-file metadata.
-	linkedFiles: text('linked_files'),
 	createdAt: timestamp('created_at', { mode: 'string' }).defaultNow(),
 	updatedAt: timestamp('updated_at', { mode: 'string' }).defaultNow()
 }, (table) => ({

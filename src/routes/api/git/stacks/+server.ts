@@ -25,14 +25,11 @@ import { allowSecretlessWebhook, webhookConfigRequiresSecret } from '$lib/server
 import { registerSchedule } from '$lib/server/scheduler';
 import { adoptExternalGitStack, validateExternalGitAdoption } from '$lib/server/git-stack-adoption';
 import { acquireStackLock } from '$lib/server/stacks';
-import { basename, dirname, join, relative } from 'node:path';
+import { dirname, relative } from 'node:path';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { getPendingGitClonePath } from '$lib/server/git-stack';
 import { mutateGitStackFiles, type GitFileChange } from '$lib/server/git-stack-files';
-import { publishDraftLinkedFiles, validateDraftLinkedFiles } from '$lib/server/stack-linked-files';
-import { normalizeLinkedFiles, type LinkedStackFile } from '$lib/stack-linked-files';
 import { repoFilePath, resolveSafeGitFileTarget } from '$lib/server/git-url-safety';
-import { getStackDir } from '$lib/server/stacks';
 
 // Stack name validation: Docker Compose requires lowercase; must start with a
 // letter or number, and contain only lowercase letters, numbers, hyphens, underscores
@@ -45,24 +42,14 @@ function draftChanges(data: any, repoRoot: string): GitFileChange[] {
 		content: typeof content === 'string' ? content : (() => { throw new Error(`Compose content must be text: ${path}`); })(),
 		expectedRevision: data.editorRevisions?.[path]
 	}));
-	const composeDir = dirname(repoFilePath(repoRoot, data.composePath || data.composePaths?.[0] || 'compose.yaml', 'Compose path'));
-	const linkedContents = data.linkedFileContents && typeof data.linkedFileContents === 'object' && !Array.isArray(data.linkedFileContents) ? data.linkedFileContents : {};
-	const linkedChanges = Object.entries(linkedContents).map(([path, content]) => ({
-		path: relative(repoRoot, repoFilePath(composeDir, path, 'Linked file path')).split('/').join('/'),
-		content: typeof content === 'string' ? content : (() => { throw new Error(`Linked file content must be text: ${path}`); })(),
-		expectedRevision: data.editorRevisions?.[path]
-	}));
-	return [...composeChanges, ...linkedChanges];
+	return composeChanges;
 }
 
-function draftClassifications(data: any, repoRoot: string, composePaths: string[], composePath: string): Array<{ path: string; tracked: boolean; ignored: boolean }> | undefined {
+function draftClassifications(data: any, repoRoot: string): Array<{ path: string; tracked: boolean; ignored: boolean }> | undefined {
 	if (!Array.isArray(data.editorClassifications)) return undefined;
-	const composeDir = dirname(repoFilePath(repoRoot, composePath, 'Compose path'));
 	return data.editorClassifications.map((entry: any) => ({
 		...entry,
-		path: composePaths.includes(entry.path)
-			? relative(repoRoot, repoFilePath(repoRoot, entry.path, 'Compose path')).split('/').join('/')
-			: relative(repoRoot, repoFilePath(composeDir, entry.path, 'Draft file path')).split('/').join('/')
+		path: relative(repoRoot, repoFilePath(repoRoot, entry.path, 'Compose path')).split('/').join('/')
 	}));
 }
 
@@ -74,22 +61,6 @@ function writeDraftComposeFiles(root: string, data: any): void {
 		mkdirSync(dirname(target), { recursive: true });
 		writeFileSync(target, content, { encoding: 'utf8', mode: 0o640 });
 	}
-}
-
-function linkedMetadataAfterMutation(
-	files: LinkedStackFile[],
-	mutation: Awaited<ReturnType<typeof mutateGitStackFiles>> | null,
-	composeRoot: string,
-	repoRoot: string,
-	untrackedDecision: 'add' | 'local'
-): LinkedStackFile[] {
-	if (!mutation) return files;
-	return files.map((file) => {
-		const path = repoFilePath(composeRoot, file.path, 'Linked file path');
-		const relativePath = path.slice(repoRoot.length + 1);
-		const classification = mutation.classifications.find((entry) => entry.path === relativePath);
-		return classification ? { ...file, ownership: classification.tracked || untrackedDecision === 'add' ? 'git' : 'local' } : file;
-	});
 }
 
 /**
@@ -217,9 +188,8 @@ export const POST: RequestHandler = async (event) => {
 			? data.composePaths
 			: [data.composePath || 'compose.yaml'];
 		const composePath = composePaths[0];
-		let normalizedLinkedFiles: LinkedStackFile[] = [];
 		let pendingDraftPath: string | null = null;
-		const hasEditorDraft = data.composeContents !== undefined || data.linkedFiles !== undefined || data.linkedFileContents !== undefined || data.createdFolders !== undefined;
+		const hasEditorDraft = data.composeContents !== undefined;
 		const draftToken = typeof data.temporaryCloneToken === 'string' ? data.temporaryCloneToken.trim() : '';
 		if (hasEditorDraft && model !== 'centralized' && !draftToken) return json({ error: 'A valid pending repository checkout is required for Git editor drafts' }, { status: 400 });
 
@@ -342,18 +312,6 @@ export const POST: RequestHandler = async (event) => {
 				: getPendingGitClonePath(draftToken, Number(repositoryId));
 			if (!pendingDraftPath || !existsSync(pendingDraftPath)) return json({ error: model === 'centralized' ? 'Shared repository checkout not found' : 'Pending repository checkout not found or expired' }, { status: 404 });
 			try {
-				const composeRoot = dirname(repoFilePath(pendingDraftPath, composePath, 'Compose path'));
-				const reservedPaths = composePaths.map((path: string) => {
-					const absolute = repoFilePath(pendingDraftPath!, path, 'Compose path');
-					return absolute.startsWith(`${composeRoot}/`) ? absolute.slice(composeRoot.length + 1) : basename(absolute);
-				});
-				const envPath = typeof data.envFilePath === 'string' && data.envFilePath ? repoFilePath(pendingDraftPath!, data.envFilePath, 'Environment file path') : null;
-				if (envPath && envPath.startsWith(`${composeRoot}/`)) reservedPaths.push(envPath.slice(composeRoot.length + 1));
-				normalizedLinkedFiles = validateDraftLinkedFiles(composeRoot, {
-					linkedFiles: data.linkedFiles,
-					linkedFileContents: data.linkedFileContents,
-					createdFolders: data.createdFolders
-				}, { reservedPaths }).linkedFiles;
 				for (const change of draftChanges(data, pendingDraftPath)) {
 					if (typeof change.content !== 'string') throw new Error(`Invalid draft content: ${change.path}`);
 				}
@@ -371,7 +329,7 @@ export const POST: RequestHandler = async (event) => {
 			const untrackedDecision = data.untrackedDecision === 'local' ? 'local' : 'add';
 			const changes = draftChanges(data, pendingDraftPath);
 			if (changes.length > 0) {
-				const expectedClassifications = draftClassifications(data, pendingDraftPath, composePaths, composePath);
+				const expectedClassifications = draftClassifications(data, pendingDraftPath);
 				pendingDraftMutation = await mutateGitStackFiles({
 					repositoryId,
 					repoPath: pendingDraftPath,
@@ -473,38 +431,13 @@ export const POST: RequestHandler = async (event) => {
 				return json({ error: adoption.error || 'Failed to attach the pre-cloned repository' }, { status: 400 });
 			}
 			if (hasEditorDraft && adoption.path) {
-				const composeRoot = dirname(repoFilePath(adoption.path, composePath, 'Compose path'));
-				const untrackedDecision = data.untrackedDecision === 'local' ? 'local' : 'add';
-				const linkedFiles = linkedMetadataAfterMutation(normalizedLinkedFiles, pendingDraftMutation, composeRoot, adoption.path, untrackedDecision);
 				writeDraftComposeFiles(adoption.path, data);
-				const reservedPaths = composePaths.map((path: string) => {
-					const absolute = repoFilePath(adoption.path!, path, 'Compose path');
-					return absolute.startsWith(`${composeRoot}/`) ? absolute.slice(composeRoot.length + 1) : basename(absolute);
-				});
-				publishDraftLinkedFiles(composeRoot, { linkedFiles, linkedFileContents: data.linkedFileContents, createdFolders: data.createdFolders }, { reservedPaths });
-				normalizedLinkedFiles = linkedFiles;
 			}
 		}
 
 		if (model === 'centralized' && hasEditorDraft && centralizedRepoPath) {
 			try {
-				const repository = await getGitRepository(repositoryId);
-				if (!repository) throw new Error('Repository not found');
-				const composeRoot = dirname(repoFilePath(centralizedRepoPath, composePath, 'Compose path'));
-				const untrackedDecision = data.untrackedDecision === 'local' ? 'local' : 'add';
-				const linkedFiles = linkedMetadataAfterMutation(normalizedLinkedFiles, centralizedDraftMutation, composeRoot, centralizedRepoPath, untrackedDecision);
 				writeDraftComposeFiles(centralizedRepoPath, data);
-				const localRoot = join(await getStackDir(trimmedStackName, data.environmentId || null), relative(centralizedRepoPath, composeRoot));
-				const localLinkedFiles = linkedFiles.filter((file) => file.ownership === 'local');
-				const localContents = Object.fromEntries(localLinkedFiles
-					.map((file) => [file.path, data.linkedFileContents?.[file.path]])
-					.filter(([, content]) => typeof content === 'string'));
-				publishDraftLinkedFiles(localRoot, {
-					linkedFiles: localLinkedFiles,
-					linkedFileContents: localContents,
-					createdFolders: data.createdFolders
-				}, { forceLocalOwnership: true });
-				normalizedLinkedFiles = linkedFiles;
 			} catch (error) {
 				await deleteGitStack(gitStack.id).catch(() => false);
 				return json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 });
@@ -523,8 +456,7 @@ export const POST: RequestHandler = async (event) => {
 			sourceType: 'git',
 			gitRepositoryId: repositoryId,
 			gitStackId: gitStack.id,
-			secretProviderId: data.secretProviderId ?? null,
-			linkedFiles: normalizedLinkedFiles
+			secretProviderId: data.secretProviderId ?? null
 		});
 
 		// Audit log

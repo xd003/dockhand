@@ -17,8 +17,6 @@ import { join } from 'node:path';
 import {
 	getNonSecretEnvVarsAsRecord,
 	getSecretEnvVarsAsRecord,
-	getStackLinkedFiles,
-	getStackSource,
 	updateGitStack,
 	upsertStackSource
 } from './db';
@@ -91,22 +89,6 @@ export interface DeployStackFromSyncArgs {
 export async function deployStackFromSync(args: DeployStackFromSyncArgs): Promise<DeployGitStackResult> {
 	const { stackId, gitStack, opts, syncResult, onProgress, logPrefix } = args;
 	const { force, ignoreForceRedeploy } = opts;
-
-	// A local linked file is deliberately outside the repository checkout. If the
-	// repository later introduces the same path, stop before deletion or overlay so
-	// neither source silently wins.
-	if (syncResult.newFiles) {
-		const source = await getStackSource(gitStack.stackName, gitStack.environmentId);
-		const localPaths = getStackLinkedFiles(source).filter((file) => file.ownership === 'local').map((file) => file.path);
-		const conflicts = localPaths.filter((path) => Object.prototype.hasOwnProperty.call(syncResult.newFiles, path));
-		if (conflicts.length > 0) {
-			const error = `Git sync blocked: repository now tracks local linked file(s): ${conflicts.join(', ')}. Commit the file or unlink it before syncing.`;
-			await updateGitStack(stackId, { syncStatus: 'error', syncError: error });
-			const failResult = { success: false, error };
-			await notifyGitSync(gitStack.stackName, gitStack.environmentId, failResult);
-			return failResult;
-		}
-	}
 
 	// forceRedeploy setting overrides the skip logic for webhooks/scheduled
 	// syncs. For new stacks (first deploy), syncResult.updated will be true.

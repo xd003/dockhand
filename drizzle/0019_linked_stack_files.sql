@@ -1,1 +1,0 @@
-ALTER TABLE `stack_sources` ADD `linked_files` text;

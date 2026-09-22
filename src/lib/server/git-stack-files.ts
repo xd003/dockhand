@@ -4,7 +4,8 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { assertSafeGitRef, resolveSafeGitFileTarget } from './git-url-safety';
 import { buildGitEnv, cleanupSshKey, execGit, type GitEnv } from './git';
 import type { GitCredentialData } from './db';
-import { normalizeLinkedPath, MAX_LINKED_FILE_SIZE } from '../stack-linked-files';
+
+const MAX_GIT_FILE_SIZE = 10 * 1024 * 1024;
 
 export type GitTrackedDecision = 'commit' | 'internal';
 export type GitUntrackedDecision = 'add' | 'local';
@@ -62,11 +63,25 @@ export async function withGitRepositoryMutationLock<T>(repositoryId: number, fn:
 }
 
 function repoRelativePath(repoPath: string, path: string): string {
-	const normalized = normalizeLinkedPath(path);
+	const normalized = normalizeGitFilePath(path);
 	const absolute = resolve(repoPath, ...normalized.split('/'));
 	const rel = relative(resolve(repoPath), absolute).split(sep).join('/');
 	if (!rel || rel.startsWith('../') || isAbsolute(rel)) throw new Error(`Git file path escapes the repository: ${path}`);
 	return rel;
+}
+
+function normalizeGitFilePath(value: unknown): string {
+	if (typeof value !== 'string' || value.length === 0 || value.includes('\0')) {
+		throw new Error('Git file path must be a non-empty relative path');
+	}
+	if (value.startsWith('/') || /^[A-Za-z]:[\\/]/.test(value) || value.includes('\\')) {
+		throw new Error('Git file path must use a relative POSIX path');
+	}
+	const segments = value.split('/');
+	if (segments.some((segment) => segment === '' || segment === '.' || segment === '..')) {
+		throw new Error('Git file path cannot contain empty, ".", or ".." segments');
+	}
+	return segments.join('/');
 }
 
 function contentRevision(content: Buffer | string): string {
@@ -132,7 +147,7 @@ export async function mutateGitStackFiles(options: GitFileMutationOptions): Prom
 			const changedPaths = new Set<string>();
 			for (const change of options.changes) {
 				const path = repoRelativePath(options.repoPath, change.path);
-				if (Buffer.byteLength(change.content, 'utf8') > MAX_LINKED_FILE_SIZE || change.content.includes('\0')) throw new Error(`Invalid text content for Git file: ${change.path}`);
+				if (Buffer.byteLength(change.content, 'utf8') > MAX_GIT_FILE_SIZE || change.content.includes('\0')) throw new Error(`Invalid text content for Git file: ${change.path}`);
 				const target = resolveSafeGitFileTarget(options.repoPath, path);
 				const classification = await classifyPath(options.repoPath, path, env);
 				// Newly-created untracked draft files have no repository revision yet.

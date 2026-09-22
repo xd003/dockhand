@@ -7,7 +7,7 @@
 
 import { existsSync, mkdirSync, rmSync, readdirSync, cpSync, statSync, unlinkSync, renameSync, readFileSync, writeFileSync, realpathSync, accessSync, constants as fsConstants } from 'node:fs';
 import { copyStackItems } from './stack-copy-items';
-import { join, resolve, dirname, basename, relative, isAbsolute, normalize as pathNormalize, sep as pathSep } from 'node:path';
+import { join, resolve, dirname, basename, relative, isAbsolute, sep as pathSep } from 'node:path';
 import { spawn as nodeSpawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { redactSecretVars } from './secret-redact';
@@ -1540,10 +1540,6 @@ interface ComposeCommandOptions {
 	useOverrideFile?: boolean;
 	/** Target specific service only (with --no-deps) for single-service updates */
 	serviceName?: string;
-	/** Validated target services for linked-file actions. */
-	serviceNames?: string[];
-	/** Do not start dependencies when targeting selected services. */
-	noDeps?: boolean;
 	/** Compose filename for Hawser (e.g., "docker-compose.prod.yml") - extracted from composePath */
 	composeFileName?: string;
 	/** Git deletion sync (#966): files to delete on the Hawser agent's stack dir */
@@ -1590,8 +1586,6 @@ async function executeLocalCompose(
 	customEnvPath?: string,
 	useOverrideFile?: boolean,
 	serviceName?: string,
-	serviceNames?: string[],
-	noDeps?: boolean,
 	build?: boolean,
 	noBuildCache?: boolean,
 	pullPolicy?: string,
@@ -1868,7 +1862,7 @@ async function executeLocalCompose(
 		console.log(`${logPrefix} [HostPath] Using stdin for compose content (paths translated)`);
 	}
 
-	args.push(...buildComposeOperationArgs(operation, { forceRecreate, removeVolumes, build, noBuildCache, pullPolicy, serviceName, serviceNames, noDeps }));
+	args.push(...buildComposeOperationArgs(operation, { forceRecreate, removeVolumes, build, noBuildCache, pullPolicy, serviceName }));
 
 	const commandStr = args.join(' ');
 
@@ -2073,8 +2067,6 @@ async function executeComposeViaHawser(
 	stackFiles?: Record<string, string>,
 	stackFileModifiedTimes?: Record<string, number>,
 	serviceName?: string,
-	serviceNames?: string[],
-	noDeps?: boolean,
 	composeFileName?: string,
 	composeFileNames?: string[],
 	build?: boolean,
@@ -2169,8 +2161,6 @@ async function executeComposeViaHawser(
 			pullPolicy: pullPolicy || '',
 			registries, // Registry credentials for docker login
 			serviceName, // Legacy single-service field for older agents
-			serviceNames,
-			noDeps,
 			// Git deletion sync (#966): agent re-verifies containment + content
 			// hash per file before deleting. Old agents ignore this field.
 			filesToDelete: filesToDelete && filesToDelete.length > 0
@@ -2313,7 +2303,7 @@ async function executeComposeCommand(
 	secretVars?: Record<string, string>,
 	onLine?: (line: string) => void
 ): Promise<StackOperationResult> {
-	const { stackName, envId, forceRecreate, build, noBuildCache, pullPolicy, removeVolumes, stackFiles, stackFileModifiedTimes, workingDir, composePath, composePaths, envPath, useOverrideFile, serviceName, serviceNames, noDeps, composeFileName, filesToDelete, removeFiles, copyPaths } = options;
+	const { stackName, envId, forceRecreate, build, noBuildCache, pullPolicy, removeVolumes, stackFiles, stackFileModifiedTimes, workingDir, composePath, composePaths, envPath, useOverrideFile, serviceName, composeFileName, filesToDelete, removeFiles, copyPaths } = options;
 
 	// Get environment configuration
 	const env = envId ? await getEnvironment(envId) : null;
@@ -2337,8 +2327,6 @@ async function executeComposeCommand(
 			envPath,
 			useOverrideFile,
 			serviceName,
-			serviceNames,
-			noDeps,
 			build,
 			noBuildCache,
 			pullPolicy,
@@ -2435,8 +2423,6 @@ async function executeComposeCommand(
 				hawserStackFiles,
 				hawserFileModifiedTimes,
 				serviceName,
-				serviceNames,
-				noDeps,
 				composeFileName,
 				hawserFileNames.length > 0 ? hawserFileNames : undefined,
 				build,
@@ -2506,8 +2492,6 @@ async function executeComposeCommand(
 				envPath,
 				useOverrideFile,
 				serviceName,
-				serviceNames,
-				noDeps,
 				build,
 				noBuildCache,
 				pullPolicy,
@@ -2543,8 +2527,6 @@ async function executeComposeCommand(
 				envPath,
 				useOverrideFile,
 				serviceName,
-				serviceNames,
-				noDeps,
 				build,
 				noBuildCache,
 				pullPolicy,
@@ -3198,44 +3180,6 @@ export async function restartStack(
 	onLine?: (line: string) => void
 ): Promise<StackOperationResult> {
 	return withStackLock(stackName, () => restartStackUnlocked(stackName, envId, mode, onLine));
-}
-
-/** Run a linked-file post-change action without ever touching dependencies for selected services. */
-export async function runLinkedFileAction(
-	stackName: string,
-	envId: number | null | undefined,
-	action: 'restart' | 'ordered' | 'recreate',
-	serviceNames: string[] = [],
-	onLine?: (line: string) => void
-): Promise<StackOperationResult> {
-	if (serviceNames.length === 0) return restartStack(stackName, envId, action, onLine);
-	if (action === 'ordered') return { success: false, error: 'Ordered restart is only supported for the whole stack' };
-
-	return withStackLock(stackName, async () => {
-		const result = await requireComposeFile(stackName, envId);
-		if (!result.success) return { success: false, error: result.error || 'Compose file not found' };
-		const sourceIsGit = result.sourceType === 'git';
-		const hawserFiles = await lifecycleStackFiles(result.stackDir, stackName, envId);
-		const options: ComposeCommandOptions = {
-			stackName,
-			envId,
-			workingDir: result.stackDir,
-			composePath: result.composePath,
-			composePaths: result.composePaths,
-			envPath: result.envPath,
-			useOverrideFile: sourceIsGit,
-			stackFiles: hawserFiles?.payload,
-			stackFileModifiedTimes: hawserFiles?.modifiedTimes,
-			serviceNames,
-			noDeps: true,
-			forceRecreate: action === 'recreate'
-		};
-		if (action === 'recreate') await applyProviderSecretsToComposeResult(result, stackName, envId, `[Stack:${stackName}]`);
-		const operation = action === 'recreate' ? 'up' : 'restart';
-		const response = await executeComposeCommand(operation, options, result.content!, result.nonSecretVars, result.secretVars, onLine);
-		await persistLifecycleHawserManifest(sourceIsGit, envId, stackName, response.success, hawserFiles);
-		return response;
-	});
 }
 
 /**

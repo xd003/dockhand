@@ -22,6 +22,7 @@ import {
 import { deployStack, getStackDir, notifyStackDeploy } from './stacks';
 import { createRunRecorder } from './deploy-run-record';
 import { hashComposeContent, hashEnvFingerprint } from './deploy-run-record-core';
+import { parseComposePathsColumn } from './compose-files';
 import { sendEventNotification } from './notifications';
 import { buildBasicAuthHeader } from './git-auth';
 import { assertSafeRepoUrl, assertSafeGitRef, repoFilePath, repoBaseEnvPath, stripUrlCredentials } from './git-url-safety';
@@ -237,7 +238,7 @@ async function ensurePasswdEntry(env: GitEnv): Promise<void> {
 	}
 }
 
-async function buildGitEnv(credential: GitCredentialData | null): Promise<GitEnv> {
+export async function buildGitEnv(credential: GitCredentialData | null): Promise<GitEnv> {
 	const env: GitEnv = {
 		...process.env as GitEnv,
 		GIT_TERMINAL_PROMPT: '0',
@@ -311,7 +312,7 @@ async function buildGitEnv(credential: GitCredentialData | null): Promise<GitEnv
 	return env;
 }
 
-function cleanupSshKey(credential: GitCredentialData | null, env?: GitEnv): void {
+export function cleanupSshKey(credential: GitCredentialData | null, env?: GitEnv): void {
 	if (credential?.authType === 'ssh') {
 		// Removes the exact per-operation key this env created; falls back to the old
 		// deterministic path only if no env is available (legacy callers). See #1413.
@@ -319,7 +320,7 @@ function cleanupSshKey(credential: GitCredentialData | null, env?: GitEnv): void
 	}
 }
 
-function buildRepoUrl(url: string, credential: GitCredentialData | null): string {
+export function buildRepoUrl(url: string, credential: GitCredentialData | null): string {
 	assertSafeRepoUrl(url);
 	return stripUrlCredentials(url, credential?.authType);
 }
@@ -347,7 +348,7 @@ export const GIT_TIMEOUT_MS = Number(process.env.GIT_TIMEOUT_MS) || 20000;
  * URL is attacker-influenced) pass `timeoutMs` explicitly (see
  * listRemoteBranches).
  */
-function execGit(
+export function execGit(
 	args: string[],
 	cwd: string,
 	env: GitEnv,
@@ -1565,6 +1566,7 @@ export async function deployGitStack(
 			sourceDir: syncResult.composeDir, // Copy entire directory from git repo
 			composeFileName: syncResult.composeFileName, // Use original compose filename from repo
 			envFileName: syncResult.envFileName, // Env file relative to compose dir (for --env-file flag, optional)
+			composePaths: gitStack.composePaths ? parseComposePathsColumn(gitStack.composePaths) : undefined,
 			forceRecreate,
 			build: gitStack.buildOnDeploy,
 			noBuildCache: gitStack.noBuildCache,
@@ -1645,7 +1647,8 @@ export async function deployGitStack(
 			sourceType: 'git',
 			gitRepositoryId: gitStack.repositoryId,
 			gitStackId: stackId,
-			composePath: resolvedComposePath
+			composePath: resolvedComposePath,
+			composePaths: gitStack.composePaths ? parseComposePathsColumn(gitStack.composePaths) : null
 		});
 	} else {
 		// The commit was recorded as synced before the deploy ran, so mark the
@@ -2024,6 +2027,7 @@ export async function deployGitStackWithProgress(
 				sourceDir: composeDir, // Copy entire directory from git repo
 				composeFileName: progressComposeFileName, // Compose filename relative to source dir
 				envFileName, // Env file relative to compose dir (for --env-file flag, optional)
+				composePaths: gitStack.composePaths ? parseComposePathsColumn(gitStack.composePaths) : undefined,
 				build: gitStack.buildOnDeploy,
 				noBuildCache: gitStack.noBuildCache,
 				pullPolicy: gitStack.repullImages ? 'always' : undefined,
@@ -2088,7 +2092,8 @@ export async function deployGitStackWithProgress(
 				sourceType: 'git',
 				gitRepositoryId: gitStack.repositoryId,
 				gitStackId: stackId,
-				composePath: resolvedComposePath
+				composePath: resolvedComposePath,
+				composePaths: gitStack.composePaths ? parseComposePathsColumn(gitStack.composePaths) : null
 			});
 
 			await notifyGitSync(gitStack.stackName, gitStack.environmentId, result);

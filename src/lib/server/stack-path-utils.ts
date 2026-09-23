@@ -2,6 +2,13 @@ import { readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { isValidStackName } from './stack-name-guard';
 
+/** True when childPath is rootPath or one of its descendants. */
+export function isPathUnderRoot(childPath: string, rootPath: string): boolean {
+	const child = resolve(childPath);
+	const root = resolve(rootPath);
+	return child === root || child.startsWith(root + sep);
+}
+
 export function getStackPathHintsFromContainers(containers: { labels?: Record<string, string> | null }[]): {
 	workingDir: string | null;
 	configFiles: string[] | null;

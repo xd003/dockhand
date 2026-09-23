@@ -90,6 +90,7 @@ import { getOrderValue } from './container-labels';
 import { pendingRowsToClear } from './pending-updates-core';
 import { normalizeBaseDir, stackDirIn } from './stack-paths';
 import { buildDockhandOverrideFile } from './dockhand-override-file';
+import { parseCompose } from './compose-validate/parse';
 import { prepareHawserStackDirAdoption, type HawserStackDirAdoptionRequest } from './hawser-stack-adoption';
 
 // =============================================================================
@@ -1158,6 +1159,12 @@ export async function saveStackComposeFile(
 		secretProviderId?: number | null;  // secret provider binding (undefined = unchanged)
 	}
 ): Promise<{ success: boolean; error?: string; composePath?: string }> {
+	// Reject malformed YAML before moving paths, updating DB state or writing files.
+	for (const [path, source] of [['compose', content], ...Object.entries(options?.composeContents ?? {})] as [string, string][]) {
+		if (path !== 'compose' && !/\.ya?ml$/i.test(path)) continue;
+		const failure = parseCompose(source).parseError;
+		if (failure) return { success: false, error: `${path}: ${failure.message}${failure.line ? ` (line ${failure.line})` : ''}` };
+	}
 	// Validate stack name - Docker Compose requires lowercase alphanumeric, hyphens, underscores
 	// Must also start with a letter or number
 	if (!/^[a-z0-9][a-z0-9_-]*$/.test(name)) {

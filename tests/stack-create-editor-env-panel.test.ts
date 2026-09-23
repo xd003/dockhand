@@ -12,16 +12,17 @@ describe('local stack create editor', () => {
 	});
 
 	test('shows the generated env file path in the shared editor', () => {
-		const sharedEditor = modal.slice(
-			modal.indexOf("activeTab === 'editor' && (mode === 'create' || (mode === 'edit' && !needsFileLocation))"),
-			modal.indexOf("{:else if activeTab === 'editor'}")
-		);
+		expect(modal).toContain("title={displayEnvPath}");
+		expect(modal).toContain("{displayEnvPath || 'Enter a stack name to preview the path'}");
+	});
 
-		expect(sharedEditor).toContain("title={displayEnvPath}");
-		expect(sharedEditor).toContain("{displayEnvPath || 'Enter stack name above'}");
+	test('reuses the shared editor as the workspace Stack Config tab', () => {
+		expect(modal).toContain('{#snippet stackConfig()}{@render stackConfigEditor()}{/snippet}');
+		expect(modal).toContain('onDraftChange={mode === \'create\' ? applyWorkspaceDraft : undefined}');
 	});
 
 	test('only allows browsing for an env file during initial internal deployment', () => {
-		expect(modal.match(/\{#if mode === 'create' && !isGitView\}/g)).toHaveLength(2);
+		expect(modal).toContain("{#if mode === 'create' && !isGitView && !workspaceEnabled}");
+		expect(modal).toContain("{#if mode === 'create' && !isGitView}");
 	});
 });

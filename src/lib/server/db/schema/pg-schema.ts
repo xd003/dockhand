@@ -386,6 +386,7 @@ export const stackSources = pgTable('stack_sources', {
 	// Per-stack icon: a lucide name ('server'), 'selfhst:<ref>', or 'custom:<file>'.
 	// Null -> UI falls back to a generic icon.
 	icon: text('icon'),
+	workspaceEnabled: boolean('workspace_enabled').notNull().default(false),
 	createdAt: timestamp('created_at', { mode: 'string' }).defaultNow(),
 	updatedAt: timestamp('updated_at', { mode: 'string' }).defaultNow()
 }, (table) => ({

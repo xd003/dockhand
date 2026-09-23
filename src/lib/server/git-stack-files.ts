@@ -98,16 +98,37 @@ async function classifyPath(repoPath: string, path: string, env: GitEnv): Promis
 async function gitStatus(repoPath: string, env: GitEnv): Promise<string> {
 	const result = await execGit(['status', '--porcelain', '--untracked-files=all'], repoPath, env);
 	if (result.code !== 0) throw new Error(`Unable to inspect Git checkout: ${result.stderr}`);
-	return result.stdout.trim();
+	return result.stdout.replace(/\n$/, '');
+}
+
+// Local-only workspace files are untracked. Older workspaces also appended their
+// exclusions to the tracked .gitignore; tolerate that one dirty file, but never
+// overwrite or commit it as part of a compose-file push.
+async function assertSafeCheckout(repoPath: string, env: GitEnv): Promise<void> {
+	const status = await gitStatus(repoPath, env);
+	if (status.split('\n').some((line) => line && !line.startsWith('?? ') && line !== ' M .gitignore')) {
+		throw new Error('Git checkout has other changes; resolve them before pushing');
+	}
+	if (status.split('\n').includes(' M .gitignore')) {
+		const committed = await execGit(['show', 'HEAD:.gitignore'], repoPath, env);
+		const current = readFileSync(join(repoPath, '.gitignore'), 'utf8');
+		const prefix = committed.stdout + (committed.stdout && !committed.stdout.endsWith('\n') ? '\n' : '');
+		const additions = current.startsWith(prefix) ? current.slice(prefix.length).trimEnd().split('\n') : [];
+		if (committed.code !== 0 || !additions.length || additions.some((line) => !/^\/[^\s]+$/.test(line))) {
+			throw new Error('Git checkout has other changes; resolve them before pushing');
+		}
+	}
 }
 
 async function rollback(
 	repoPath: string,
 	env: GitEnv,
 	oldHead: string,
-	untrackedSnapshots: Map<string, Buffer | null>
+	untrackedSnapshots: Map<string, Buffer | null>,
+	localIgnore: Buffer | null
 ): Promise<void> {
 	await execGit(['reset', '--hard', oldHead], repoPath, env);
+	if (localIgnore) writeFileSync(join(repoPath, '.gitignore'), localIgnore);
 	for (const [path, content] of untrackedSnapshots) {
 		const target = resolve(repoPath, ...path.split('/'));
 		if (content === null) {
@@ -116,7 +137,7 @@ async function rollback(
 			writeFileSync(target, content);
 		}
 	}
-	if (await gitStatus(repoPath, env)) throw new Error('Git checkout could not be restored to a clean state');
+	await assertSafeCheckout(repoPath, env);
 }
 
 /** Mutate one clean checkout, producing at most one commit and never force-pushing. */
@@ -133,10 +154,26 @@ export async function mutateGitStackFiles(options: GitFileMutationOptions): Prom
 		let oldHead = '';
 		let pushed = false;
 		const untrackedSnapshots = new Map<string, Buffer | null>();
+		let localIgnore: Buffer | null = null;
 		try {
-			if (await gitStatus(options.repoPath, env)) throw new Error('Git checkout is not clean; synchronize it before editing files');
+			await assertSafeCheckout(options.repoPath, env);
+			if ((await gitStatus(options.repoPath, env)).split('\n').includes(' M .gitignore')) {
+				localIgnore = readFileSync(join(options.repoPath, '.gitignore'));
+			}
 			const fetch = await execGit(['fetch', 'origin', options.branch], options.repoPath, env);
 			if (fetch.code !== 0) throw new Error(`Git fetch failed: ${fetch.stderr}`);
+			// Compare against the fetched branch *before* moving the checkout. A remote
+			// edit to the same file must not be silently overwritten by this draft.
+			for (const change of options.changes) {
+				const path = repoRelativePath(options.repoPath, change.path);
+				const remote = await execGit(['show', `origin/${options.branch}:${path}`], options.repoPath, env);
+				if (remote.code === 0 && contentRevision(remote.stdout) !== change.expectedRevision) {
+					throw Object.assign(new Error(`Git file changed on the remote; reload ${change.path} and retry`), { status: 409 });
+				}
+				if (remote.code !== 0 && (await classifyPath(options.repoPath, path, env)).tracked) {
+					throw Object.assign(new Error(`Git file was removed on the remote; reload ${change.path} and retry`), { status: 409 });
+				}
+			}
 			const checkout = await execGit(['checkout', '-B', options.branch, `origin/${options.branch}`], options.repoPath, env);
 			if (checkout.code !== 0) throw new Error(`Git checkout failed: ${checkout.stderr}`);
 			const head = await execGit(['rev-parse', 'HEAD'], options.repoPath, env);
@@ -205,7 +242,8 @@ export async function mutateGitStackFiles(options: GitFileMutationOptions): Prom
 			if (pushResult.code !== 0) throw Object.assign(new Error(`Git push failed: ${pushResult.stderr}`), { code: pushResult.stderr.includes('non-fast-forward') ? 409 : 500 });
 			pushed = true;
 			const newHead = await execGit(['rev-parse', 'HEAD'], options.repoPath, env);
-			if (newHead.code !== 0 || await gitStatus(options.repoPath, env)) throw new Error('Git checkout is not clean after push');
+			if (newHead.code !== 0) throw new Error('Unable to resolve Git HEAD after push');
+			await assertSafeCheckout(options.repoPath, env);
 			const result: GitFileMutationResult = {
 				committed: true,
 				commit: newHead.stdout.trim(),
@@ -222,7 +260,7 @@ export async function mutateGitStackFiles(options: GitFileMutationOptions): Prom
 			return result;
 		} catch (error) {
 			if (oldHead && !pushed) {
-				try { await rollback(options.repoPath, env, oldHead, untrackedSnapshots); } catch (rollbackError) { throw new Error(`${error instanceof Error ? error.message : String(error)}; rollback failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`); }
+				try { await rollback(options.repoPath, env, oldHead, untrackedSnapshots, localIgnore); } catch (rollbackError) { throw new Error(`${error instanceof Error ? error.message : String(error)}; rollback failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`); }
 			}
 			throw error;
 		} finally {

@@ -22,4 +22,11 @@ describe('untracked internal adoption wiring', () => {
 
 		expect(modal.slice(load, end)).not.toContain('needsFileLocation = false');
 	});
+
+	it('allows choosing a Compose file and workspace editing without a resolved source directory', () => {
+		expect(modal).toContain('onclick={openComposeBrowser}');
+		expect(modal).not.toContain('manageInternallyAvailable');
+		expect(modal).toContain("if (mode === 'edit' && !needsFileLocation)");
+		expect(modal).toContain('if (workspaceEnabled) {\n\t\t\t\t\tconst response = await fetch(workspaceApiUrl');
+	});
 });

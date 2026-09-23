@@ -14,6 +14,7 @@
 	import { Layers, Save, Play, Code, GitGraph, GitBranch, GitCommitHorizontal, Github, Loader2, AlertCircle, X, Sun, Moon, TriangleAlert, GripVertical, GripHorizontal, FolderOpen, Copy, Check, XCircle, MapPin, ArrowRight, ArrowDown, Info, Box, FolderSync, Archive, Lock, FileText, ListChecks, History, ChevronDown, Settings2, Download } from 'lucide-svelte';
 	import ComposeValidatePanel from './ComposeValidatePanel.svelte';
 	import StackFileEditor from './StackFileEditor.svelte';
+	import StackWorkspace, { type WorkspaceDraft } from './StackWorkspace.svelte';
 
 	import BackupPanel from '../containers/BackupPanel.svelte';
 	import DeploysPanel from './DeploysPanel.svelte';
@@ -77,16 +78,18 @@
 		initialCompose?: string; // Pre-fill compose content (for library deploy)
 		initialStackName?: string; // Pre-fill stack name (for library deploy)
 		readonly?: boolean; // View compose content without allowing local changes
+		inspectionReadonly?: boolean; // Name-click Git inspection also locks overrides and workspace files
 		gitInfo?: { commit?: string; url?: string; branch?: string } | null; // Git provenance for read-only git stacks
-		stackSource?: { sourceType: string; gitStack?: { id?: number } | null } | null;
+		stackSource?: { sourceType: string; workspaceEnabled?: boolean; gitStack?: { id?: number; composePath?: string; envFilePath?: string | null } | null } | null;
 		initialTab?: 'editor' | 'graph';
 		onClose: () => void;
 		onSuccess: () => void; // Called after create or save
+		onConverted?: () => void; // Refresh the stack source after a workspace Git-to-Internal conversion
 		onAdoptFromGit?: () => void;
 		onEditGitSettings?: () => void;
 	}
 
-	let { open = $bindable(), mode: propMode, stackName: propStackName = '', initialCompose, initialStackName, readonly = false, gitInfo = null, stackSource = null, initialTab = 'editor', onClose, onSuccess, onAdoptFromGit, onEditGitSettings }: Props = $props();
+	let { open = $bindable(), mode: propMode, stackName: propStackName = '', initialCompose, initialStackName, readonly = false, inspectionReadonly = false, gitInfo = null, stackSource = null, initialTab = 'editor', onClose, onSuccess, onConverted, onAdoptFromGit, onEditGitSettings }: Props = $props();
 
 	let gitCommitCopied = $state<'ok' | 'error' | null>(null);
 	function openGitSettings() {
@@ -175,6 +178,9 @@
 	let saveRedeployDefaults = $derived<DeployOptions>({ pull: false, build: hasBuildSection, forceRecreate: true });
 	let createStartDefaults = $derived<DeployOptions>({ pull: false, build: hasBuildSection, forceRecreate: false });
 	let activeTab = $state<'editor' | 'graph' | 'backups' | 'deploys'>('editor');
+	let workspaceEnabled = $state(false);
+	let workspaceDraft = $state<WorkspaceDraft>({ files: {}, binaryFiles: {}, folders: [] });
+	let workspaceRef: StackWorkspace | undefined = $state();
 	let composeContents = $state<Record<string, string>>({});   // path → content map for multi-file
 	let activeComposePath = $state('');                           // currently viewed file path
 	let fileBrowserRoot = $state('');
@@ -303,6 +309,147 @@
 	$effect(() => {
 		if (open) activeTab = initialTab;
 	});
+
+	$effect(() => {
+		if (!open || mode !== 'edit' || !stackName) return;
+		workspaceEnabled = stackSource?.workspaceEnabled === true;
+	});
+
+	async function setWorkspaceEnabled(enabled: boolean) {
+		if (inspectionReadonly) return;
+		workspaceEnabled = enabled;
+		if (enabled && mode === 'create') {
+			const rootPath = workingComposePaths[0] || workingComposePath || 'compose.yaml';
+			const slash = rootPath.lastIndexOf('/');
+			const root = slash < 0 ? '' : rootPath.slice(0, slash);
+			const relativePath = (path: string) => root && path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path.split('/').pop()!;
+			const composePath = relativePath(rootPath);
+			const envPath = relativePath(workingEnvPath || '.env');
+			workspaceDraft = {
+				...workspaceDraft,
+				files: {
+					...workspaceDraft.files,
+					[composePath]: composeContent || defaultCompose,
+					...(rawEnvContent ? { [envPath]: rawEnvContent } : {})
+				}
+			};
+		}
+		if (mode === 'edit' && !needsFileLocation) {
+			const response = await fetch(workspaceApiUrl, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ workspaceEnabled: enabled }) });
+			if (!response.ok) { workspaceEnabled = !enabled; toast.error('Failed to update workspace setting'); }
+			else if (stackSource) stackSource.workspaceEnabled = enabled;
+		}
+	}
+
+	function applyWorkspaceDraft(draft: WorkspaceDraft) {
+		workspaceDraft = draft;
+		const repositoryPath = workingComposePaths[0] || workingComposePath || 'compose.yaml';
+		const slash = repositoryPath.lastIndexOf('/');
+		const composePath = repositoryPath.slice(slash + 1);
+		if (draft.files[composePath] !== undefined) {
+			composeContent = draft.files[composePath];
+			composeContents = { ...composeContents, [repositoryPath]: draft.files[composePath] };
+		}
+		const envPath = (workingEnvPath || '.env').split('/').pop()!;
+		if (draft.files[envPath] !== undefined) rawEnvContent = draft.files[envPath];
+		isDirty = true;
+	}
+
+	const workspaceApiUrl = $derived(appendEnvParam(`/api/stacks/${encodeURIComponent(stackName)}/workspace`, $currentEnvironment?.id ?? null));
+	const workspaceRootName = $derived((workingComposePaths[0] || workingComposePath).split('/').slice(-2, -1)[0] || newStackName || stackName || 'stack');
+	async function workspaceConverted() {
+		onConverted?.();
+		await tick();
+		await loadComposeFile();
+	}
+	function workspaceRelativePath(path: string): string {
+		const primary = workingComposePaths[0] || workingComposePath;
+		const root = primary.includes('/') ? primary.slice(0, primary.lastIndexOf('/')) : '';
+		return root && path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path;
+	}
+
+	// Edit-mode workspace saves write straight to disk (the repository checkout for Git
+	// stacks, the stack directory otherwise), so re-read the affected compose and env
+	// files and mirror them into the read-only Stack Config view. This deliberately
+	// avoids loadComposeFile(), whose loading state would unmount the workspace.
+	function workspacePathFor(absolutePath: string): string | null {
+		const root = localStackDir.replace(/\/$/, '');
+		return root && absolutePath.startsWith(`${root}/`) ? absolutePath.slice(root.length + 1) : null;
+	}
+
+	async function readWorkspaceText(path: string): Promise<string | null> {
+		const separator = workspaceApiUrl.includes('?') ? '&' : '?';
+		try {
+			const response = await fetch(`${workspaceApiUrl}${separator}path=${encodeURIComponent(path)}&content=1`);
+			if (!response.ok) return null;
+			const data = await response.json();
+			return data.binary ? null : (data.content ?? '');
+		} catch {
+			return null;
+		}
+	}
+
+	function parseEnvText(content: string): Record<string, string> {
+		const vars: Record<string, string> = {};
+		for (const line of content.split('\n')) {
+			const trimmed = line.trim();
+			const eqIndex = trimmed.indexOf('=');
+			if (!trimmed || trimmed.startsWith('#') || eqIndex === -1) continue;
+			const key = trimmed.slice(0, eqIndex).trim();
+			if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) vars[key] = trimmed.slice(eqIndex + 1).trim();
+		}
+		return vars;
+	}
+
+	async function syncStackConfigFromWorkspace(changedPaths: string[]) {
+		if (mode !== 'edit' || !stackName || !localStackDir) return;
+		const touches = (target: string | null) => !!target && changedPaths.some((path) => target === path || target.startsWith(`${path}/`));
+		const wasDirty = isDirty;
+		let changed = false;
+
+		const composeTargets = workingComposePaths.filter((path) => touches(workspacePathFor(path)));
+		if (composeTargets.length) {
+			const updates = await Promise.all(composeTargets.map(async (path) => [path, await readWorkspaceText(workspacePathFor(path)!)] as const));
+			const nextContents = { ...composeContents, ...(activeComposePath ? { [activeComposePath]: composeContent } : {}) };
+			for (const [path, content] of updates) if (content !== null) nextContents[path] = content;
+			composeContents = nextContents;
+			if (activeComposePath && nextContents[activeComposePath] !== undefined) composeContent = nextContents[activeComposePath];
+			changed = true;
+		}
+
+		if (isGitView) {
+			const envTargets = [...new Set(['.env', workspacePathFor(workingEnvPath)].filter((path): path is string => !!path))];
+			if (envTargets.some((path) => touches(path))) {
+				const fileVars: Record<string, string> = {};
+				for (const path of envTargets) {
+					const content = await readWorkspaceText(path);
+					if (content !== null) Object.assign(fileVars, parseEnvText(content));
+				}
+				const overrides = envVars.filter((variable) => isGitStackOverride(variable, gitFileEnvVars));
+				gitFileEnvVars = fileVars;
+				envVars = mergeGitStackEnvVars(fileVars, overrides);
+				changed = true;
+			}
+		} else if (touches(workspacePathFor(workingEnvPath || suggestedEnvPath || ''))) {
+			const envId = $currentEnvironment?.id ?? null;
+			const [envResponse, rawEnvResponse] = await Promise.all([
+				fetch(appendEnvParam(`/api/stacks/${encodeURIComponent(stackName)}/env`, envId)),
+				fetch(appendEnvParam(`/api/stacks/${encodeURIComponent(stackName)}/env/raw`, envId))
+			]);
+			if (envResponse.ok && rawEnvResponse.ok) {
+				const loadedVars: EnvVar[] = (await envResponse.json()).variables || [];
+				const loadedRaw: string = (await rawEnvResponse.json()).content || '';
+				if (envVarsPanelRef) envVarsPanelRef.syncAfterLoad(loadedVars, loadedRaw);
+				else { envVars = loadedVars; rawEnvContent = loadedRaw; }
+				changed = true;
+			}
+		}
+
+		if (!changed) return;
+		await tick();
+		await validateEnvVars();
+		isDirty = wasDirty;
+	}
 
 	$effect(() => {
 		if (open) {
@@ -436,9 +583,9 @@
 			.map((f) => ({ line: f.line!, severity: f.severity, ruleId: f.ruleId, message: f.message }))
 	);
 
-	async function runComposeValidate(opts: { silent?: boolean } = {}) {
+	async function runComposeValidate(opts: { silent?: boolean } = {}): Promise<boolean> {
 		const primaryContent = primaryComposeContent();
-		if (!primaryContent.trim()) return;
+		if (!primaryContent.trim()) return false;
 		// Silent re-validate (after a quick fix) keeps the current list visible so the
 		// panel doesn't collapse to a spinner and lose the scroll position.
 		if (!opts.silent) validateLoading = true;
@@ -480,7 +627,7 @@
 			}
 			const fresh = await res.json();
 			// Stale response (a newer validate started meanwhile): drop it entirely.
-			if (seq !== validateSeq) return;
+			if (seq !== validateSeq) return false;
 			// On a silent re-validate, only swap the report if the finding set actually
 			// changed. When a fix succeeded the optimistic list already matches the fresh
 			// one, so keeping the same object avoids re-rendering (and the flash) of the
@@ -490,10 +637,12 @@
 			} else {
 				validateReport = fresh;
 			}
+			return fresh.counts.error === 0;
 		} catch (e) {
-			if (seq !== validateSeq) return; // superseded - don't clobber a newer report
+			if (seq !== validateSeq) return false; // superseded - don't clobber a newer report
 			validateError = e instanceof Error ? e.message : 'Validation failed';
 			validateReport = null;
+			return false;
 		} finally {
 			if (seq === validateSeq) validateLoading = false;
 		}
@@ -658,6 +807,12 @@
 		else {
 			activeComposePath = workingComposePaths[0] ?? '';
 			composeContent = activeComposePath ? composeContents[activeComposePath] ?? '' : '';
+		}
+		if (workspaceEnabled && mode === 'create') {
+			workspaceDraft = {
+				...workspaceDraft,
+				files: { ...workspaceDraft.files, ...Object.fromEntries(Object.entries(draft.composeContents).map(([path, content]) => [workspaceRelativePath(path), content])) }
+			};
 		}
 		isDirty = true;
 	}
@@ -1752,10 +1907,35 @@
 				console.error('Failed to load stack volumes:', e);
 			}
 
-			// Load both env endpoints in parallel, then process results together
-			const [envResponse, rawEnvResponse] = await Promise.all([
+			// Git stacks store only overrides in the DB; read the compose-directory
+			// .env and any configured env file from the checkout as their defaults.
+			const gitStack = stackSource?.gitStack;
+			const defaultEnvPath = `${(gitStack?.composePath || 'compose.yaml').replace(/[^/]*$/, '')}.env`;
+			const readRepoEnv = async (path: string): Promise<Record<string, string>> => {
+				try {
+					const response = await fetch(`/api/git/stacks/${gitStack!.id}/env-files`, {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({ path })
+					});
+					return response.ok ? (await response.json()).vars || {} : {};
+				} catch (error) {
+					console.error('Failed to read Git stack env file:', error);
+					return {};
+				}
+			};
+			const repoVars = isGitView && gitStack?.id
+				? (async () => {
+					const base = await readRepoEnv(defaultEnvPath);
+					const overlay = gitStack.envFilePath && gitStack.envFilePath !== defaultEnvPath
+						? await readRepoEnv(gitStack.envFilePath) : {};
+					return { ...base, ...overlay };
+				})()
+				: Promise.resolve({} as Record<string, string>);
+			const [envResponse, rawEnvResponse, fileVars] = await Promise.all([
 				fetch(appendEnvParam(`/api/stacks/${encodeURIComponent(stackName)}/env`, envId)),
-				fetch(appendEnvParam(`/api/stacks/${encodeURIComponent(stackName)}/env/raw`, envId))
+				fetch(appendEnvParam(`/api/stacks/${encodeURIComponent(stackName)}/env/raw`, envId)),
+				repoVars
 			]);
 
 			// Process env vars from DB
@@ -1773,8 +1953,8 @@
 
 			loading = false;
 			if (isGitView) {
-				envVars = loadedVars;
-				await populateGitEnvVars(loadedVars, false);
+				gitFileEnvVars = fileVars;
+				envVars = mergeGitStackEnvVars(fileVars, loadedVars);
 			} else {
 				let loadedRawContent = '';
 				if (rawEnvResponse.ok) {
@@ -1830,6 +2010,7 @@
 	}
 
 	async function populateGitEnvVars(overrides: EnvVar[] = envVars, notify = true) {
+		if (inspectionReadonly) return;
 		if (!gitStackId) return;
 		const wasDirty = isDirty;
 		populatingGitEnvVars = true;
@@ -1848,6 +2029,7 @@
 				composeContent = composeContents[selectedPath] ?? data.composeContent ?? '';
 			}
 			gitFileEnvVars = data.vars || {};
+			await workspaceRef?.reloadFromDisk();
 			envVars = mergeGitStackEnvVars(gitFileEnvVars, overrides);
 			rawEnvContent = '';
 			await tick();
@@ -1868,6 +2050,7 @@
 	}
 
 	async function saveGitEnvVars() {
+		if (inspectionReadonly) return;
 		const envId = $currentEnvironment?.id ?? null;
 		const variables = envVars
 			.filter((variable) => isGitStackOverride(variable, gitFileEnvVars))
@@ -1956,6 +2139,7 @@
 
 		let response: Response | undefined;
 		try {
+			if (!(await runComposeValidate())) return;
 			// Build request body
 			const requestBody: Record<string, unknown> = {
 				name: newStackName.trim(),
@@ -1980,6 +2164,8 @@
 			}
 
 			requestBody.secretProviderId = formSecretProviderId;
+			if (workspaceEnabled) requestBody.workspace = workspaceDraft;
+			requestBody.workspaceEnabled = workspaceEnabled;
 
 			// Only meaningful when start is true -- deployOptions is undefined for the
 			// plain "Create" button, which never reaches deployStack server-side anyway.
@@ -2128,8 +2314,10 @@
 
 		// Resolve env path (use working or suggested)
 		const envPathToSave = workingEnvPath.trim() || suggestedEnvPath || '';
+		const isGitStack = stackSource?.sourceType === 'git';
 
 		try {
+			if (!isGitStack && !needsFileLocation && !(await runComposeValidate())) return;
 			if (needsFileLocation) {
 				if (envId === null) throw new Error('Select an environment before managing this stack');
 				const adoptResponse = await fetch('/api/stacks/adopt', {
@@ -2147,6 +2335,11 @@
 				}
 				stackName = adoptData.adopted[0];
 				needsFileLocation = false;
+				if (workspaceEnabled) {
+					const response = await fetch(workspaceApiUrl, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ workspaceEnabled: true }) });
+					if (!response.ok) throw new Error('Failed to enable stack workspace');
+					if (stackSource) stackSource.workspaceEnabled = true;
+				}
 			}
 
 			// Build request body - include paths if they've been set/changed
@@ -2185,8 +2378,6 @@
 				requestBody.build = deployOptions.build;
 				requestBody.forceRecreate = deployOptions.forceRecreate;
 			}
-
-			const isGitStack = stackSource?.sourceType === 'git';
 
 			// Save env files BEFORE compose to ensure deploy reads fresh values
 			// Save raw content to .env file (non-secrets only, comments preserved)
@@ -2563,7 +2754,7 @@
 		class="max-w-none w-[calc(100vw-4rem)] h-[95vh] flex flex-col p-0 gap-0 shadow-xl border-zinc-200 dark:border-zinc-700 max-md:w-[calc(100vw-1rem)]! max-md:h-[calc(100dvh-1rem)]! max-md:max-w-none! max-md:max-h-[calc(100dvh-1rem)]! max-md:rounded-2xl! max-md:border! max-md:border-border!"
 		showCloseButton={false}
 	>
-		<Dialog.Header class="px-4 py-3 text-left sm:px-8 sm:py-5 border-b border-zinc-200 dark:border-zinc-700 flex-shrink-0 max-md:pt-[max(0.75rem,env(safe-area-inset-top))]">
+		<Dialog.Header class="min-h-32 px-4 py-3 text-left sm:px-8 sm:py-5 border-b border-zinc-200 dark:border-zinc-700 flex-shrink-0 max-md:pt-[max(0.75rem,env(safe-area-inset-top))]">
 			<div class="flex items-start justify-between gap-4">
 				<div class="flex items-start gap-3.5 min-w-0">
 					{#if !readonly}
@@ -2642,7 +2833,13 @@
 
 				<div class="flex shrink-0 flex-col items-end gap-2">
 					<div class="flex items-center gap-2">
-						{#if activeTab === 'editor'}
+						{#if activeTab === 'editor' && !inspectionReadonly}
+							{#if mode === 'create' || !needsFileLocation || !!composeContent}
+				<label class="flex min-h-8 cursor-pointer items-center gap-2 rounded-md border px-2.5 text-xs text-muted-foreground max-md:max-w-36" title="Show the complete stack directory">
+					<input type="checkbox" class="h-3.5 w-3.5 accent-primary" checked={workspaceEnabled} onchange={(event) => setWorkspaceEnabled(event.currentTarget.checked)} />
+									Enable Stack Workspace
+								</label>
+							{/if}
 							<button
 								type="button"
 								aria-label={editorTheme === 'light' ? 'Switch to dark editor theme' : 'Switch to light editor theme'}
@@ -2667,7 +2864,7 @@
 							<X class="h-4 w-4" />
 						</button>
 					</div>
-					{#if isGitView && activeTab === 'editor'}
+					{#if isGitView && !inspectionReadonly && activeTab === 'editor'}
 						<Button type="button" size="sm" variant="outline" class="mt-3" onclick={() => populateGitEnvVars()} disabled={populatingGitEnvVars}>
 							{#if populatingGitEnvVars}<Loader2 class="h-3.5 w-3.5 animate-spin" />{:else}<Download class="h-3.5 w-3.5" />{/if}
 							Populate all files
@@ -2677,13 +2874,13 @@
 			</div>
 		</Dialog.Header>
 
-		<!-- View tabs — left-aligned underline bar under the header, matched to
-		     GitStackModal for a consistent look across the stack modals. -->
-		<div class="flex items-center gap-1 overflow-x-auto border-b border-zinc-200 px-5 max-md:px-4 dark:border-zinc-700 flex-shrink-0">
+		<!-- Compact view switcher under the modal header. -->
+		<div class="flex flex-shrink-0 items-center overflow-x-auto border-b border-zinc-200 px-5 py-1.5 max-md:px-4 dark:border-zinc-700">
+			<div class="flex items-center gap-0.5 rounded-lg bg-muted/70 p-1" role="tablist" aria-label="Stack views">
 			{#if isGitView && onEditGitSettings}
 				<button
 					type="button"
-					class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 border-transparent px-3 max-md:px-2 py-2 max-md:py-3 text-sm text-muted-foreground transition-colors hover:text-foreground"
+					class="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-background/50 hover:text-foreground"
 					onclick={openGitSettings}
 				>
 					<Settings2 class="h-3.5 w-3.5" /> Settings
@@ -2691,14 +2888,14 @@
 			{/if}
 			<button
 				type="button"
-				class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 px-3 max-md:px-2 py-2 max-md:py-3 text-sm transition-colors {activeTab === 'editor' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
+				class="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm transition-colors {activeTab === 'editor' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:bg-background/50 hover:text-foreground'}"
 				onclick={() => activeTab = 'editor'}
 			>
 				<Code class="h-3.5 w-3.5" /> Editor
 			</button>
 			<button
 				type="button"
-				class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 px-3 max-md:px-2 py-2 max-md:py-3 text-sm transition-colors {activeTab === 'graph' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
+					class="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm transition-colors {activeTab === 'graph' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:bg-background/50 hover:text-foreground'}"
 				onclick={() => activeTab = 'graph'}
 			>
 				<GitGraph class="h-3.5 w-3.5" /> Graph
@@ -2707,10 +2904,10 @@
 			     Also hidden for UNTRACKED stacks: with no known compose file the backup
 			     would be incomplete (can't redeploy at restore), so the backend refuses
 			     it (assertStackBackupable) — don't offer it in the UI either. -->
-			{#if mode === 'edit' && $page.data.backupsEnabled && !needsFileLocation}
+			{#if mode === 'edit' && $page.data.backupsEnabled && !needsFileLocation && !inspectionReadonly}
 				<button
 					type="button"
-					class="relative -mb-px flex max-md:min-w-0 max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 px-3 max-md:px-1 py-2 max-md:py-3 text-sm transition-colors {activeTab === 'backups' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
+					class="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm transition-colors {activeTab === 'backups' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:bg-background/50 hover:text-foreground'}"
 					onclick={() => activeTab = 'backups'}
 				>
 					<Archive class="h-3.5 w-3.5" /> Backups
@@ -2727,7 +2924,7 @@
 			{#if mode === 'edit' && (!needsFileLocation || deploysHistoryExists)}
 				<button
 					type="button"
-					class="relative -mb-px flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm transition-colors {activeTab === 'deploys' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
+					class="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm transition-colors {activeTab === 'deploys' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:bg-background/50 hover:text-foreground'}"
 					onclick={() => activeTab = 'deploys'}
 				>
 					<History class="h-3.5 w-3.5" /> Deploys
@@ -2742,6 +2939,7 @@
 					{/if}
 				</button>
 			{/if}
+			</div>
 		</div>
 
 		<!-- Wrapper spanning the editor area + the live output panel below it, so the
@@ -2770,8 +2968,7 @@
 				<!-- Tags (edit mode: stack has a stable name+env key) -->
 				{#if mode === 'edit' && stackName}
 					<div class="px-6 py-3 border-b border-zinc-200 dark:border-zinc-700 flex items-center gap-2 flex-wrap">
-						<Label class="text-xs text-zinc-500 dark:text-zinc-400">Tags</Label>
-						<StackTagsSection {stackName} envId={$currentEnvironment?.id ?? null} />
+						<StackTagsSection {stackName} envId={$currentEnvironment?.id ?? null} readonly={inspectionReadonly} />
 					</div>
 				{/if}
 
@@ -2835,10 +3032,11 @@
 					</div>
 				{/if}
 
-				<!-- Content area -->
-		<div bind:this={containerRef} class="flex-1 min-h-0 flex flex-col {isDraggingSplit ? 'select-none' : ''}">
-			{#if activeTab === 'editor' && (mode === 'create' || (mode === 'edit' && !needsFileLocation))}
+				{#snippet stackConfigEditor()}
 				<div class="flex min-h-0 flex-1 flex-col max-md:flex-col">
+					{#if mode === 'edit' && !workspaceEnabled && (!readonly || (isGitView && !inspectionReadonly))}
+						<p class="border-b px-4 py-2 text-xs text-muted-foreground">Preview compose and environment values here. Enable Stack Workspace to edit files.</p>
+					{/if}
 					<div class="flex items-center gap-1 border-b border-zinc-200 px-4 dark:border-zinc-700 md:hidden">
 						<button type="button" class="flex-1 py-2 text-sm {mobilePane === 'compose' ? 'border-b-2 border-primary' : ''}" onclick={() => mobilePane = 'compose'}><Code class="mr-1 inline h-3.5 w-3.5" />Compose</button>
 						<button type="button" class="flex-1 py-2 text-sm {mobilePane === 'vars' ? 'border-b-2 border-primary' : ''}" onclick={() => mobilePane = 'vars'}><FileText class="mr-1 inline h-3.5 w-3.5" />Variables</button>
@@ -2848,7 +3046,7 @@
 							<StackFileEditor
 								composePaths={workingComposePaths}
 								composeContents={{ ...composeContents, ...(activeComposePath ? { [activeComposePath]: composeContent } : {}) }}
-								readonly={readonly}
+								readonly={readonly || mode === 'edit' || workspaceEnabled}
 								initialPath={activeEditorPath}
 								hostPath={activeHostPath}
 								displayPath={composePathForDisplay}
@@ -2861,9 +3059,6 @@
 							>
 								{#snippet headerActions()}
 									<div class="flex items-center gap-1">
-										{#if mode === 'edit' && !readonly}
-											<button type="button" class="rounded border px-2 py-1 text-xs text-muted-foreground hover:text-foreground" onclick={openChangeLocationBrowser}><FolderSync class="mr-1 inline h-3.5 w-3.5" />Relocate</button>
-										{/if}
 										<Button variant="ghost" size="sm" class="h-7 px-2 text-xs text-muted-foreground" onclick={runComposeValidate} disabled={!composeContent} title="Check this compose for problems before deploy">
 											{#if validateLoading}<Loader2 class="h-3 w-3 animate-spin" />{:else}<ListChecks class="h-3 w-3" />{/if}
 											Validate
@@ -2894,7 +3089,7 @@
 											{displayEnvPath || 'Enter a stack name to preview the path'}
 										</div>
 									</div>
-									{#if mode === 'create' && !isGitView}
+									{#if mode === 'create' && !isGitView && !workspaceEnabled}
 										<button type="button" onclick={openEnvBrowser} class="shrink-0 rounded p-1.5 text-muted-foreground hover:bg-zinc-200 dark:hover:bg-zinc-700 max-md:flex max-md:h-11 max-md:w-11 max-md:items-center max-md:justify-center" title="Browse for env file">
 											<FolderOpen class="h-3.5 w-3.5" />
 										</button>
@@ -2914,12 +3109,22 @@
 										{/if}
 									</button>
 								</div>
-								{#if !isGitView}<SecretProviderPicker bind:secretProviderId={formSecretProviderId} bind:envVars providers={secretProviders} onchange={() => { markDirty(); debouncedValidate(); }} />{/if}
-								<StackEnvVarsPanel bind:this={envVarsPanelRef} bind:variables={envVars} bind:rawContent={rawEnvContent} validation={effectiveValidation} existingSecretKeys={mode === 'edit' ? existingSecretKeys : new Set()} injectedSecretKeys={mode === 'edit' ? injectedSecretKeys : []} providerType={selectedProviderType} providerName={selectedProviderName} {probeError} {providerKeySet} readonly={readonly && !isGitView} hideHeader onchange={() => { markDirty(); debouncedValidate(); }} theme={editorTheme} infoText={isGitView ? "Repository values are read-only defaults. Changed, new, and secret values are saved as Dockhand overrides and applied on the next deploy." : "These variables will be written to a .env file in the stack directory and passed to the compose command."} class="min-h-0 flex-1" />
+								{#if mode === 'create' && !isGitView && !workspaceEnabled}<SecretProviderPicker bind:secretProviderId={formSecretProviderId} bind:envVars providers={secretProviders} onchange={() => { markDirty(); debouncedValidate(); }} />{/if}
+								<StackEnvVarsPanel bind:this={envVarsPanelRef} bind:variables={envVars} bind:rawContent={rawEnvContent} validation={effectiveValidation} existingSecretKeys={mode === 'edit' ? existingSecretKeys : new Set()} injectedSecretKeys={mode === 'edit' ? injectedSecretKeys : []} providerType={selectedProviderType} providerName={selectedProviderName} {probeError} {providerKeySet} readonly={inspectionReadonly || workspaceEnabled || mode === 'edit' || (readonly && !isGitView)} hideHeader onchange={() => { markDirty(); debouncedValidate(); }} theme={editorTheme} infoText={isGitView ? "Repository values are read-only defaults. Changed, new, and secret values are saved as Dockhand overrides and applied on the next deploy." : "These variables will be written to a .env file in the stack directory and passed to the compose command."} class="min-h-0 flex-1" />
 							</div>
 						</div>
 					</div>
 				</div>
+				{/snippet}
+
+				<!-- Content area -->
+		<div bind:this={containerRef} class="flex-1 min-h-0 flex flex-col {isDraggingSplit ? 'select-none' : ''}">
+			{#if activeTab === 'editor' && workspaceEnabled && (mode === 'create' || !needsFileLocation)}
+				<StackWorkspace bind:this={workspaceRef} apiUrl={mode === 'edit' ? workspaceApiUrl : undefined} readonly={inspectionReadonly || (readonly && stackSource?.sourceType !== 'git')} theme={editorTheme} rootName={workspaceRootName} draft={mode === 'create' ? workspaceDraft : undefined} onDraftChange={mode === 'create' ? applyWorkspaceDraft : undefined} onFilesChanged={mode === 'edit' ? syncStackConfigFromWorkspace : undefined} onConverted={workspaceConverted} onStackConfigSelect={() => mobilePane = 'compose'}>
+					{#snippet stackConfig()}{@render stackConfigEditor()}{/snippet}
+				</StackWorkspace>
+			{:else if activeTab === 'editor' && (mode === 'create' || (mode === 'edit' && !needsFileLocation))}
+				{@render stackConfigEditor()}
 			{:else if activeTab === 'editor'}
 				{#if mode === 'edit' && needsFileLocation && !composeContent && !readonly}
 					<div class="flex min-h-0 flex-1 items-start justify-center overflow-auto px-4 py-8 sm:items-center sm:px-8 sm:py-10">
@@ -2937,7 +3142,7 @@
 								<button
 									type="button"
 									onclick={openComposeBrowser}
-									class="group flex min-h-24 items-start gap-3 rounded-lg border border-blue-500/40 bg-blue-500/10 p-3 text-left transition-colors hover:border-blue-400 hover:bg-blue-500/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 dark:border-blue-400/30 dark:bg-blue-400/10 dark:hover:bg-blue-400/15"
+									class="group flex min-h-24 items-start gap-3 rounded-lg border border-blue-500/40 bg-blue-500/10 p-3 text-left transition-colors hover:border-blue-400 hover:bg-blue-500/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
 								>
 									<span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-blue-500/15 text-blue-600 dark:text-blue-300">
 										<FolderOpen class="h-4 w-4" />
@@ -3273,7 +3478,7 @@
 						<!-- Deploys tab: shown with a synced compose, or when a read-only /
 						     not-yet-synced stack still has run history to show. -->
 						<div class="flex h-full min-h-0 flex-1 flex-col p-4">
-							<DeploysPanel {stackName} envId={$currentEnvironment?.id ?? null} theme={editorTheme} reloadKey={deploysReloadKey} onTally={(t) => (deploysTally = t)} />
+							<DeploysPanel {stackName} envId={$currentEnvironment?.id ?? null} theme={editorTheme} reloadKey={deploysReloadKey} onTally={(t) => (deploysTally = t)} readonly={inspectionReadonly} />
 						</div>
 					{/if}
 				</div>
@@ -3335,7 +3540,9 @@
 		<!-- Footer -->
 		<div class="flex flex-shrink-0 items-center justify-between gap-2 border-t border-zinc-200 px-4 py-3 sm:px-8 dark:border-zinc-700 max-md:pb-[max(0.75rem,env(safe-area-inset-bottom))]">
 			<div class="flex min-w-0 items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400 max-sm:hidden">
-				{#if readonly && !isGitView}
+				{#if readonly && isGitView && workspaceEnabled && !inspectionReadonly && activeTab === 'editor'}
+					<span>Save workspace files from the editor toolbar.</span>
+				{:else if readonly && !isGitView}
 					<Lock class="h-3.5 w-3.5 shrink-0" />
 					{#if needsFileLocation}
 						<span>Compose file location is unknown. Use Edit to browse and attach it.</span>
@@ -3351,7 +3558,9 @@
 
 			<div class="flex flex-wrap items-center justify-end gap-2 max-md:grid max-md:w-full max-md:grid-cols-2 max-md:gap-2">
 				{#if readonly}
-					{#if isGitView && activeTab === 'editor'}
+					{#if isGitView && workspaceEnabled && !inspectionReadonly && activeTab === 'editor'}
+						<Button variant="outline" class="max-md:col-span-2 max-md:min-h-11" onclick={tryClose} disabled={saving}>Close</Button>
+					{:else if isGitView && !inspectionReadonly && activeTab === 'editor'}
 						<Button variant="outline" class="max-md:min-h-11" onclick={tryClose} disabled={saving}>Close</Button>
 						<Button class="max-md:min-h-11" onclick={saveGitEnvVars} disabled={saving || !isDirty}>
 							{#if saving}<Loader2 class="h-4 w-4 animate-spin" />{/if}
@@ -3386,7 +3595,7 @@
 							Create & Start
 						{/if}
 					</Button>
-				{:else if !readonly}
+				{:else if !readonly && (activeTab !== 'editor' || needsFileLocation)}
 					<!-- Edit mode buttons -->
 					<Button variant="outline" class="max-md:min-h-11 max-md:w-full w-24" onclick={() => handleSave(false)} disabled={saving || loading || (needsFileLocation && !workingComposePath.trim())}>
 						{#if saving && !savingWithRestart}

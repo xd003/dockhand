@@ -1,5 +1,5 @@
 import { json } from '@sveltejs/kit';
-import { listComposeStacks, deployStack, saveStackComposeFile, writeStackEnvFile, writeRawStackEnvFile, saveStackEnvVarsToDb } from '$lib/server/stacks';
+import { listComposeStacks, deployStack, getStackComposeFile, saveStackComposeFile, writeStackEnvFile, writeRawStackEnvFile, saveStackEnvVarsToDb } from '$lib/server/stacks';
 import { EnvironmentNotFoundError, DockerConnectionError } from '$lib/server/docker';
 import { upsertStackSource, getStackSources, secretProviderExists } from '$lib/server/db';
 import { validateComposePathsInput, validateComposeContentsInput } from '$lib/server/compose-files';
@@ -10,6 +10,48 @@ import { createRunRecorder } from '$lib/server/deploy-run-record';
 import { hashComposeContent, hashEnvFingerprint } from '$lib/server/deploy-run-record-core';
 import { parseEnvFileContent } from '$lib/server/git';
 import type { RequestHandler } from './$types';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
+import { MAX_STACK_WORKSPACE_TEXT_SIZE, normalizeWorkspacePath, resolveWorkspacePath } from '$lib/server/stack-workspace';
+
+async function publishWorkspaceDraft(name: string, envId: number | undefined, value: unknown): Promise<void> {
+	if (value === undefined) return;
+	if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid workspace draft');
+	const draft = value as { files?: unknown; binaryFiles?: unknown; folders?: unknown };
+	if (!draft.files || typeof draft.files !== 'object' || Array.isArray(draft.files)) throw new Error('Invalid workspace files');
+	if (draft.binaryFiles !== undefined && (!draft.binaryFiles || typeof draft.binaryFiles !== 'object' || Array.isArray(draft.binaryFiles))) throw new Error('Invalid workspace binary files');
+	if (draft.folders !== undefined && !Array.isArray(draft.folders)) throw new Error('Invalid workspace folders');
+	const folders = (draft.folders ?? []).map(normalizeWorkspacePath);
+	const textFiles = Object.entries(draft.files as Record<string, unknown>).map(([path, content]) => {
+		const normalized = normalizeWorkspacePath(path);
+		if (typeof content !== 'string' || content.includes('\0') || Buffer.byteLength(content, 'utf8') > MAX_STACK_WORKSPACE_TEXT_SIZE) throw new Error(`Invalid workspace text file: ${path}`);
+		return [normalized, content] as const;
+	});
+	const binaryFiles = Object.entries((draft.binaryFiles ?? {}) as Record<string, unknown>).map(([path, content]) => {
+		const normalized = normalizeWorkspacePath(path);
+		if (typeof content !== 'string') throw new Error(`Invalid workspace binary file: ${path}`);
+		const decoded = Buffer.from(content, 'base64');
+		if (decoded.byteLength > MAX_STACK_WORKSPACE_TEXT_SIZE) throw new Error(`Workspace file exceeds the 10 MiB limit: ${path}`);
+		return [normalized, decoded] as const;
+	});
+	const paths = [...folders, ...textFiles.map(([path]) => path), ...binaryFiles.map(([path]) => path)];
+	if (new Set(paths.map((path) => path.toLocaleLowerCase())).size !== paths.length) throw new Error('Workspace paths must be unique');
+	const stack = await getStackComposeFile(name, envId);
+	if (!stack.success || !stack.stackDir) throw new Error(stack.error || 'Stack directory not found');
+	for (const path of folders) {
+		await mkdir(await resolveWorkspacePath(stack.stackDir, path, { existing: false }), { recursive: true, mode: 0o750 });
+	}
+	for (const [path, content] of textFiles) {
+		const target = await resolveWorkspacePath(stack.stackDir, path, { existing: false });
+		await mkdir(dirname(target), { recursive: true });
+		await writeFile(target, content, { encoding: 'utf8', mode: 0o640 });
+	}
+	for (const [path, content] of binaryFiles) {
+		const target = await resolveWorkspacePath(stack.stackDir, path, { existing: false });
+		await mkdir(dirname(target), { recursive: true });
+		await writeFile(target, content, { mode: 0o640 });
+	}
+}
 
 /**
  * @openapi
@@ -90,7 +132,7 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
  * summary: Create and (optionally) deploy a compose stack
  * description: Writes the compose + .env to the stack dir, stores secrets in the DB, and with start deploys it. Can bind a secret provider. Target environment comes from the env query param, or from envId/environmentId in the body when the query is absent.
  * query: env:integer Target environment id (takes precedence over envId/environmentId in the body)
- * body: {name:string!, compose:string!, composePath:string, composePaths:array<string>, composeContents:object, envPath:string, envVars:array<object>, rawEnvContent:string, secretProviderId:integer, start:boolean, envId:integer, environmentId:integer, pull:boolean, build:boolean, forceRecreate:boolean}
+ * body: {name:string!, compose:string!, composePath:string, composePaths:array<string>, composeContents:object, envPath:string, envVars:array<object>, rawEnvContent:string, secretProviderId:integer, workspaceEnabled:boolean, workspace:object, start:boolean, envId:integer, environmentId:integer, pull:boolean, build:boolean, forceRecreate:boolean}
  * resp-400: Invalid request (e.g. missing name/compose, or secretProviderId wrong type)
  * resp-403: Permission denied (needs stacks:create; binding a secret provider also needs secrets:view)
  * resp-500: Failed to create or deploy the stack
@@ -185,6 +227,7 @@ export const POST: RequestHandler = async (event) => {
 			if (!result.success) {
 				return json({ error: result.error }, { status: 400 });
 			}
+			await publishWorkspaceDraft(name, envIdNum, body.workspace);
 			// Save environment variables
 			// - rawEnvContent → .env file (non-secrets with comments)
 			// - secrets only → DB (for shell injection at runtime)
@@ -212,6 +255,7 @@ export const POST: RequestHandler = async (event) => {
 				composePaths: composePaths || undefined,
 				envPath: envPath || undefined,
 				secretProviderId,
+				workspaceEnabled: body.workspaceEnabled === true,
 			});
 
 			// Audit log
@@ -230,6 +274,7 @@ export const POST: RequestHandler = async (event) => {
 		if (!saveResult.success) {
 			return json({ error: saveResult.error }, { status: 400 });
 		}
+		await publishWorkspaceDraft(name, envIdNum, body.workspace);
 		// Save environment variables BEFORE deploying so they're available during start
 		if (rawEnvContent || (envVars && Array.isArray(envVars) && envVars.length > 0)) {
 			if (rawEnvContent) {
@@ -257,6 +302,7 @@ export const POST: RequestHandler = async (event) => {
 			composePaths: composePaths || undefined,
 			envPath: envPath || undefined,
 			secretProviderId,
+			workspaceEnabled: body.workspaceEnabled === true,
 		});
 
 		// This endpoint has no requireComposeFile() call to hash the way the

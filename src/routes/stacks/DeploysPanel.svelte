@@ -45,6 +45,7 @@
 	import { m } from '$lib/paraglide/messages.js';
 
 	interface Props {
+		readonly?: boolean;
 		stackName: string;
 		envId: number | null;
 		// Forwarded to LogViewer so an expanded run's log follows the caller's editor
@@ -55,7 +56,7 @@
 		// Reports the run tally to the parent for the tab badge (total + ok/failed split).
 		onTally?: (t: { total: number; ok: number; failed: number }) => void;
 	}
-	let { stackName, envId, theme = 'dark', reloadKey = 0, onTally }: Props = $props();
+	let { stackName, envId, theme = 'dark', reloadKey = 0, onTally, readonly = false }: Props = $props();
 
 	let runs = $state<DeployRun[]>([]);
 	let loading = $state(true);
@@ -368,7 +369,7 @@
 				</div>
 			{:else if column.id === 'actions'}
 				{@const panelState = buildDeployLogPanelState(run)}
-				{#if panelState.deletable}
+				{#if panelState.deletable && !readonly}
 					<div class="flex justify-end">
 						<ConfirmPopover
 							localized

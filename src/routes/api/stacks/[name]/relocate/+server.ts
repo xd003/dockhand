@@ -7,7 +7,8 @@ import { findStackDir } from '$lib/server/stacks';
 import { isForbiddenStackPath, holdsForbiddenStackPath } from '$lib/server/fs-guard';
 import { moveDirEntries } from '$lib/server/stack-relocate-move';
 import { existsSync, readdirSync, readFileSync, mkdirSync, rmSync } from 'node:fs';
-import { join, dirname, resolve } from 'node:path';
+import { join, dirname, resolve, relative, isAbsolute } from 'node:path';
+import { parseComposePathsColumn } from '$lib/server/compose-files';
 
 /**
  * POST /api/stacks/[name]/relocate
@@ -97,9 +98,19 @@ export const POST: RequestHandler = async ({ params, request, url, cookies }) =>
 			// Ignore errors when checking/removing old directory
 		}
 
-		// Update database with new paths
+		// A configured Compose list moves with its files; the caller may also have
+		// renamed the primary. An implicit single-file stack stays implicit.
+		const oldPaths = parseComposePathsColumn(source.composePaths);
+		const nextPaths = oldPaths.length > 0
+			? oldPaths.map((path, index) => {
+				if (index === 0) return newComposePath;
+				const rel = relative(oldDir, path);
+				return rel && !rel.startsWith('..') && !isAbsolute(rel) ? join(newDir, rel) : path;
+			})
+			: undefined;
 		await updateStackSource(name, envIdNum ?? null, {
 			composePath: newComposePath,
+			...(nextPaths ? { composePaths: nextPaths } : {}),
 			envPath: newEnvPath || null
 		});
 

@@ -27,7 +27,7 @@ describe('stack staging display paths', () => {
 		expect(source).toContain('remoteComposePath');
 		expect(source).not.toContain('unmapHawserDisplayComposeOptionsToStaging');
 		expect(modal).toContain('hostPath={activeHostPath}');
-		expect(editor).toContain('Dockhand path');
+		expect(editor).toContain('Compose file');
 		expect(editor).toContain('Hawser host path');
 		expect(stacks).not.toContain("getEnvSetting('remote_stacks_dir', environmentId)");
 	});

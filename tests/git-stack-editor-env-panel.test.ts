@@ -44,8 +44,9 @@ describe('Git stack draft editor', () => {
 		expect(removeComposePath).toContain('if (!gitStack) await populateEnvVars();');
 	});
 
-	test('reloads repository environment defaults whenever the stack editor opens', () => {
-		expect(stackModal).toContain('await populateGitEnvVars(loadedVars, false);');
+	test('only populates Git files when requested', () => {
+		expect(stackModal).not.toContain('await populateGitEnvVars(loadedVars, false);');
+		expect(stackModal).toContain('onclick={() => populateGitEnvVars()}');
 	});
 
 });

@@ -456,7 +456,8 @@ export const POST: RequestHandler = async (event) => {
 			sourceType: 'git',
 			gitRepositoryId: repositoryId,
 			gitStackId: gitStack.id,
-			secretProviderId: data.secretProviderId ?? null
+			secretProviderId: data.secretProviderId ?? null,
+			workspaceEnabled: data.workspaceEnabled === true
 		});
 
 		// Audit log

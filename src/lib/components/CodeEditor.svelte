@@ -5,7 +5,8 @@
 	// Note: Secret masking was removed - secrets are now excluded from the raw editor entirely
 	// and are only stored in the database (never written to .env file)
 	import { defaultKeymap, history, historyKeymap, indentWithTab, insertNewlineAndIndent } from '@codemirror/commands';
-	import { syntaxHighlighting, defaultHighlightStyle, indentOnInput, bracketMatching, indentUnit, StreamLanguage, type StreamParser } from '@codemirror/language';
+	import { syntaxHighlighting, defaultHighlightStyle, HighlightStyle, indentOnInput, bracketMatching, indentUnit, StreamLanguage, type StreamParser } from '@codemirror/language';
+	import { tags } from '@lezer/highlight';
 	import { searchKeymap, highlightSelectionMatches } from '@codemirror/search';
 	import { autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap, type CompletionContext, type CompletionResult } from '@codemirror/autocomplete';
 	import { oneDarkHighlightStyle } from '@codemirror/theme-one-dark';
@@ -776,10 +777,11 @@
 			fontSize: '13px'
 		},
 		'.cm-activeLineGutter': {
-			backgroundColor: '#2a2a2a'
+			backgroundColor: 'rgba(111, 168, 255, 0.07)',
+			color: '#d4d4d4'
 		},
 		'.cm-activeLine': {
-			backgroundColor: '#2a2a2a'
+			backgroundColor: 'rgba(111, 168, 255, 0.07)'
 		},
 		'.cm-selectionBackground': {
 			backgroundColor: 'yellow !important'
@@ -836,6 +838,19 @@
 			padding: '0 8px'
 		}
 	}, { dark: false });
+
+	const yamlDarkHighlight = HighlightStyle.define([
+		{ tag: [tags.propertyName, tags.definition(tags.propertyName)], color: '#8fc7ff' },
+		{ tag: tags.string, color: '#6fcf97' },
+		{ tag: tags.number, color: '#e8b355' },
+		{ tag: [tags.bool, tags.atom], color: '#e78ac3' }
+	]);
+	const yamlLightHighlight = HighlightStyle.define([
+		{ tag: [tags.propertyName, tags.definition(tags.propertyName)], color: '#2563a8' },
+		{ tag: tags.string, color: '#287a4d' },
+		{ tag: tags.number, color: '#9a6400' },
+		{ tag: [tags.bool, tags.atom], color: '#a12b70' }
+	]);
 
 	// Track if we're initialized (prevents multiple createEditor calls)
 	let initialized = false;
@@ -926,6 +941,7 @@
 			EditorView.lineWrapping,
 			EditorState.tabSize.of(2),
 			getLanguageExtension(language),
+			...(language === 'yaml' ? [syntaxHighlighting(theme === 'dark' ? yamlDarkHighlight : yamlLightHighlight)] : []),
 			// Vertical indentation guides, opt-in per user (#1410). Subtle tones for both themes.
 			...(get(themeStore).editorIndentGuides
 				? [indentationMarkers({

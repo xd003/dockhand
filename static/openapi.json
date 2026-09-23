@@ -14436,6 +14436,15 @@
             "description": "Path parameter \"id\" (auto-detected from the handler's source - no @openapi annotation for this parameter yet)"
           },
           {
+            "name": "directory",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Query parameter \"directory\" (auto-detected from the handler's source - no @openapi annotation for this parameter yet)"
+          },
+          {
             "name": "path",
             "in": "query",
             "required": false,
@@ -25643,6 +25652,13 @@
                   "secretProviderId": {
                     "type": "integer"
                   },
+                  "workspaceEnabled": {
+                    "type": "boolean"
+                  },
+                  "workspace": {
+                    "type": "object",
+                    "properties": {}
+                  },
                   "start": {
                     "type": "boolean"
                   },
@@ -25681,6 +25697,8 @@
                 ],
                 "rawEnvContent": "string",
                 "secretProviderId": 0,
+                "workspaceEnabled": true,
+                "workspace": {},
                 "start": true,
                 "envId": 0,
                 "environmentId": 0,
@@ -28077,6 +28095,233 @@
             }
           }
         }
+      }
+    },
+    "/api/stacks/{name}/workspace": {
+      "get": {
+        "operationId": "get_api_stacks_name_workspace",
+        "tags": [
+          "stacks"
+        ],
+        "summary": "GET /api/stacks/{name}/workspace (auto-generated — no @openapi annotation yet)",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Path parameter \"name\" (auto-detected from the handler's source - no @openapi annotation for this parameter yet)"
+          },
+          {
+            "name": "content",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Query parameter \"content\" (auto-detected from the handler's source - no @openapi annotation for this parameter yet)"
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Query parameter \"path\" (auto-detected from the handler's source - no @openapi annotation for this parameter yet)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "post": {
+        "operationId": "post_api_stacks_name_workspace",
+        "tags": [
+          "stacks"
+        ],
+        "summary": "POST /api/stacks/{name}/workspace (auto-generated — no @openapi annotation yet)",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Path parameter \"name\" (auto-detected from the handler's source - no @openapi annotation for this parameter yet)"
+          },
+          {
+            "name": "env",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Query parameter \"env\" (auto-detected from the handler's source - no @openapi annotation for this parameter yet)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "404": {
+            "description": "Error response (auto-detected status code — no @openapi annotation for this response yet)"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  },
+                  "workspaceEnabled": {
+                    "type": "string"
+                  }
+                },
+                "description": "Fields auto-detected from the handler's destructuring of the request body - generic string type, no @openapi annotation for this body yet."
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "put_api_stacks_name_workspace",
+        "tags": [
+          "stacks"
+        ],
+        "summary": "PUT /api/stacks/{name}/workspace (auto-generated — no @openapi annotation yet)",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Path parameter \"name\" (auto-detected from the handler's source - no @openapi annotation for this parameter yet)"
+          },
+          {
+            "name": "env",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Query parameter \"env\" (auto-detected from the handler's source - no @openapi annotation for this parameter yet)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "404": {
+            "description": "Error response (auto-detected status code — no @openapi annotation for this response yet)"
+          },
+          "409": {
+            "description": "Error response (auto-detected status code — no @openapi annotation for this response yet)"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "commitMessage": {
+                    "type": "string"
+                  },
+                  "content": {
+                    "type": "string"
+                  },
+                  "destination": {
+                    "type": "string"
+                  },
+                  "expectedRevision": {
+                    "type": "string"
+                  },
+                  "gitDecision": {
+                    "type": "string"
+                  },
+                  "path": {
+                    "type": "string"
+                  },
+                  "workspaceEnabled": {
+                    "type": "string"
+                  }
+                },
+                "description": "Fields auto-detected from the handler's destructuring of the request body - generic string type, no @openapi annotation for this body yet."
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "delete_api_stacks_name_workspace",
+        "tags": [
+          "stacks"
+        ],
+        "summary": "DELETE /api/stacks/{name}/workspace (auto-generated — no @openapi annotation yet)",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Path parameter \"name\" (auto-detected from the handler's source - no @openapi annotation for this parameter yet)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ]
       }
     },
     "/api/stacks/adopt": {

@@ -11,8 +11,9 @@
 	import { SELECTOR_VARS } from '$lib/utils/bulk-selector';
 	import { classifyMarker, isInlineProviderRef, resolvedRefVarNames } from '$lib/utils/invault-markers';
 	import { applyQuickFix, findingKey } from '$lib/utils/compose-quick-fix';
-	import { Layers, Save, Play, Code, GitGraph, GitBranch, GitCommitHorizontal, Github, Loader2, AlertCircle, X, Sun, Moon, TriangleAlert, GripVertical, GripHorizontal, FolderOpen, Copy, Check, XCircle, MapPin, ArrowRight, ArrowUp, ArrowDown, Info, Box, FolderSync, Archive, ListChecks, History, ChevronDown } from 'lucide-svelte';
+	import { Layers, Save, Play, Code, GitGraph, GitBranch, GitCommitHorizontal, Github, Loader2, AlertCircle, X, Sun, Moon, TriangleAlert, GripVertical, GripHorizontal, FolderOpen, Copy, Check, XCircle, MapPin, ArrowRight, ArrowUp, ArrowDown, Info, Box, FolderSync, Archive, Lock, FileText, ListChecks, History, ChevronDown } from 'lucide-svelte';
 	import ComposeValidatePanel from './ComposeValidatePanel.svelte';
+
 	import BackupPanel from '../containers/BackupPanel.svelte';
 	import DeploysPanel from './DeploysPanel.svelte';
 	import DeployOutputHeader from './DeployOutputHeader.svelte';
@@ -76,11 +77,12 @@
 		initialStackName?: string; // Pre-fill stack name (for library deploy)
 		readonly?: boolean; // View compose content without allowing local changes
 		gitInfo?: { commit?: string; url?: string; branch?: string } | null; // Git provenance for read-only git stacks
+		stackSource?: { sourceType: string } | null;
 		onClose: () => void;
 		onSuccess: () => void; // Called after create or save
 	}
 
-	let { open = $bindable(), mode: propMode, stackName: propStackName = '', initialCompose, initialStackName, readonly = false, gitInfo = null, onClose, onSuccess }: Props = $props();
+	let { open = $bindable(), mode: propMode, stackName: propStackName = '', initialCompose, initialStackName, readonly = false, gitInfo = null, stackSource = null, onClose, onSuccess }: Props = $props();
 
 	let gitCommitCopied = $state<'ok' | 'error' | null>(null);
 	let gitUrlCopied = $state<'ok' | 'error' | null>(null);
@@ -417,6 +419,7 @@
 	// True once the user types a stack name (vs auto-derived from compose file selection)
 	let stackNameUserEdited = $state(false);
 
+
 	// UI state
 	let composePathCopied = $state<'ok' | 'error' | null>(null);
 	let composePathCopiedIndex = $state<number | null>(null);
@@ -664,8 +667,6 @@
 	}
 
 	function openComposeBrowser() {
-		// For untracked stacks (needsFileLocation), only allow selecting files
-		// For tracked stacks, allow both files and directories
 		const isUntracked = needsFileLocation;
 		fileBrowserConfig = {
 			title: isUntracked ? 'Select compose file' : 'Select compose file or directory',
@@ -673,10 +674,10 @@
 			selectMode: isUntracked ? 'file' : 'file_or_directory',
 			onSelect: handleComposeSelect
 		};
-		showFileBrowser = true;
-	}
+	showFileBrowser = true;
+}
 
-	/**
+/**
 	 * Single mutation point for the multi-file compose state. Keeps the path
 	 * list, primary path (workingComposePath), active tab, and content map
 	 * consistent:
@@ -750,9 +751,6 @@
 			selectFilter: /\.ya?ml$/,
 			selectMode: 'file',
 			onSelect: async (path: string) => {
-				// Tabs are keyed by path — a duplicate would break them, so keep the
-				// browser open and tell the user instead of adding it twice.
-				if (isDuplicateComposePath(index, path)) return;
 				const oldPath = workingComposePaths[index];
 				const newPaths = [...workingComposePaths];
 				newPaths[index] = path;
@@ -776,24 +774,13 @@
 		isDirty = true;
 	}
 
-	function renameComposePathAt(index: number, newPath: string): boolean {
+	function renameComposePathAt(index: number, newPath: string) {
 		const oldPath = workingComposePaths[index];
-		if (oldPath === newPath) return true;
-		if (isDuplicateComposePath(index, newPath)) return false;
+		if (oldPath === newPath) return;
 		const newPaths = [...workingComposePaths];
 		newPaths[index] = newPath;
 		setComposePathList(newPaths, { rename: { from: oldPath, to: newPath } });
 		isDirty = true;
-		return true;
-	}
-
-	/** Tabs are keyed by path, so a path already used by another row is refused. */
-	function isDuplicateComposePath(index: number, path: string): boolean {
-		const candidate = path.trim();
-		if (!candidate) return false;
-		if (!workingComposePaths.some((p, i) => i !== index && p.trim() === candidate)) return false;
-		toast.error('That compose file is already in the list');
-		return true;
 	}
 
 	function removeComposePath(index: number) {
@@ -1293,6 +1280,7 @@
 			if (composeResponse.ok) {
 				const composeData = await composeResponse.json();
 				composeContent = composeData.content || '';
+				loadError = null;
 				// Only set workingComposePath in EDIT mode - CREATE mode uses internal defaults
 				if (mode !== 'create') {
 					workingComposePath = composeFilePath;
@@ -1523,6 +1511,11 @@
 	// Display title
 	const displayName = $derived(mode === 'edit' ? stackName : (newStackName || 'New stack'));
 
+	const isGitView = $derived(
+		readonly &&
+			(stackSource?.sourceType === 'git' ||
+				!!(gitInfo && (gitInfo.commit || gitInfo.url || gitInfo.branch)))
+	);
 	const activeComposeDisplayPath = $derived(activeComposePath || workingComposePaths[0] || workingComposePath || '');
 
 	function composeFileName(path: string): string {
@@ -1782,10 +1775,17 @@
 			// Set working paths
 			workingComposePath = data.composePath || '';
 			workingEnvPath = data.envPath || '';
-			// The compose endpoint returns the resolved paths as an array.
-			workingComposePaths = Array.isArray(data.composePaths)
-				? data.composePaths
-				: (workingComposePath ? [workingComposePath] : []);
+			// The compose endpoint returns resolved paths as an array; retain support
+			// for the persisted JSON string used by older responses.
+			if (Array.isArray(data.composePaths)) {
+				workingComposePaths = data.composePaths;
+			} else {
+				try {
+					workingComposePaths = data.composePaths ? JSON.parse(data.composePaths) : (workingComposePath ? [workingComposePath] : []);
+				} catch {
+					workingComposePaths = workingComposePath ? [workingComposePath] : [];
+				}
+			}
 			// The primary file is always list[0]; keep list and primary in sync.
 			if (workingComposePath && workingComposePaths[0] !== workingComposePath) {
 				workingComposePaths = [workingComposePath, ...workingComposePaths.filter((p) => p !== workingComposePath)];
@@ -2485,16 +2485,12 @@
 		// User selected a specific file - paths are locked, don't touch them
 		if (pathSource === 'custom') return;
 
-		// No name entered yet - the generated primary path is cleared, but any extra
-		// files the user added stay, along with their buffered content
+		// No name entered yet - clear paths but preserve the editor content
 		if (!name) {
-			untrack(() => {
-				if (workingComposePaths.length > 1) {
-					remapGeneratedPrimaryPath('');
-				} else {
-					setComposePathList([], { content: composeContent });
-				}
-			});
+			workingComposePaths = [];
+			workingComposePath = '';
+			activeComposePath = '';
+			composeContents = {};
 			workingEnvPath = '';
 			autoComputedComposePath = '';
 			if (!browsedBaseDirectory) {
@@ -2564,13 +2560,14 @@
 			<div class="flex items-center justify-between">
 				<div class="flex items-center gap-3">
 					<div class="flex items-center gap-2">
-						<!-- The stack icon is Dockhand metadata (stored via the /icon API), not
-						     repo content, so it stays editable even for a read-only git stack. -->
+						<!-- The stack icon is Dockhand metadata (stored via the /icon API); a
+						     read-only inspection shows it without offering a change. -->
 						<button
 							type="button"
-							title="Change stack icon"
+							title={readonly ? undefined : 'Change stack icon'}
+							disabled={readonly}
 							onclick={() => (showIconPicker = true)}
-							class="p-1.5 rounded-md bg-zinc-200 dark:bg-zinc-700 hover:ring-2 hover:ring-primary transition-shadow"
+							class="p-1.5 rounded-md bg-zinc-200 dark:bg-zinc-700 transition-shadow {readonly ? '' : 'hover:ring-2 hover:ring-primary'}"
 						>
 							{#if pendingUploadImage}
 								<img src={pendingUploadImage} alt="" class="w-4 h-4 rounded object-cover" />
@@ -2635,7 +2632,7 @@
 			     Also hidden for UNTRACKED stacks: with no known compose file the backup
 			     would be incomplete (can't redeploy at restore), so the backend refuses
 			     it (assertStackBackupable) — don't offer it in the UI either. -->
-			{#if mode === 'edit' && $page.data.backupsEnabled && !needsFileLocation}
+			{#if mode === 'edit' && $page.data.backupsEnabled && !needsFileLocation && !readonly}
 				<button
 					type="button"
 					class="relative -mb-px flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm transition-colors {activeTab === 'backups' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
@@ -2699,7 +2696,7 @@
 				{#if mode === 'edit' && stackName}
 					<div class="px-6 py-3 border-b border-zinc-200 dark:border-zinc-700 flex items-center gap-2 flex-wrap">
 						<Label class="text-xs text-zinc-500 dark:text-zinc-400">Tags</Label>
-						<StackTagsSection {stackName} envId={$currentEnvironment?.id ?? null} />
+						<StackTagsSection {stackName} envId={$currentEnvironment?.id ?? null} {readonly} />
 					</div>
 				{/if}
 
@@ -2728,13 +2725,17 @@
 				{/if}
 
 				<!-- File location needed banner -->
-				{#if mode === 'edit' && needsFileLocation && !readonly}
+				{#if mode === 'edit' && needsFileLocation}
 					<div class="px-4 py-3 border-b border-zinc-200 dark:border-zinc-700 bg-amber-50/50 dark:bg-amber-950/20">
 						<div class="flex items-start gap-3">
 							<AlertCircle class="w-4 h-4 shrink-0 text-amber-500 mt-0.5" />
 							<div class="flex-1 min-w-0">
 								<p class="text-sm text-zinc-600 dark:text-zinc-400 mb-2">
-									<span class="font-medium text-amber-800 dark:text-amber-300">Untracked stack</span> — this stack is running in Docker but Dockhand doesn't know where its compose file is stored on disk. Browse to locate the file to start editing and managing it.
+									{#if readonly}
+										<span class="font-medium text-amber-800 dark:text-amber-300">Untracked stack</span> — this stack is running in Docker but Dockhand doesn't know where its compose file is stored on disk. {$canAccess('stacks', 'edit') ? 'Close this view and use Edit to locate the file.' : 'An editor can locate the file with the edit action.'}
+									{:else}
+										<span class="font-medium text-amber-800 dark:text-amber-300">Untracked stack</span> — this stack is running in Docker but Dockhand doesn't know where its compose file is stored on disk. Browse to locate the file to start editing and managing it.
+									{/if}
 								</p>
 								{#if stackContainers.length > 0}
 									<div class="text-xs text-zinc-500 dark:text-zinc-400">
@@ -2847,13 +2848,12 @@
 									</div>
 
 									{#if !readonly}
-										<div class="mb-3 space-y-1.5 rounded-lg border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-700 dark:bg-zinc-800/40" role="list">
+										<div class="mb-3 space-y-1.5 rounded-lg border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-700 dark:bg-zinc-800/40">
 											{#each workingComposePaths as path, i}
 												{@const total = workingComposePaths.length}
 												{@const isDragging = dragIndex === i}
 												<div
 													class="flex min-w-0 items-center gap-1 overflow-hidden {isDragging ? 'opacity-40' : ''}"
-													role="listitem"
 													draggable={mode === 'create' || needsFileLocation}
 													ondragstart={(e) => dragStart(e, i)}
 													ondragover={(e) => dragOver(e, i)}
@@ -2876,7 +2876,7 @@
 														value={workingComposePaths[i]}
 														placeholder={i === 0 ? '/path/to/compose.yaml' : 'compose.override.yaml'}
 														class="min-w-0 flex-1 rounded border bg-background px-2 py-1 text-xs"
-														oninput={(e) => { if (!renameComposePathAt(i, e.currentTarget.value)) e.currentTarget.value = workingComposePaths[i] ?? ''; }}
+														oninput={(e) => renameComposePathAt(i, e.currentTarget.value)}
 													/>
 													<button type="button" onclick={() => browseForRow(i)} class="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted" title="Browse for file">
 														<FolderOpen class="h-3.5 w-3.5" />
@@ -2938,21 +2938,34 @@
 
 									<div class="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-zinc-200 bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900/40 {workingComposePaths.length > 0 ? 'rounded-t-none border-t-0' : ''}">
 										{#if open}
-											{#if readonly && needsFileLocation && !composeContent}
+											{#if loadError}
 												<div class="flex h-full flex-col items-center justify-center px-8 text-center">
-													<GitGraph class="mb-4 h-12 w-12 text-zinc-300 dark:text-zinc-600" />
-													<h3 class="mb-2 text-sm font-medium text-zinc-700 dark:text-zinc-300">Compose file not available</h3>
-													<p class="max-w-sm text-xs text-zinc-500 dark:text-zinc-400">
-														Deploy or sync this Git stack first so Dockhand has a local copy of its compose file.
-													</p>
+													<TriangleAlert class="mb-4 h-12 w-12 text-red-400" />
+													<h3 class="mb-2 text-sm font-medium text-red-700 dark:text-red-300">Failed to load compose file</h3>
+													<p class="max-w-sm break-all text-xs text-red-600 dark:text-red-400">{loadError}</p>
+												</div>
+											{:else if readonly && needsFileLocation && !composeContent}
+												<div class="flex h-full flex-col items-center justify-center px-8 text-center">
+													{#if isGitView}
+														<GitGraph class="mb-4 h-12 w-12 text-zinc-300 dark:text-zinc-600" />
+														<h3 class="mb-2 text-sm font-medium text-zinc-700 dark:text-zinc-300">Compose file not available</h3>
+														<p class="max-w-sm text-xs text-zinc-500 dark:text-zinc-400">
+															Deploy or sync this Git stack first so Dockhand has a local copy of its compose file.
+														</p>
+													{:else}
+														<FolderOpen class="mb-4 h-12 w-12 text-zinc-300 dark:text-zinc-600" />
+														<h3 class="mb-2 text-sm font-medium text-zinc-700 dark:text-zinc-300">Compose file location unknown</h3>
+														<p class="max-w-sm text-xs text-zinc-500 dark:text-zinc-400">
+															Dockhand does not know where this stack's compose file is stored. {$canAccess('stacks', 'edit') ? 'Use Edit to browse and attach it.' : 'An editor can attach it with the edit action.'}
+														</p>
+													{/if}
 												</div>
 											{:else if needsFileLocation && !composeContent}
-												<!-- Empty state for untracked stacks -->
 												<div class="flex h-full flex-col items-center overflow-y-auto px-4 py-6 text-center sm:px-8">
 													<FolderOpen class="mb-4 h-12 w-12 text-zinc-300 dark:text-zinc-600" />
 													<h3 class="mb-2 text-sm font-medium text-zinc-700 dark:text-zinc-300">No compose file selected</h3>
 													<p class="mb-4 max-w-sm text-xs text-zinc-500 dark:text-zinc-400">
-														Browse to locate the compose file for this stack. The editor will load the file contents once selected.
+														Browse to locate the compose file for this stack.
 													</p>
 													{#if mode === 'edit' && pathHintEnvId && $canAccess('stacks', 'edit')}
 														<DetectedComposeFile
@@ -3054,7 +3067,7 @@
 																onClose={closeValidatePanel}
 																onJumpToLine={jumpToComposeLine}
 																onRevalidate={runComposeValidate}
-																onApplyFix={applyValidateFix}
+																onApplyFix={readonly ? undefined : applyValidateFix}
 															/>
 														</div>
 													{/if}
@@ -3064,6 +3077,7 @@
 									</div>
 								</div>
 							</div>
+
 							<!-- Resizable divider -->
 							<div
 								class="w-1 flex-shrink-0 bg-zinc-200 dark:bg-zinc-700 hover:bg-blue-400 dark:hover:bg-blue-500 cursor-col-resize transition-colors flex items-center justify-center group {isDraggingSplit ? 'bg-blue-500 dark:bg-blue-400' : ''}"
@@ -3072,35 +3086,49 @@
 								aria-orientation="vertical"
 								tabindex="0"
 							>
-								<div class="w-4 h-8 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity {isDraggingSplit ? 'opacity-100' : ''}">
-									<GripVertical class="w-3 h-3 text-white" />
+								<div class="flex h-8 w-4 items-center justify-center opacity-0 transition-opacity group-hover:opacity-100 {isDraggingSplit ? 'opacity-100' : ''}">
+									<GripVertical class="h-3 w-3 text-white" />
 								</div>
 							</div>
+
 							<!-- Environment variables panel -->
-							<div class="flex-1 min-w-0 flex flex-col overflow-hidden bg-zinc-50 dark:bg-zinc-800/50">
-								<SecretProviderPicker
-									bind:secretProviderId={formSecretProviderId}
-									bind:envVars
-									providers={secretProviders}
-									onchange={() => { secretProviderTouched = true; markDirty(); debouncedValidate(); }}
-								/>
-								<StackEnvVarsPanel
-									bind:this={envVarsPanelRef}
-									bind:variables={envVars}
-									bind:rawContent={rawEnvContent}
-									validation={effectiveValidation}
-									existingSecretKeys={mode === 'edit' ? existingSecretKeys : new Set()}
-									injectedSecretKeys={mode === 'edit' ? injectedSecretKeys : []}
-									providerType={selectedProviderType}
-									providerName={selectedProviderName}
-									providerBound={selectedProviderBound}
-									{probeError}
-									{providerKeySet}
-									{readonly}
-									onchange={() => { markDirty(); debouncedValidate(); }}
-									theme={editorTheme}
-									infoText="These variables will be written to a .env file in the stack directory and passed to the compose command."
-								/>
+							<div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+								<div class="flex min-h-0 flex-1 flex-col px-8 py-6">
+									<div class="mb-3.5 flex items-center justify-between gap-3">
+										<div class="flex items-center gap-2 text-sm font-semibold text-zinc-800 dark:text-zinc-100">
+											<FileText class="h-4 w-4 text-muted-foreground" />
+											Environment variables
+										</div>
+									</div>
+
+									{#if !readonly}
+										<SecretProviderPicker
+											bind:secretProviderId={formSecretProviderId}
+											bind:envVars
+											providers={secretProviders}
+											onchange={() => { secretProviderTouched = true; markDirty(); debouncedValidate(); }}
+										/>
+									{/if}
+
+									<StackEnvVarsPanel
+										bind:this={envVarsPanelRef}
+										bind:variables={envVars}
+										bind:rawContent={rawEnvContent}
+										validation={effectiveValidation}
+										existingSecretKeys={mode === 'edit' ? existingSecretKeys : new Set()}
+										injectedSecretKeys={mode === 'edit' ? injectedSecretKeys : []}
+										providerType={selectedProviderType}
+										providerName={selectedProviderName}
+										providerBound={selectedProviderBound}
+										{probeError}
+										{providerKeySet}
+										{readonly}
+										onchange={() => { markDirty(); debouncedValidate(); }}
+										theme={editorTheme}
+										infoText="These variables will be written to a .env file in the stack directory and passed to the compose command."
+										class="min-h-0 flex-1"
+									/>
+								</div>
 							</div>
 						</div>
 					{:else if activeTab === 'graph'}
@@ -3127,7 +3155,7 @@
 						<!-- Deploys tab: shown with a synced compose, or when a read-only /
 						     not-yet-synced stack still has run history to show. -->
 						<div class="flex h-full min-h-0 flex-1 flex-col p-4">
-							<DeploysPanel {stackName} envId={$currentEnvironment?.id ?? null} theme={editorTheme} reloadKey={deploysReloadKey} onTally={(t) => (deploysTally = t)} />
+							<DeploysPanel {stackName} envId={$currentEnvironment?.id ?? null} theme={editorTheme} reloadKey={deploysReloadKey} onTally={(t) => (deploysTally = t)} {readonly} />
 						</div>
 					{/if}
 				</div>
@@ -3187,10 +3215,17 @@
 		</div>
 
 		<!-- Footer -->
-		<div class="px-5 py-2.5 border-t border-zinc-200 dark:border-zinc-700 flex items-center justify-between flex-shrink-0">
-			<div class="text-xs text-zinc-500 dark:text-zinc-400">
+		<div class="flex flex-shrink-0 items-center justify-between border-t border-zinc-200 px-8 py-3 dark:border-zinc-700">
+			<div class="flex min-w-0 items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
 				{#if readonly}
-					Read-only
+					<Lock class="h-3.5 w-3.5 shrink-0" />
+					{#if isGitView}
+						<span>All files are synced from Git and read-only. Edit the compose files in your repository and redeploy to apply changes.</span>
+					{:else if needsFileLocation}
+						<span>Compose file location is unknown. {$canAccess('stacks', 'edit') ? 'Use Edit to browse and attach it.' : 'An editor can attach it with the edit action.'}</span>
+					{:else}
+						<span>Viewing only.{$canAccess('stacks', 'edit') ? ' Use Edit to change the compose file and environment variables.' : ''}</span>
+					{/if}
 				{:else if isDirty}
 					<span class="text-amber-600 dark:text-amber-500">Unsaved changes</span>
 				{:else}

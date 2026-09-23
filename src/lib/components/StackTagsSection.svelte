@@ -8,8 +8,9 @@
 	interface Props {
 		stackName: string;
 		envId: number | null;
+		readonly?: boolean;
 	}
-	let { stackName, envId }: Props = $props();
+	let { stackName, envId, readonly = false }: Props = $props();
 
 	let catalog = $state<Tag[]>([]);
 	let assigned = $state<number[]>([]);
@@ -58,6 +59,6 @@
 </script>
 
 <div class="flex items-center gap-2 flex-wrap">
-	<TagChips tags={assignedTags} onRemove={(t) => apply(assigned.filter((id) => id !== t.id))} />
-	<TagEditPopover catalog={catalog} selected={assigned} onCreate={createTag} onApply={apply} allowCreate={$isAdmin} />
+	<TagChips tags={assignedTags} onRemove={readonly ? undefined : (t) => apply(assigned.filter((id) => id !== t.id))} />
+	{#if !readonly}<TagEditPopover catalog={catalog} selected={assigned} onCreate={createTag} onApply={apply} allowCreate={$isAdmin} />{/if}
 </div>

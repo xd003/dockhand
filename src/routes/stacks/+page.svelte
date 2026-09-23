@@ -1386,6 +1386,14 @@ let stackSources = $state<Record<string, { sourceType: string; composePath?: str
 		showEditModal = true;
 	}
 
+	function viewStack(name: string) {
+		editingStackName = name;
+		stackModalReadonly = true;
+		stackModalSource = getStackSource(name);
+		stackModalGitInfo = null;
+		showEditModal = true;
+	}
+
 	function viewGitStack(name: string) {
 		editingStackName = name;
 		stackModalReadonly = true;
@@ -1991,7 +1999,8 @@ let stackSources = $state<Record<string, { sourceType: string; composePath?: str
 							onclick={(e) => {
 								e.stopPropagation();
 								if (source.sourceType === 'git') viewGitStack(stack.name);
-								else editStack(stack.name);
+								else if (source.sourceType === 'external' && $canAccess('stacks', 'edit')) editStack(stack.name);
+								else viewStack(stack.name);
 							}}
 						>
 							{stack.name}
@@ -2133,7 +2142,11 @@ let stackSources = $state<Record<string, { sourceType: string; composePath?: str
 								</span>
 							</Tooltip.Trigger>
 							<Tooltip.Content>
-								Compose file location unknown. Click the stack name or edit button to locate it.
+								{#if $canAccess('stacks', 'edit')}
+									Compose file location unknown. Click the stack name or edit button to locate it.
+								{:else}
+									Compose file location unknown. An editor can locate the compose file with the edit action.
+								{/if}
 							</Tooltip.Content>
 						</Tooltip.Root>
 					{/if}

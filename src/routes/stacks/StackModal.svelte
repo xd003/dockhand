@@ -32,6 +32,7 @@
 	import { currentEnvironment, appendEnvParam } from '$lib/stores/environment';
 	import { persistStackIcon } from '$lib/utils/stack-icon';
 	import { appSettings } from '$lib/stores/settings';
+	import { canAccess } from '$lib/stores/auth';
 	import { page } from '$app/stores'; // BETA GATE: backups feature flag
 	import { focusFirstInput } from '$lib/utils';
 	import { copyToClipboard } from '$lib/utils/clipboard';
@@ -2551,13 +2552,14 @@
 			<div class="flex items-center justify-between">
 				<div class="flex items-center gap-3">
 					<div class="flex items-center gap-2">
-						<!-- The stack icon is Dockhand metadata (stored via the /icon API), not
-						     repo content, so it stays editable even for a read-only git stack. -->
+						<!-- The stack icon is Dockhand metadata (stored via the /icon API); a
+						     read-only inspection shows it without offering a change. -->
 						<button
 							type="button"
-							title="Change stack icon"
+							title={readonly ? undefined : 'Change stack icon'}
+							disabled={readonly}
 							onclick={() => (showIconPicker = true)}
-							class="p-1.5 rounded-md bg-zinc-200 dark:bg-zinc-700 hover:ring-2 hover:ring-primary transition-shadow"
+							class="p-1.5 rounded-md bg-zinc-200 dark:bg-zinc-700 transition-shadow {readonly ? '' : 'hover:ring-2 hover:ring-primary'}"
 						>
 							{#if pendingUploadImage}
 								<img src={pendingUploadImage} alt="" class="w-4 h-4 rounded object-cover" />
@@ -2622,7 +2624,7 @@
 			     Also hidden for UNTRACKED stacks: with no known compose file the backup
 			     would be incomplete (can't redeploy at restore), so the backend refuses
 			     it (assertStackBackupable) — don't offer it in the UI either. -->
-			{#if mode === 'edit' && $page.data.backupsEnabled && !needsFileLocation}
+			{#if mode === 'edit' && $page.data.backupsEnabled && !needsFileLocation && !readonly}
 				<button
 					type="button"
 					class="relative -mb-px flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm transition-colors {activeTab === 'backups' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
@@ -2686,7 +2688,7 @@
 				{#if mode === 'edit' && stackName}
 					<div class="px-6 py-3 border-b border-zinc-200 dark:border-zinc-700 flex items-center gap-2 flex-wrap">
 						<Label class="text-xs text-zinc-500 dark:text-zinc-400">Tags</Label>
-						<StackTagsSection {stackName} envId={$currentEnvironment?.id ?? null} />
+						<StackTagsSection {stackName} envId={$currentEnvironment?.id ?? null} {readonly} />
 					</div>
 				{/if}
 
@@ -2722,7 +2724,7 @@
 							<div class="flex-1 min-w-0">
 								<p class="text-sm text-zinc-600 dark:text-zinc-400 mb-2">
 									{#if readonly}
-										<span class="font-medium text-amber-800 dark:text-amber-300">Untracked stack</span> — this stack is running in Docker but Dockhand doesn't know where its compose file is stored on disk. Close this view and use Edit to locate the file.
+										<span class="font-medium text-amber-800 dark:text-amber-300">Untracked stack</span> — this stack is running in Docker but Dockhand doesn't know where its compose file is stored on disk. {$canAccess('stacks', 'edit') ? 'Close this view and use Edit to locate the file.' : 'An editor can locate the file with the edit action.'}
 									{:else}
 										<span class="font-medium text-amber-800 dark:text-amber-300">Untracked stack</span> — this stack is running in Docker but Dockhand doesn't know where its compose file is stored on disk. Browse to locate the file to start editing and managing it.
 									{/if}
@@ -2946,7 +2948,7 @@
 														<FolderOpen class="mb-4 h-12 w-12 text-zinc-300 dark:text-zinc-600" />
 														<h3 class="mb-2 text-sm font-medium text-zinc-700 dark:text-zinc-300">Compose file location unknown</h3>
 														<p class="max-w-sm text-xs text-zinc-500 dark:text-zinc-400">
-															Dockhand does not know where this stack's compose file is stored. Use Edit to browse and attach it.
+															Dockhand does not know where this stack's compose file is stored. {$canAccess('stacks', 'edit') ? 'Use Edit to browse and attach it.' : 'An editor can attach it with the edit action.'}
 														</p>
 													{/if}
 												</div>
@@ -3049,7 +3051,7 @@
 																onClose={closeValidatePanel}
 																onJumpToLine={jumpToComposeLine}
 																onRevalidate={runComposeValidate}
-																onApplyFix={applyValidateFix}
+																onApplyFix={readonly ? undefined : applyValidateFix}
 															/>
 														</div>
 													{/if}
@@ -3083,12 +3085,14 @@
 										</div>
 									</div>
 
-									<SecretProviderPicker
-										bind:secretProviderId={formSecretProviderId}
-										bind:envVars
-										providers={secretProviders}
-										onchange={() => { secretProviderTouched = true; markDirty(); debouncedValidate(); }}
-									/>
+									{#if !readonly}
+										<SecretProviderPicker
+											bind:secretProviderId={formSecretProviderId}
+											bind:envVars
+											providers={secretProviders}
+											onchange={() => { secretProviderTouched = true; markDirty(); debouncedValidate(); }}
+										/>
+									{/if}
 
 									<StackEnvVarsPanel
 										bind:this={envVarsPanelRef}
@@ -3135,7 +3139,7 @@
 						<!-- Deploys tab: shown with a synced compose, or when a read-only /
 						     not-yet-synced stack still has run history to show. -->
 						<div class="flex h-full min-h-0 flex-1 flex-col p-4">
-							<DeploysPanel {stackName} envId={$currentEnvironment?.id ?? null} theme={editorTheme} reloadKey={deploysReloadKey} onTally={(t) => (deploysTally = t)} />
+							<DeploysPanel {stackName} envId={$currentEnvironment?.id ?? null} theme={editorTheme} reloadKey={deploysReloadKey} onTally={(t) => (deploysTally = t)} {readonly} />
 						</div>
 					{/if}
 				</div>
@@ -3202,9 +3206,9 @@
 					{#if isGitView}
 						<span>All files are synced from Git and read-only. Edit the compose files in your repository and redeploy to apply changes.</span>
 					{:else if needsFileLocation}
-						<span>Compose file location is unknown. Use Edit to browse and attach it.</span>
+						<span>Compose file location is unknown. {$canAccess('stacks', 'edit') ? 'Use Edit to browse and attach it.' : 'An editor can attach it with the edit action.'}</span>
 					{:else}
-						<span>Viewing only. Use Edit to change the compose file and environment variables.</span>
+						<span>Viewing only.{$canAccess('stacks', 'edit') ? ' Use Edit to change the compose file and environment variables.' : ''}</span>
 					{/if}
 				{:else if isDirty}
 					<span class="text-amber-600 dark:text-amber-500">Unsaved changes</span>

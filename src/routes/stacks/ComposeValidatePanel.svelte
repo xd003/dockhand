@@ -11,6 +11,7 @@
 		message: string;
 		hint?: string;
 		service?: string;
+		source?: string;
 		line?: number;
 		fix?: QuickFix;
 		fixDescription?: string;
@@ -129,6 +130,7 @@
 								<div class="cvp-finding-body">
 									<div class="cvp-finding-top">
 										<span class="cvp-rule">{f.ruleId}</span>
+										{#if f.source}<span class="cvp-line">{f.source}</span>{/if}
 										{#if f.line}<span class="cvp-line">{m.stacks_validate_line({ line: f.line })}<ArrowRight class="h-3 w-3" /></span>{/if}
 										{#if f.fix && onApplyFix}
 											<button

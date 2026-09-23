@@ -104,6 +104,7 @@ export const POST: RequestHandler = async (event) => {
 				pullBase: !!pullBase,
 				forceRecreate,
 				composePath: composeResult.composePath,
+				composePaths: composeResult.composePaths,
 				envPath: composeResult.envPath,
 				onLine: (line) => send('progress', { type: 'line', line })
 			});

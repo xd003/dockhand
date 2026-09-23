@@ -67,8 +67,8 @@ const FN = (() => {
 })();
 
 describe('getStackComposeFile wires the compose/env read guards', () => {
-	test('the custom-composePath branch refuses a protected path (and secrets/proc)', () => {
-		expect(FN).toContain('isForbiddenStackPath(source.composePath) || isProtectedPath(source.composePath)');
+	test('the configured-compose-paths branch refuses a protected path (and secrets/proc)', () => {
+		expect(FN).toContain('absolutePaths.find((p) => isForbiddenStackPath(p) || isProtectedPath(p))');
 	});
 
 	test('the discovered-compose branch guards both the compose and the .env', () => {
@@ -76,8 +76,8 @@ describe('getStackComposeFile wires the compose/env read guards', () => {
 		expect(FN).toContain('!isForbiddenStackPath(envFilePath) && !isProtectedPath(envFilePath)');
 	});
 
-	test('both branches still read only after the guard (readFileSync is present)', () => {
-		expect(FN).toContain('readFileSync(source.composePath');
-		expect(FN).toContain('readFileSync(actualComposePath');
+	test('both branches still read only after the guard', () => {
+		expect(FN).toContain('readEffectiveComposeFileContents(absolutePaths');
+		expect(FN).toContain('readEffectiveComposeFileContents([actualComposePath])');
 	});
 });

@@ -83,7 +83,7 @@
 	// rate-limited), with the error text for the tooltip — session-only (#1255).
 	let failedUpdateCheckIds = $state<Set<string>>(new Set());
 	let failedUpdateCheckErrors = $state<Map<string, string>>(new Map());
-	let stackSources = $state<Record<string, { sourceType: string; composePath?: string | null; composePaths?: string[]; repository?: any; gitStack?: any; icon?: string | null }>>({});
+let stackSources = $state<Record<string, { sourceType: string; composePath?: string | null; composePaths?: string[]; repository?: any; gitStack?: any; icon?: string | null }>>({});
 	let stackEnvVarCounts = $state<Record<string, number>>({});
 	let gitStacks = $state<any[]>([]);
 	let copiedWebhookStackId = $state<number | null>(null);
@@ -115,6 +115,7 @@
 	let editingStackName = $state('');
 	let stackModalReadonly = $state(false);
 	let stackModalGitInfo = $state<{ commit?: string; url?: string; branch?: string } | null>(null);
+	let stackModalSource = $state<{ sourceType: string; repository?: { url?: string; branch?: string } | null; gitStack?: { lastCommit?: string | null } | null } | null>(null);
 	let editingGitStack = $state<any>(null);
 	let envId = $state<number | null>(null);
 
@@ -1167,7 +1168,7 @@
 		return stack.status;
 	}
 
-	async function openGitModal(gitStack: any = undefined) {
+	async function openGitModal(gitStack?: any) {
 		editingGitStack = gitStack || null;
 		// Fetch repositories and credentials before opening modal
 		try {
@@ -1393,6 +1394,16 @@
 	function editStack(name: string) {
 		editingStackName = name;
 		stackModalReadonly = false;
+		stackModalSource = getStackSource(name);
+		stackModalGitInfo = null;
+		showEditModal = true;
+	}
+
+	function viewStack(name: string) {
+		editingStackName = name;
+		stackModalReadonly = true;
+		stackModalSource = getStackSource(name);
+		stackModalGitInfo = null;
 		showEditModal = true;
 	}
 
@@ -1400,6 +1411,7 @@
 		editingStackName = name;
 		stackModalReadonly = true;
 		const src = getStackSource(name);
+		stackModalSource = src;
 		// Effective branch: per-stack override wins, else repository default
 		// (shared with the server-side resolver in src/lib/git-stack-branch.ts).
 		const eff = effectiveStackBranch(src?.gitStack ?? null, src?.repository ?? undefined);
@@ -2048,7 +2060,8 @@
 							onclick={(e) => {
 								e.stopPropagation();
 								if (source.sourceType === 'git') viewGitStack(stack.name);
-								else editStack(stack.name);
+								else if (source.sourceType === 'external' && $canAccess('stacks', 'edit')) editStack(stack.name);
+								else viewStack(stack.name);
 							}}
 						>
 							{stack.name}
@@ -2214,7 +2227,11 @@
 								</span>
 							</Tooltip.Trigger>
 							<Tooltip.Content>
-								{m.stacks_list_source_untracked_hint()}
+								{#if $canAccess('stacks', 'edit')}
+									{m.stacks_list_source_untracked_hint()}
+								{:else}
+									Compose file location unknown. An editor can locate the compose file with the edit action.
+								{/if}
 							</Tooltip.Content>
 						</Tooltip.Root>
 					{/if}
@@ -2250,7 +2267,7 @@
 						{@const extraCount = paths.length - 1}
 						<Tooltip.Root>
 							<Tooltip.Trigger class="block max-w-full overflow-hidden text-left">
-								<span class="text-xs text-muted-foreground block truncate">
+								<span class="text-xs text-muted-foreground truncate block">
 									{dirPath}
 									{#if extraCount > 0}
 										<span class="text-blue-500 ml-1">+{extraCount} more</span>
@@ -3188,11 +3205,13 @@
 	stackName={editingStackName}
 	readonly={stackModalReadonly}
 	gitInfo={stackModalGitInfo}
+	stackSource={stackModalSource}
 	onClose={() => {
 		showEditModal = false;
 		editingStackName = '';
 		stackModalReadonly = false;
 		stackModalGitInfo = null;
+		stackModalSource = null;
 		loadTags(envId);
 	}}
 	onSuccess={fetchStacks}

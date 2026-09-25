@@ -3851,6 +3851,26 @@ export async function deployStack(options: DeployStackOptions): Promise<StackOpe
 
 		}
 
+		// Hawser adopted/internal deploy: ship the whole compose directory (same
+		// map git deploy already uses) so relative binds and sibling files exist
+		// under STACKS_DIR/<stack>/. Git already populated stackFiles above.
+		let adoptedHawserSync = false;
+		let dirWalkCount = 0;
+		let sizeOmitted: string[] = [];
+		let stackFileModifiedTimes: Record<string, number> | undefined;
+		if (!stackFiles && existsSync(workingDir) && typeof envId === 'number') {
+			const hawserEnv = await getEnvironment(envId);
+			if (hawserEnv?.connectionType === 'hawser-standard' || hawserEnv?.connectionType === 'hawser-edge') {
+				const walked = await readDirFilesAsMap(workingDir);
+				stackFiles = walked.files;
+				stackFileModifiedTimes = walked.modifiedTimes;
+				sizeOmitted = walked.skipped;
+				dirWalkCount = Object.keys(stackFiles).length;
+				adoptedHawserSync = true;
+				console.log(`${logPrefix} Read ${dirWalkCount} files from compose directory for Hawser`);
+			}
+		}
+
 		// For Hawser deployments: include compose and .env in stackFiles
 		// Hawser writes files from the files map to disk at STACKS_DIR/{stackName}/
 		if (!stackFiles) {
@@ -3869,7 +3889,10 @@ export async function deployStack(options: DeployStackOptions): Promise<StackOpe
 			}
 			return 'compose.yaml';
 		})();
-		if (!stackFiles[composeRelPath]) {
+		// Git: keep the clone copy when already in the map. Adopted/internal Hawser:
+		// overlay the compose body this deploy is applying (the previous sparse
+		// payload always sent that content).
+		if (!stackFiles[composeRelPath] || adoptedHawserSync) {
 			stackFiles[composeRelPath] = compose;
 			console.log(`${logPrefix} Added ${composeRelPath} to stackFiles for Hawser (${compose.length} chars)`);
 		}
@@ -3887,10 +3910,49 @@ export async function deployStack(options: DeployStackOptions): Promise<StackOpe
 					return envRel;
 				})();
 				stackFiles[envMapKey] = envFileContent;
+				stackFileModifiedTimes ??= {};
+				stackFileModifiedTimes[envMapKey] = Math.trunc(statSync(actualEnvPath).mtimeMs);
 				console.log(`${logPrefix} Added ${envMapKey} to stackFiles for Hawser (${envFileContent.length} chars)`);
 			} catch (err) {
 				console.warn(`${logPrefix} Failed to read .env file at ${actualEnvPath}:`, err);
 			}
+		}
+
+		// Adopted/internal Hawser: reuse git deletion sync against the shipped map.
+		let hawserFilesToDelete = filesToDelete;
+		let adoptedManifestToPersist: Record<string, string> | undefined;
+		if (adoptedHawserSync && typeof envId === 'number') {
+			const previous = await readAdoptedFileManifest(name, envId);
+			const newShipped = retainOmittedHashes(previous, hashShippedFiles(stackFiles), sizeOmitted);
+			// Compose overlay guarantees a compose key even on an empty walk, so
+			// deletionSafetyCheck cannot see emptiness. Skip deletions when the
+			// walk found nothing (and nothing was size-omitted).
+			const emptyWalk = dirWalkCount === 0 && sizeOmitted.length === 0;
+			if (emptyWalk) {
+				console.warn(`${logPrefix} Deletion sync: the stack directory walk was empty — skipping all deletions this deploy`);
+			} else {
+				const plan = computeDeletions(previous, newShipped);
+				if (plan.toDelete.length > 0) {
+					hawserFilesToDelete = plan.toDelete;
+				}
+				for (const file of plan.toDelete) {
+					console.log(`${logPrefix} Deletion sync: will remove "${file.path}" — deleted from the compose directory`);
+				}
+				for (const skip of plan.skipped) {
+					if (skip.reason === 'already-absent') continue;
+					console.warn(`${logPrefix} Deletion sync: keeping "${skip.path}" — ${skipReasonMessage(skip.reason)}`);
+				}
+			}
+			if (!emptyWalk) {
+				adoptedManifestToPersist = newShipped;
+			}
+			const required = [composeRelPath];
+			if (stackFiles[envRel]) required.push(envRel);
+			if (stackFiles['.env']) required.push('.env');
+			stackFiles = withRequiredHawserFiles(changedHawserFiles(stackFiles, previous), stackFiles, required);
+			stackFileModifiedTimes = Object.fromEntries(Object.keys(stackFiles).flatMap((path) =>
+				stackFileModifiedTimes?.[path] === undefined ? [] : [[path, stackFileModifiedTimes[path]]]
+			));
 		}
 
 		console.log(`${logPrefix} Compose content length:`, compose.length, 'chars');
@@ -3927,6 +3989,7 @@ export async function deployStack(options: DeployStackOptions): Promise<StackOpe
 			noBuildCache,
 			pullPolicy,
 			stackFiles,
+			stackFileModifiedTimes,
 			workingDir,
 			composePath: actualComposePath,
 			composePaths: actualComposePaths,
@@ -3934,7 +3997,7 @@ export async function deployStack(options: DeployStackOptions): Promise<StackOpe
 			useOverrideFile: isGitStack,
 			// Pass compose filename for Hawser (extracted from path or provided explicitly)
 			composeFileName: composeRelPath,
-			filesToDelete
+			filesToDelete: hawserFilesToDelete
 		};
 		const composeEnvVars = isGitStack ? dbNonSecretVars : undefined;
 
@@ -3980,6 +4043,9 @@ export async function deployStack(options: DeployStackOptions): Promise<StackOpe
 		// for local deployments the local applier's result is the truth.
 		if (!result.deletion && localDeletionResult) {
 			result.deletion = localDeletionResult;
+		}
+		if (result.success && adoptedManifestToPersist && typeof envId === 'number') {
+			await persistAdoptedFileManifest(name, envId, adoptedManifestToPersist, logPrefix);
 		}
 		// Fire stack_deployed / stack_deploy_failed. This is the single point every deploy
 		// path funnels through, so all of them notify (#1295). A git deploy suppresses the

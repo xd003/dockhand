@@ -105,6 +105,8 @@ registerDbFake('updateScheduleExecution', async (id: number, data: Record<string
 	updates.push({ id, ...data });
 	return { id, ...data };
 });
+// A local stack source: the compose route only skips the path update for Hawser-owned rows.
+registerDbFake('getStackSource', async () => null);
 
 /** The update() call that CLOSED the row (status !== 'running'), i.e. the one written
  *  by DeployRunRecorder.end() -- as opposed to createRunRecorder's own startedAt
@@ -175,14 +177,6 @@ registerStacksFake('deployStack', async (options: { onLine?: (line: string) => v
 	deployStackCalls.push(options);
 	for (const line of deployStackOnLines) options.onLine?.(line);
 	return deployStackResult;
-});
-registerStacksFake('remapHawserStagingDisplayPaths', async (_name: string, envId: number | undefined, paths: any) => {
-	if (envId !== 2) return paths;
-	const remap = (path: string | null) => path?.replace('/data/stacks/nexz447/', '/opt/hawser/stacks/') ?? null;
-	return {
-		composePath: remap(paths.composePath),
-		composePaths: paths.composePaths.map(remap)
-	};
 });
 
 // -- Route under test, imported AFTER all the fakes above are registered ----
@@ -262,25 +256,25 @@ describe('GET /api/stacks/[name]/compose -- local adopted stack', () => {
 });
 
 describe('GET /api/stacks/[name]/compose -- Hawser stack', () => {
-	test('keeps staging paths primary and returns the Hawser compose path separately', async () => {
+	test('returns the agent-owned Hawser paths as the only file identity', async () => {
 		getComposeResult = {
 			...getComposeResult,
-			stackDir: '/data/stacks/nexz447/demo-stack',
-			composePath: '/data/stacks/nexz447/demo-stack/compose.yaml',
-			composePaths: ['/data/stacks/nexz447/demo-stack/compose.yaml'],
-			composeContents: { '/data/stacks/nexz447/demo-stack/compose.yaml': 'services: {}\n' },
-			envPath: '/data/stacks/nexz447/demo-stack/.env'
+			stackDir: '/opt/hawser/stacks/demo-stack',
+			composePath: '/opt/hawser/stacks/demo-stack/compose.yaml',
+			composePaths: ['/opt/hawser/stacks/demo-stack/compose.yaml'],
+			composeContents: { '/opt/hawser/stacks/demo-stack/compose.yaml': 'services: {}\n' },
+			envPath: '/opt/hawser/stacks/demo-stack/.env'
 		};
 
 		const body = await (await composeRoute.GET(makeGetEvent(2))).json();
 
-		expect(body.composePath).toBe('/data/stacks/nexz447/demo-stack/compose.yaml');
-		expect(body.composePaths).toEqual(['/data/stacks/nexz447/demo-stack/compose.yaml']);
-		expect(body.composeContents).toEqual({
-			'/data/stacks/nexz447/demo-stack/compose.yaml': 'services: {}\n'
-		});
-		expect(body.envPath).toBe('/data/stacks/nexz447/demo-stack/.env');
-		expect(body.remoteComposePath).toBe('/opt/hawser/stacks/demo-stack/compose.yaml');
+		expect(body.stackDir).toBe('/opt/hawser/stacks/demo-stack');
+		expect(body.composePath).toBe('/opt/hawser/stacks/demo-stack/compose.yaml');
+		expect(body.composePaths).toEqual(['/opt/hawser/stacks/demo-stack/compose.yaml']);
+		expect(body.envPath).toBe('/opt/hawser/stacks/demo-stack/.env');
+		// No Dockhand staging copy exists, so there is no second "remote" path to map to.
+		expect(body.remoteComposePath).toBeNull();
+		expect(body.remoteStackDir).toBeNull();
 	});
 });
 

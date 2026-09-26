@@ -8,7 +8,7 @@
  * injected isDirRel and assert the derived relative dirs.
  */
 import { describe, test, expect } from 'bun:test';
-import { relativeBindDirsFromCompose, relativeBindsFromCompose, isUnderRelDir, isLoadBearingStackFile } from '../../src/lib/server/backups/stackfile-filter';
+import { relativeBindDirsFromCompose, relativeBindsFromCompose, isUnderRelDir, isLoadBearingStackFile, listBoundStackFiles } from '../../src/lib/server/backups/stackfile-filter';
 
 const STACK = '/app/data/stacks/env/name';
 const allDirs = () => true;   // treat every candidate as a directory
@@ -211,5 +211,42 @@ describe('isUnderRelDir', () => {
 	});
 	test('no dirs -> nothing matches', () => {
 		expect(isUnderRelDir('data/db', [])).toBe(false);
+	});
+});
+
+describe('Hawser bound-root backup listing', () => {
+	test('walks nested agent files, retains binary sizes and omits separately backed-up bind data', async () => {
+		const entries = {
+			'': [
+				{ path: 'compose.yaml', type: 'file' as const, size: 82 },
+				{ path: '.env', type: 'file' as const, size: 9 },
+				{ path: 'data', type: 'directory' as const },
+				{ path: 'assets', type: 'directory' as const }
+			],
+			assets: [
+				{ path: 'assets/logo.png', type: 'file' as const, size: 20240 },
+				{ path: 'assets/nginx.conf', type: 'file' as const, size: 12 }
+			],
+			data: [{ path: 'data/db.sqlite', type: 'file' as const, size: 1048576 }]
+		};
+		const traversed: string[] = [];
+		const listed = await listBoundStackFiles(async (path) => {
+			traversed.push(path);
+			return entries[path as keyof typeof entries];
+		}, ['data']);
+		expect(traversed).not.toContain('data');
+		expect(listed).toEqual([
+			{ path: '.env', bytes: 9 },
+			{ path: 'assets/logo.png', bytes: 20240 },
+			{ path: 'assets/nginx.conf', bytes: 12 },
+			{ path: 'compose.yaml', bytes: 82 }
+		]);
+	});
+
+	test('fails rather than silently recording an incomplete remote listing', async () => {
+		const tooMany = Array.from({ length: 5001 }, (_, i) => ({ path: `config/${i}.txt`, type: 'file' as const, size: 1 }));
+		await expect(listBoundStackFiles(async (path) =>
+			path ? tooMany : [{ path: 'config', type: 'directory' as const }]
+		, [])).rejects.toThrow('complete backup file listing');
 	});
 });

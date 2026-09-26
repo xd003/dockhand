@@ -16,14 +16,10 @@
  * capture cap, marking the snapshot INCOMPLETE.
  *
  * WHY WE PARSE THE COMPOSE, NOT the docker Mount.Source:
- * The walk reads the stack dir in DOCKHAND's namespace (`/app/data/stacks/...`), but a
- * bind's `Mount.Source` is the DAEMON HOST path (`/docker/data/...` or `/tmp/...`) which
- * a containerized Dockhand cannot see or stat — so keying the exclusion on Mount.Source
- * silently no-ops for every Dockerized install. The compose file, which Dockhand always
- * has locally, declares binds RELATIVE to the stack dir (`./data`) — the same namespace
- * the walk already computes `relative(stackDir, abs)` in. So we derive the excluded dirs
- * from the compose text and compare on relative paths: namespace-agnostic, works
- * containerized / on-host / remote alike.
+ * A daemon host source can differ from both Dockhand's local stack directory and
+ * a containerized agent's bound root. Compose declares relative binds in the
+ * directory's own namespace, so the local walker and Hawser file API can each
+ * stat the same relative path on their owning filesystem.
  *
  * Hard rules (adversarial review):
  *  - NEVER exclude compose/`.yaml`/`.yml`/`.env` (`isLoadBearingStackFile`) — a whole-dir
@@ -37,6 +33,7 @@
  * injected so it stays unit-testable.
  */
 import yaml from 'js-yaml';
+import type { HawserFileEntry } from '../hawser-stack-files';
 
 /** Strip a trailing slash and a leading `./`; keep the rest. */
 function normRel(p: string): string {
@@ -178,4 +175,24 @@ export function isUnderRelDir(relPath: string, relDirs: string[]): boolean {
 		if (t.startsWith(d + '/')) return true;
 	}
 	return false;
+}
+
+/** List the bound Hawser root without reading file bytes into Dockhand.
+ * Fail instead of reporting an incomplete listing when the cap is exceeded. */
+export async function listBoundStackFiles(
+	list: (path: string) => Promise<HawserFileEntry[]>,
+	excludedDirs: string[],
+): Promise<Array<{ path: string; bytes: number }>> {
+	const pending = [''];
+	const files: Array<{ path: string; bytes: number }> = [];
+	while (pending.length > 0) {
+		const entries = await list(pending.pop()!);
+		for (const entry of entries) {
+			if (excludedDirs.length > 0 && !isLoadBearingStackFile(entry.path) && isUnderRelDir(entry.path, excludedDirs)) continue;
+			if (entry.type === 'directory') pending.push(entry.path);
+			else if (entry.type === 'file') files.push({ path: entry.path, bytes: entry.size ?? 0 });
+			if (files.length + pending.length > 5000) throw new Error('Hawser stack has more than 5000 entries; cannot produce a complete backup file listing');
+		}
+	}
+	return files.sort((a, b) => a.path.localeCompare(b.path));
 }

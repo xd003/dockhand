@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { getStackComposeFile, deployStack, saveStackComposeFile, requireComposeFile, remapHawserStagingDisplayPaths } from '$lib/server/stacks';
-import { updateStackSource } from '$lib/server/db';
+import { getStackComposeFile, deployStack, saveStackComposeFile, requireComposeFile } from '$lib/server/stacks';
+import { getStackSource, updateStackSource } from '$lib/server/db';
 import { authorize } from '$lib/server/authorize';
 import { createJobResponse } from '$lib/server/sse';
 import { validateComposePathsInput, validateComposeContentsInput } from '$lib/server/compose-files';
@@ -11,7 +11,7 @@ import { hashComposeContent, hashEnvFingerprint } from '$lib/server/deploy-run-r
 // GET /api/stacks/[name]/compose - Get compose file content
 /**
  * @openapi
- * summary: Get a stack's compose file content plus its Dockhand staging compose/env paths
+ * summary: Get a stack's Compose content and file paths (Hawser paths are on the agent, not Dockhand)
  * path: name:string The stack name
  * query: env:integer Environment id the stack belongs to
  * resp-403: Permission denied (needs stacks:view)
@@ -42,14 +42,8 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 			}, { status: 404 });
 		}
 
-		const remotePaths = await remapHawserStagingDisplayPaths(name, envIdNum, {
-			composePath: result.composePath ?? null,
-			composePaths: result.composePaths ?? []
-		});
-		const remoteComposePath = remotePaths.composePath && remotePaths.composePath !== result.composePath
-			? remotePaths.composePath
-			: null;
-
+		// Hawser-owned stacks already report agent paths (the bound root), and
+		// local/direct stacks report Dockhand paths; no staging remap exists.
 		return json({
 			content: result.content,
 			composeContents: result.composeContents ?? null,
@@ -58,8 +52,8 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 			composePaths: result.composePaths?.length ? result.composePaths : null,
 			envPath: result.envPath,
 			suggestedEnvPath: result.suggestedEnvPath,
-			remoteComposePath,
-			remoteStackDir: remotePaths.remoteStackDir
+			remoteComposePath: null,
+			remoteStackDir: null
 		});
 	} catch (error: any) {
 		console.error(`Error getting compose file for stack ${name}:`, error);
@@ -211,7 +205,7 @@ export const PUT: RequestHandler = async ({ params, request, url, cookies }) => 
 			// Deploy with docker compose up -d --force-recreate.
 			// Force recreate ensures env var changes are applied.
 			// Update DB with multi-file staging paths if provided.
-			if (composePaths !== undefined) {
+			if (composePaths !== undefined && (await getStackSource(name, envIdNum))?.fileLocation !== 'hawser') {
 				await updateStackSource(name, envIdNum ?? null, {
 					composePaths: pathOptions?.composePaths ?? undefined
 				});
@@ -260,7 +254,7 @@ export const PUT: RequestHandler = async ({ params, request, url, cookies }) => 
 
 		// No restart: the content is already persisted above.
 		// Preserve multi-file paths after save (mirrors restart path)
-		if (composePaths !== undefined) {
+		if (composePaths !== undefined && (await getStackSource(name, envIdNum))?.fileLocation !== 'hawser') {
 			await updateStackSource(name, envIdNum ?? null, {
 				composePaths: pathOptions?.composePaths ?? undefined
 			});

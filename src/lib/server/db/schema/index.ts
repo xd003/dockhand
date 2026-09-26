@@ -370,6 +370,7 @@ export const stackSources = sqliteTable('stack_sources', {
 	stackName: text('stack_name').notNull(),
 	environmentId: integer('environment_id').references(() => environments.id, { onDelete: 'cascade' }),
 	sourceType: text('source_type').notNull().default('internal'),
+	fileLocation: text('file_location').$type<'dockhand' | 'hawser'>().notNull().default('dockhand'),
 	gitRepositoryId: integer('git_repository_id').references(() => gitRepositories.id, { onDelete: 'set null' }),
 	gitStackId: integer('git_stack_id').references(() => gitStacks.id, { onDelete: 'set null' }),
 	composePath: text('compose_path'), // Primary compose file path (denormalized from composePaths[0])

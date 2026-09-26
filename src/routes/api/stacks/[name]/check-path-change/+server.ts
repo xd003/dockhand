@@ -1,11 +1,13 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { authorize } from '$lib/server/authorize';
-import { getStackSource } from '$lib/server/db';
+import { getStackSource, getEnvironment } from '$lib/server/db';
 import { findStackDir } from '$lib/server/stacks';
 import { getCachedContainerMounts, unpersistedComposePathWarning } from '$lib/server/host-path';
 import { existsSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
+import { hawserStackFiles } from '$lib/server/hawser-stack-files';
+import { ensureHawserStackFilesReady } from '$lib/server/hawser-stack-file-migration';
 
 /**
  * POST /api/stacks/[name]/check-path-change
@@ -38,6 +40,24 @@ export const POST: RequestHandler = async ({ params, request, url, cookies }) =>
 	try {
 		const body = await request.json();
 		const { newComposePath } = body;
+		const environment = envIdNum ? await getEnvironment(envIdNum) : null;
+		if (environment?.connectionType === 'hawser-standard' || environment?.connectionType === 'hawser-edge') {
+			if (!(await getStackSource(name, envIdNum))) {
+				return json({ hasChanges: false, oldDir: null, newDir: typeof newComposePath === 'string' ? dirname(newComposePath) : null, fileCount: 0, currentComposePath: null, persistenceWarning: null });
+			}
+			await ensureHawserStackFilesReady(name, envIdNum!);
+			const files = await hawserStackFiles(envIdNum!, name);
+			const binding = await files.binding();
+			const oldDir = binding.root;
+			const nextDir = typeof newComposePath === 'string' ? dirname(newComposePath) : null;
+			const moved = !!nextDir && nextDir !== oldDir;
+			return json({
+				hasChanges: moved, oldDir, newDir: nextDir,
+				fileCount: moved ? (await files.list()).length : 0,
+				currentComposePath: (await getStackSource(name, envIdNum))?.composePath || join(oldDir, binding.composeFileNames[0] || 'compose.yaml'),
+				persistenceWarning: moved ? 'Moving a Hawser stack can change relative bind-mount paths; verify host mounts before deploying.' : null
+			});
+		}
 
 		// Get current source info
 		const source = await getStackSource(name, envIdNum);

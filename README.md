@@ -32,6 +32,14 @@ Dockhand is a modern, efficient Docker management application providing real-tim
 
 This fork's user-facing changes relative to [upstream Dockhand](https://github.com/Finsys/dockhand) are tracked in [FORK_CHANGES.md](FORK_CHANGES.md).
 
+### Hawser stack files
+
+On Hawser-standard and Hawser-edge environments, stack configuration and host-only workspace files live in the agent-accessible Compose directory (`STACKS_DIR/<stack>` for newly created projects). Dockhand keeps Git checkouts under `GIT_REPOS_DIR` for tracked edits and publishes them to Hawser; it does not keep a writable stack mirror. An adopted project's existing directory stays in place. Docker host bind paths may differ from the directory mounted into the Hawser container; mount that directory for in-place management.
+
+An upgraded, connected agent is required for stack file edits and deployments. Existing Dockhand-managed staging is archived privately under `DATA_DIR/hawser-migration-archives` after the remote Compose files have been verified; Hawser's files take precedence. Missing remote files block migration rather than being replaced from staging. Archives are recovery copies, not live stack sources.
+
+Removing a Hawser stack with its files deletes only files Dockhand can prove it owns in the agent's `STACKS_DIR/<stack>` (the Compose files, the Compose-adjacent `.env`/`.env.dockhand`, and Git-published files whose bytes are unchanged); relative bind data and other host files remain. An adopted project's own directory is never deleted.
+
 ## Tech Stack
 
 - **Base**: own OS layer built from scratch using <a href="https://github.com/wolfi-dev/os">Wolfi packages</a> via apko. Every package is explicitly declared in the Dockerfile.

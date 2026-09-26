@@ -4,6 +4,7 @@ import {
 	getGitStacks,
 	createGitStack,
 	getGitCredentials,
+	getEnvironment,
 	getGitRepository,
 	createGitRepository,
 	upsertStackSource,
@@ -24,7 +25,7 @@ import { createJobResponse } from '$lib/server/sse';
 import { allowSecretlessWebhook, webhookConfigRequiresSecret } from '$lib/server/webhook-secret-policy';
 import { registerSchedule } from '$lib/server/scheduler';
 import { adoptExternalGitStack, validateExternalGitAdoption } from '$lib/server/git-stack-adoption';
-import { acquireStackLock } from '$lib/server/stacks';
+import { acquireStackLock, isHawserConnection } from '$lib/server/stacks';
 import { dirname, relative } from 'node:path';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { getPendingGitClonePath } from '$lib/server/git-stack';
@@ -94,6 +95,7 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 /**
  * @openapi
  * summary: Create a git-deployed stack (from an existing repo or new repo url/branch)
+ * description: Git checkouts remain on Dockhand. On Hawser environments, deploying publishes selected Git files to the bound Hawser directory without creating a Dockhand stack-file copy; converting an external Hawser project uses its existing Compose directory in place. Copying arbitrary host paths is unsupported for Hawser conversion.
  * body: {stackName:string!, environmentId:integer, repositoryId:integer, composePath:string, composePaths:array<string>, secretProviderId:integer, webhookEnabled:boolean, webhookSecret:string, adoptExternal:boolean, deployNow:boolean}
  * resp-400: Invalid stack name, or secretProviderId is not a number/null
  * resp-403: Permission denied (needs stacks:create; binding a secret provider also needs secrets:view)
@@ -449,11 +451,14 @@ export const POST: RequestHandler = async (event) => {
 			await registerSchedule(gitStack.id, 'git_stack_sync', gitStack.environmentId);
 		}
 
-		// Create stack_sources entry so the stack appears in the list immediately
+		// Create stack_sources entry so the stack appears in the list immediately.
+		// A new Hawser stack has no Dockhand-side stack-file staging directory.
+		const environment = data.environmentId ? await getEnvironment(data.environmentId) : null;
 		await upsertStackSource({
 			stackName: trimmedStackName,
 			environmentId: data.environmentId || null,
 			sourceType: 'git',
+			fileLocation: isHawserConnection(environment) ? 'hawser' : 'dockhand',
 			gitRepositoryId: repositoryId,
 			gitStackId: gitStack.id,
 			secretProviderId: data.secretProviderId ?? null,

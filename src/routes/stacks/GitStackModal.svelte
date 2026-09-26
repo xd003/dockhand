@@ -26,7 +26,7 @@
 	import ComposeOutputModal from './ComposeOutputModal.svelte';
 	import StackIcon from '$lib/components/StackIcon.svelte';
 	import StackTagsSection from '$lib/components/StackTagsSection.svelte';
-	import { appendEnvParam } from '$lib/stores/environment';
+	import { appendEnvParam, environments } from '$lib/stores/environment';
 	import { persistStackIcon } from '$lib/utils/stack-icon';
 	import { type EnvVar, type ValidationResult } from '$lib/components/StackEnvVarsEditor.svelte';
 	import { mergeGitStackEnvVars, isGitStackOverride } from '$lib/env-merge';
@@ -177,6 +177,9 @@
 	let backupTally = $state<{ ok: number; failed: number }>({ ok: 0, failed: 0 });
 	let backupTallyLoaded = $state(false);
 	const effectiveEnvId = $derived(gitStack?.environmentId ?? adoptionTarget?.environmentId ?? environmentId ?? null);
+	const isHawserAdoption = $derived(isAdopting && $environments.some((env) =>
+		env.id === effectiveEnvId && (env.connectionType === 'hawser-standard' || env.connectionType === 'hawser-edge')
+	));
 
 	async function loadBackupTally() {
 		if (backupTallyLoaded || !gitStack) return;
@@ -1355,7 +1358,7 @@
 				forceRedeploy: formForceRedeploy,
 				deployNow: isAdopting ? true : deployAfterSave,
 				adoptExternal: isAdopting,
-				...(isAdopting ? { copyPaths: hostCopyPaths } : {}),
+				...(isAdopting && !isHawserAdoption ? { copyPaths: hostCopyPaths } : {}),
 				secretProviderId: formSecretProviderId,
 				envVars: overrideVars.map(v => ({
 					key: v.key.trim(),
@@ -2158,16 +2161,20 @@
 			{#if isAdopting}
 				<div class="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-muted-foreground">
 					<p class="font-medium text-foreground">Existing services stay running.</p>
-					<p class="mt-1">Compose <code class="rounded bg-muted px-1">up</code> reuses project "{adoptionTarget?.stackName}". The original directory stays in place. Select any host files you need in the Git-managed directory below.</p>
+					<p class="mt-1">Compose <code class="rounded bg-muted px-1">up</code> reuses project "{adoptionTarget?.stackName}". The original directory stays in place{isHawserAdoption ? ' on Hawser, including relative bind files.' : '.'}</p>
 				</div>
-				<div class="space-y-2">
-					<Label>Copy host files or directories (optional)</Label>
-					<Button variant="outline" type="button" onclick={() => showHostCopyBrowser = true}>Browse host files</Button>
-					{#each hostCopyPaths as path}
-						<div class="flex items-center gap-2 text-xs"><span class="break-all">{path}</span><button type="button" aria-label="Remove {path}" onclick={() => hostCopyPaths = hostCopyPaths.filter((item) => item !== path)}><X class="h-3 w-3" /></button></div>
-					{/each}
-					<p class="text-xs text-amber-700 dark:text-amber-300">Files tracked by Git may be overwritten by normal Git deployments. Originals are never moved.</p>
-				</div>
+				{#if !isHawserAdoption}
+					<div class="space-y-2">
+						<Label>Copy host files or directories (optional)</Label>
+						<Button variant="outline" type="button" onclick={() => showHostCopyBrowser = true}>Browse host files</Button>
+						{#each hostCopyPaths as path}
+							<div class="flex items-center gap-2 text-xs"><span class="break-all">{path}</span><button type="button" aria-label="Remove {path}" onclick={() => hostCopyPaths = hostCopyPaths.filter((item) => item !== path)}><X class="h-3 w-3" /></button></div>
+						{/each}
+						<p class="text-xs text-amber-700 dark:text-amber-300">Files tracked by Git may be overwritten by normal Git deployments. Originals are never moved.</p>
+					</div>
+				{:else}
+					<p class="text-xs text-muted-foreground">Git files publish from Dockhand's checkout into the existing Hawser directory; host-only files remain on Hawser.</p>
+				{/if}
 			{/if}
 
 			{#if gitStack?.stackName}

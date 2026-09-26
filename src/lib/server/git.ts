@@ -23,6 +23,7 @@ import { permissionDeniedMessage } from './git-error';
 import {
 	getGitRepository,
 	getGitRepositories,
+	getEnvironment,
 	getGitCredential,
 	getGitStack,
 	getEnvironments,
@@ -47,12 +48,14 @@ import {
 	parseManifest,
 	serializeManifest,
 	hashDirFiles,
+	trackedGitFiles,
 	computeDeletions,
 	buildNextManifest,
 	buildSyncChangeSummary,
 	formatChangeTable,
 	skipReasonMessage,
 	deletionSafetyCheck,
+	isSafeRelPath,
 	type DeletionPlan,
 	type DeletionApplyResult,
 	type DeletionSkip,
@@ -469,6 +472,11 @@ export async function getChangedFilesInDir(
 	return { changed: changedFiles.length > 0, files: changedFiles };
 }
 
+export async function isHawserGitEnvironment(environmentId: number | null): Promise<boolean> {
+	if (environmentId == null) return false;
+	const environment = await getEnvironment(environmentId);
+	return environment?.connectionType === 'hawser-standard' || environment?.connectionType === 'hawser-edge';
+}
 /**
  * Compute the deletion plan for a sync: hash the new clone's compose dir and
  * diff against the manifest from the last sync. Deletions converge the deploy
@@ -476,16 +484,26 @@ export async function getChangedFilesInDir(
  * disk hash. A sanity guard blocks ALL deletions when the clone walk looks
  * broken (empty, or missing the compose file).
  */
+
 export async function computeSyncDeletionPlan(options: {
 	logPrefix: string;
 	composeDir: string; // absolute path inside the clone
 	composeFileName: string | undefined; // compose file relative to composeDir
 	rawManifest: string | null | undefined;
+	trackedOnly?: boolean;
+	envFileName?: string;
 }): Promise<{ plan: DeletionPlan; newFiles: Record<string, string>; previousManifest: SyncManifest }> {
-	const { logPrefix, composeDir, composeFileName, rawManifest } = options;
+	const { logPrefix, composeDir, composeFileName, rawManifest, trackedOnly, envFileName } = options;
 
 	const previousManifest = parseManifest(rawManifest);
-	const newFiles = hashDirFiles(composeDir);
+	const publishedPaths = trackedOnly ? trackedGitFiles(composeDir) : undefined;
+	if (publishedPaths && envFileName) {
+		if (!isSafeRelPath(envFileName)) {
+			throw new Error(`Configured Git env file "${envFileName}" is outside the published Compose directory`);
+		}
+		publishedPaths.add(envFileName);
+	}
+	const newFiles = hashDirFiles(composeDir, publishedPaths);
 
 	const manifestSize = Object.keys(previousManifest.files).length;
 	console.log(`${logPrefix} Deletion sync: manifest has ${manifestSize} file(s)${manifestSize === 0 ? ' (first sync — nothing will be deleted)' : ''}`);

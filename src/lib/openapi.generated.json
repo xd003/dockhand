@@ -14930,6 +14930,7 @@
             "bearerAuth": []
           }
         ],
+        "description": "Git checkouts remain on Dockhand. On Hawser environments, deploying publishes selected Git files to the bound Hawser directory without creating a Dockhand stack-file copy; converting an external Hawser project uses its existing Compose directory in place. Copying arbitrary host paths is unsupported for Hawser conversion.",
         "requestBody": {
           "required": true,
           "content": {
@@ -25919,7 +25920,7 @@
         "tags": [
           "stacks"
         ],
-        "summary": "Get a stack's compose file content plus its Dockhand staging compose/env paths",
+        "summary": "Get a stack's Compose content and file paths (Hawser paths are on the agent, not Dockhand)",
         "parameters": [
           {
             "name": "name",
@@ -26776,8 +26777,8 @@
           "403": {
             "description": "Permission denied (needs stacks:view)"
           },
-          "500": {
-            "description": "Failed to read env vars"
+          "503": {
+            "description": "Env file could not be read (e.g. the Hawser agent is offline, must be upgraded, or migration is pending); agent 4xx statuses are passed through"
           }
         },
         "security": [
@@ -26788,7 +26789,7 @@
             "bearerAuth": []
           }
         ],
-        "description": "The source of `variables` depends on the stack type. For a GIT stack, ALL variables (secret and non-secret) come from the database via this endpoint - the DB is the canonical store the UI, `POST /env/validate`, and deploys read. For an INTERNAL/adopted stack, non-secrets come from the on-disk `.env` file (written via `PUT /env/raw`) and only secrets come from the DB. Secret values are masked as `***` and never returned in plaintext. Each variable is `{ key, value, isSecret }`."
+        "description": "The source of `variables` depends on the stack type. For a GIT stack, ALL variables (secret and non-secret) come from the database via this endpoint - the DB is the canonical store the UI, `POST /env/validate`, and deploys read. For an INTERNAL/adopted stack, non-secrets come from the stack's `.env` file (written via `PUT /env/raw`) and only secrets come from the DB. On a Hawser environment that file is read from the Hawser agent's stack directory (the only copy); an offline or outdated agent makes this request fail instead of falling back to a Dockhand copy. Secret values are masked as `***` and never returned in plaintext. Each variable is `{ key, value, isSecret }`."
       },
       "put": {
         "operationId": "put_api_stacks_name_env",
@@ -26946,8 +26947,8 @@
           "403": {
             "description": "Permission denied (requires stacks:view, or environment access denied on enterprise)"
           },
-          "500": {
-            "description": "Failed to get environment file"
+          "503": {
+            "description": "Env file could not be read (e.g. the Hawser agent is offline, must be upgraded, or migration is pending); agent 4xx statuses are passed through"
           }
         },
         "security": [
@@ -26964,7 +26965,7 @@
         "tags": [
           "stacks"
         ],
-        "summary": "Write raw .env file content to disk for a stack; empty content deletes the .env file, and masked \"***\" placeholders are rejected to avoid corrupting secrets",
+        "summary": "Write raw .env file content for a stack (to the Hawser agent's stack directory on Hawser environments); empty content deletes the .env file, and masked \"***\" placeholders are rejected to avoid corrupting secrets",
         "parameters": [
           {
             "name": "name",
@@ -27019,8 +27020,8 @@
           "403": {
             "description": "Permission denied (requires stacks:edit, or environment access denied on enterprise)"
           },
-          "500": {
-            "description": "Failed to save environment file"
+          "503": {
+            "description": "Env file could not be written (e.g. the Hawser agent is offline or must be upgraded); a stale revision returns the agent's 409"
           }
         },
         "security": [
@@ -27519,6 +27520,9 @@
           },
           "404": {
             "description": "No stack source row for this name and environment"
+          },
+          "409": {
+            "description": "On Hawser, the old directory is not the agent-bound stack root (the agent moves only its own STACKS_DIR leaves; relative bind paths may change)"
           },
           "500": {
             "description": "Failed to relocate stack"
@@ -28448,7 +28452,7 @@
         "tags": [
           "stacks"
         ],
-        "summary": "Return the default Dockhand stacks directory ($DATA_DIR/stacks/) where new stacks are stored by default",
+        "summary": "Return the directory new stacks are created under (Dockhand's stacks directory, or the Hawser agent's STACKS_DIR on Hawser environments)",
         "parameters": [
           {
             "name": "env",
@@ -28481,6 +28485,12 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Permission denied (needs stacks:create) or environment access denied"
+          },
+          "503": {
+            "description": "Hawser agent is offline or did not report its STACKS_DIR"
           }
         },
         "security": [
@@ -28499,7 +28509,7 @@
         "tags": [
           "stacks"
         ],
-        "summary": "Compute the default compose/env file paths for a new stack, either under a custom base location or under Dockhand's default stacks directory",
+        "summary": "Compute the default compose/env file paths for a new stack, either under a custom base location or under the default stacks directory (the Hawser agent's STACKS_DIR on Hawser environments, where a custom location is rejected)",
         "parameters": [
           {
             "name": "name",
@@ -28567,7 +28577,85 @@
             }
           },
           "400": {
-            "description": "Stack name is required"
+            "description": "Stack name is required, or a custom location was given for a Hawser environment"
+          },
+          "403": {
+            "description": "Permission denied (needs stacks:create) or environment access denied"
+          },
+          "503": {
+            "description": "Hawser agent is offline or did not report its STACKS_DIR"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/stacks/host-files": {
+      "get": {
+        "operationId": "get_api_stacks_host-files",
+        "tags": [
+          "stacks"
+        ],
+        "summary": "GET /api/stacks/host-files (auto-generated — no @openapi annotation yet)",
+        "parameters": [
+          {
+            "name": "content",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Query parameter \"content\" (auto-detected from the handler's source - no @openapi annotation for this parameter yet)"
+          },
+          {
+            "name": "env",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Query parameter \"env\" (auto-detected from the handler's source - no @openapi annotation for this parameter yet)"
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Query parameter \"path\" (auto-detected from the handler's source - no @openapi annotation for this parameter yet)"
+          },
+          {
+            "name": "projectName",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Query parameter \"projectName\" (auto-detected from the handler's source - no @openapi annotation for this parameter yet)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "307": {
+            "description": "Error response (auto-detected status code — no @openapi annotation for this response yet)"
+          },
+          "400": {
+            "description": "Error response (auto-detected status code — no @openapi annotation for this response yet)"
+          },
+          "403": {
+            "description": "Error response (auto-detected status code — no @openapi annotation for this response yet)"
+          },
+          "404": {
+            "description": "Error response (auto-detected status code — no @openapi annotation for this response yet)"
           }
         },
         "security": [

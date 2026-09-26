@@ -1,4 +1,4 @@
-import { isAbsolute, join, dirname, resolve } from 'node:path';
+import { isAbsolute, join, dirname, relative, resolve } from 'node:path';
 import {
 	createGitRepository,
 	createGitStack,
@@ -19,7 +19,6 @@ import { deleteRepositoryFiles, getEngineForStack } from './git';
 import { adoptPendingGitClone, discardPendingGitClone } from './git-stack';
 import { deployStackFromSync } from './git-deploy-shared';
 import { getStackDir, getStackPathHints, isHawserConnection, listComposeStacks, validateStackPath, withStackLock } from './stacks';
-import { dockerFetch } from './docker';
 import { isProtectedPath } from './fs-guard';
 import { realpathSync } from 'node:fs';
 import { resolveComposePathHints, resolveGitStackPaths } from './stack-path-utils';
@@ -59,6 +58,9 @@ export type GitStackAdoptionPreflight = {
 	environmentId: number | null;
 	composePath: string;
 	destinationDir: string;
+	sourceEnvPath: string | null;
+	remoteGitRoot?: string;
+	remoteGitSourceComposePaths?: string[];
 } | {
 	ok: false;
 	status: number;
@@ -137,14 +139,9 @@ export async function validateExternalGitAdoption(
 		return invalid('copyPaths must contain at most 100 absolute file or directory paths');
 	}
 	if (input.copyPaths?.length && typeof environmentId === 'number' && isHawserConnection(await getEnvironment(environmentId))) {
-		try {
-			const response = await dockerFetch('/_hawser/host-files?path=%2F', { method: 'GET' }, environmentId);
-			if (!response.ok) return invalid('Update Hawser to copy host items during Git conversion', 426);
-		} catch {
-			return invalid('Hawser cannot browse host files for copying', 426);
-		}
+		return invalid('Hawser Git conversion keeps the existing Compose directory in place; copying arbitrary host files is unavailable. Remove the selected copy paths and retry.', 400);
 	}
-	else if (input.copyPaths?.some((path) => {
+	if (input.copyPaths?.some((path) => {
 		try { return isProtectedPath(path) || isProtectedPath(realpathSync(path)); }
 		catch { return isProtectedPath(path); } // The copier reports missing paths before Compose runs.
 	})) return invalid('Protected paths cannot be copied', 403);
@@ -171,14 +168,36 @@ export async function validateExternalGitAdoption(
 		const credentials = await getGitCredentials();
 		if (!credentials.some((credential) => credential.id === input.credentialId)) return invalid('Invalid credential ID');
 	}
-
-	const destinationDir = resolve(await getStackDir(stackName, environmentId));
+	const hawser = typeof environmentId === 'number' && isHawserConnection(await getEnvironment(environmentId));
+	const hints = hawser ? await getStackPathHints(stackName, environmentId) : null;
+	const remoteGitRoot = hawser
+		? hints?.workingDir || (source.composePath ? dirname(source.composePath) : null)
+		: null;
+	if (hawser && !remoteGitRoot) {
+		return invalid('Hawser cannot identify the existing Compose working directory; check the project labels and agent mounts', 409);
+	}
+	const sourceComposePaths = hawser && hints?.configFiles?.length
+		? resolveComposePathHints(hints.workingDir, hints.configFiles)
+		: parseComposePathsColumn(source.composePaths);
+	const remoteGitSourceComposePaths = hawser
+		? (sourceComposePaths.length ? sourceComposePaths : source.composePath ? [source.composePath] : []).map((path) => {
+			const rel = relative(remoteGitRoot!, resolve(remoteGitRoot!, path));
+			return rel && !rel.startsWith('..') && !isAbsolute(rel) ? rel : '';
+		})
+		: undefined;
+	if (hawser && (!remoteGitSourceComposePaths?.length || remoteGitSourceComposePaths.some((path) => !path))) {
+		return invalid('The existing Compose files are outside the Hawser project working directory; mount that directory in Hawser before conversion', 409);
+	}
+	const destinationDir = hawser ? remoteGitRoot! : resolve(await getStackDir(stackName, environmentId));
 	return {
 		ok: true,
 		stackName,
 		environmentId,
 		composePath: source.composePath || '',
 		destinationDir,
+		sourceEnvPath: source.envPath ?? null,
+		remoteGitRoot: hawser ? destinationDir : undefined,
+		remoteGitSourceComposePaths
 	};
 }
 
@@ -323,22 +342,28 @@ export async function adoptExternalGitStack(
 				onProgress,
 				logPrefix: `[Stack:${stackName}]`,
 				lockHeld: true,
+				remoteGitRoot: preflight.remoteGitRoot,
+				remoteGitSourceComposePaths: preflight.remoteGitSourceComposePaths,
 				copyPaths: input.copyPaths,
-				sourceCommit: async () => {
+				sourceCommit: async (deployResult) => {
+					const destinationDir = preflight.remoteGitRoot ? deployResult.managedDirectory : preflight.destinationDir;
+					if (!destinationDir) throw new Error('Hawser did not confirm the existing Compose directory after Git conversion');
 					await upsertStackSource({
 						stackName,
 						environmentId,
 						sourceType: 'git',
+						...(preflight.remoteGitRoot ? { fileLocation: 'hawser' as const } : {}),
 						gitRepositoryId: gitStack.repositoryId,
 						gitStackId: gitStack.id,
-						composePath: join(preflight.destinationDir, syncResult.composeFileName!),
+						composePath: join(destinationDir, syncResult.composeFileName!),
 						composePaths: resolveGitStackPaths(
 							parseComposePathsColumn(gitStack.composePaths),
 							gitStack.contextDir ?? dirname(gitStack.composePath),
-							preflight.destinationDir
+							destinationDir
 						),
 						envPath: input.envFilePath && syncResult.envFileName
-							? join(preflight.destinationDir, syncResult.envFileName) : null
+							? join(destinationDir, syncResult.envFileName)
+							: preflight.sourceEnvPath
 					});
 					sourceCommitted = true;
 				}

@@ -35,6 +35,8 @@ import { normalizeBaseDir, stackDirIn } from '../stack-paths';
 import { volumeBind } from './discovery-core';
 import { resolveBindFromMetadata } from './restore-core';
 import { parseSnapshotLsEntries } from './browse-core';
+import { hawserStackFiles } from '../hawser-stack-files';
+import { agentStacksDir } from '../hawser-stack-file-migration';
 
 // --- shared singletons (in-memory locks live for the process lifetime) -------
 const restic = new Restic();
@@ -128,18 +130,25 @@ async function planStackDirVolume(
 	| { kind: 'candidate'; syntheticVolume: DiscoveredVolume; volumeKey: string; composeFileName: string; excludePaths: string[]; bindSources: string[]; probeHint?: StackDirProbeHint }
 > {
 	const { getStackComposeFile } = await import('../stacks');
-	const { dirname, join, basename, resolve } = await import('path');
+	const { dirname, join, basename, resolve, relative } = await import('path');
 	const { lstatSync } = await import('fs');
 	const { translateToHostPath, translateContainerPathViaMount, getOwnDockerHost, getAutoDetectedDockerHost, pathOverriddenBySubMount, getCachedContainerMounts } = await import('../host-path');
 	const { resolveHostStackDir, deriveStackDirFromBinds, trustBindDerivedForEnv, isLocalDaemon, STACKDIR_VOLUME_KEY } = await import('./stackdir-plan');
 	const { relativeBindDirsFromCompose, relativeBindsFromCompose } = await import('./stackfile-filter');
 
-	// The stack dir as DOCKHAND sees it (compose file's parent). This is the authoritative
-	// source for BOTH the compose filename (not the config_files label, which is `-` for stdin
-	// deploys) and the host-path translations below.
+	// Hawser source paths are agent-owned. The bound root (not a guessed
+	// STACKS_DIR/<project>) is authoritative for an adopted in-place stack.
 	const compose = await getStackComposeFile(targetName, envId ?? undefined);
-	const dockhandStackDir = compose.success && compose.composePath ? dirname(compose.composePath) : null;
-	const composeFileName0 = compose.success && compose.composePath ? basename(compose.composePath) : null;
+	const { getEnvironment } = await import('../db');
+	const environment = envId == null ? null : await getEnvironment(envId);
+	const remote = environment?.connectionType === 'hawser-standard' || environment?.connectionType === 'hawser-edge';
+	const remoteFiles = remote ? await hawserStackFiles(envId!, targetName) : null;
+	const sourceStackDir = remoteFiles ? (await remoteFiles.binding()).root
+		: compose.success && compose.composePath ? dirname(compose.composePath) : null;
+	const composeFileName0 = compose.success && compose.composePath
+		? remoteFiles ? relative(sourceStackDir!, compose.composePath) : basename(compose.composePath)
+		: null;
+	const composeDir = compose.success && compose.composePath ? dirname(compose.composePath) : sourceStackDir;
 
 	// Inspect the stack's containers ONCE and harvest BOTH host-path candidates (bind mount
 	// sources + the working_dir label) from that single pass, so they agree on which containers
@@ -156,8 +165,12 @@ async function planStackDirVolume(
 		// also pins the stack dir via its daemon-reported mount.Source, so it derives the host
 		// path without the working_dir label (which needs the container listable - a timing race
 		// under load that made bind-less/single-file stacks resolve to UNKNOWN in CI).
-		const relBinds = compose.content && dockhandStackDir ? relativeBindsFromCompose(compose.content, dockhandStackDir) : [];
-		if (relBinds.length > 0) bindDerivedHostPath = deriveStackDirFromBinds(relBinds, bindSources);
+		const relBinds = compose.content && composeDir ? relativeBindsFromCompose(compose.content, composeDir) : [];
+		if (relBinds.length > 0) {
+			const derived = deriveStackDirFromBinds(relBinds, bindSources);
+			bindDerivedHostPath = derived && remoteFiles && sourceStackDir && composeDir
+				? resolve(derived, relative(composeDir, sourceStackDir)) : derived;
+		}
 	} catch { /* best-effort: fall through to translation/label candidates below */ }
 
 	// The DATA_DIR / mount translations map a container path to DOCKHAND'S OWN host - valid ONLY
@@ -166,26 +179,19 @@ async function planStackDirVolume(
 	// hand the helper a path that only exists on Dockhand's host (the rambo bug). Gate them on
 	// isLocalDaemon; bind-derived (from the target daemon's own mount.Source) and the working_dir
 	// label stay valid for remote.
-	// Default agent STACKS_DIR (compose.go: getEnvString("STACKS_DIR", "/data/stacks")). A hawser
-	// stack is deployed by the AGENT into <STACKS_DIR>/<projectName> on the agent's HOST, so this
-	// is where the helper finds the compose/config for a host-mount backup. The user can override
-	// it per-env via the "Remote stack path (for backup)" setting when the agent uses a custom
-	// STACKS_DIR; the in-helper probe validates the guess and errors clearly if it's wrong.
-	const HAWSER_DEFAULT_STACKS_DIR = '/data/stacks';
+	// A containerized Hawser's root may map to a different Docker HOST path;
+	// the helper probe verifies this and asks for a host-side override if needed.
 	let envConnType: string | null = null;
 	let envTcpHost: string | null = null;
 	let remoteStacksDir: string | null = null;
 	let isHawser = false;
-	// True when a hawser env had NO remote_stacks_dir set and we fell back to the agent's default
-	// STACKS_DIR (/data/stacks). Steers the probe-fail message: a defaulted path that comes up empty
-	// means the agent stores stacks under a DIFFERENT host dir (e.g. a containerized agent whose
-	// /data/stacks is mounted from another host path), so the user must set the HOST-side path.
+	// An absent host-side override uses the agent's bound root as a candidate.
 	let remoteStacksDirDefaulted = false;
 	let envName: string | null = null;
 	if (envId != null) {
 		try {
-			const { getEnvironment, getEnvSetting } = await import('../db');
-			const env = await getEnvironment(envId);
+			const { getEnvSetting } = await import('../db');
+			const env = environment;
 			envConnType = env?.connectionType ?? null;
 			envName = env?.name ?? null;
 			envTcpHost = env?.host && env?.port ? `tcp://${env.host}:${env.port}` : null;
@@ -194,14 +200,12 @@ async function planStackDirVolume(
 				const rsd = await getEnvSetting('remote_stacks_dir', envId);
 				remoteStacksDir = typeof rsd === 'string' && rsd.trim() ? normalizeBaseDir(rsd) : null;
 			} else if (isHawser) {
-				// Same `remote_stacks_dir` setting as direct, but for hawser it is a BACKUP-ONLY
-				// declaration of where the AGENT keeps stack files on its host - it does NOT steer
-				// deploy (the agent hardcodes its STACKS_DIR); it only tells the backup helper where
-				// to bind-mount. Falls back to the agent's default STACKS_DIR (/data/stacks) so a
-				// standard agent needs no configuration.
+				// This setting is a HOST-side helper bind path, not the agent's file root.
+				// Adopted stacks stay at their existing root, which may be anywhere on
+				// the host; do not invent a managed <STACKS_DIR>/<name> for them.
 				const rsd = await getEnvSetting('remote_stacks_dir', envId);
 				const userSet = typeof rsd === 'string' && rsd.trim();
-				remoteStacksDir = userSet ? normalizeBaseDir(rsd) : HAWSER_DEFAULT_STACKS_DIR;
+				remoteStacksDir = userSet ? normalizeBaseDir(rsd) : null;
 				remoteStacksDirDefaulted = !userSet;
 			}
 		} catch { /* treat as unknown -> non-local (safe: skips the wrong-host translation) */ }
@@ -221,12 +225,14 @@ async function planStackDirVolume(
 	// The working_dir label is only trustworthy for hawser (agent ran compose on its host) or a
 	// LOCAL daemon. For direct-remote it's Dockhand's path, so drop it from the candidates.
 	const trustedWorkingDirLabel = directRemote ? null : workingDirLabel;
-	// The user-declared (or defaulted) host path where the stack folder lives, for direct-remote
-	// AND hawser. For hawser this is the agent's STACKS_DIR (default /data/stacks) - the DETERMINISTIC
-	// host location, so it wins over the flaky working_dir label (which is "/" for a start-from-stdin
-	// hawser stack). The in-helper probe confirms the compose is actually there.
-	// SAME formula the deploy plan STAGES to (stackDirIn) - deploy WRITES here, backup READS here.
-	const remoteStacksDirHostPath = (directRemote || isHawser) && remoteStacksDir ? stackDirIn(remoteStacksDir, targetName) : null;
+	// The host-side override wins without a daemon bind; otherwise use the
+	// bound Hawser root (which may be an adopted external directory).
+	const managedRoot = isHawser && sourceStackDir
+		? stackDirIn(await agentStacksDir(envId!, envConnType === 'hawser-edge'), targetName) : null;
+	const remoteStacksDirHostPath = directRemote && remoteStacksDir ? stackDirIn(remoteStacksDir, targetName)
+		: isHawser && remoteStacksDir && sourceStackDir && managedRoot && resolve(sourceStackDir) === resolve(managedRoot)
+			? stackDirIn(remoteStacksDir, targetName)
+			: isHawser ? sourceStackDir : null;
 
 	// bind-derived is a PHANTOM empty dir for a direct-remote stdin deploy with no remote_stacks_dir
 	// (see trustBindDerivedForEnv) - distrust it there so resolution falls through to UNKNOWN (hard-fail).
@@ -236,16 +242,14 @@ async function planStackDirVolume(
 	// (returns the input unchanged when NOT under DATA_DIR, so we null it in that case).
 	// mountHostPath: via a container bind mount (adopted/external stacks outside DATA_DIR).
 	// workingDirLabel: for hawser/matching-paths where the label already IS the host path.
-	const viaDataRaw = localDaemon && dockhandStackDir ? translateToHostPath(dockhandStackDir) : null;
-	// A separate bind mount at a subpath of DATA_DIR (e.g. /app/data/stacks -> some host dir)
-	// makes the DATA_DIR translation wrong - the files live under that bind, not the DATA_DIR
-	// volume root. In that case drop the DATA_DIR candidate so the resolver uses mountHostPath,
-	// which longest-prefix-matches the more specific bind and is correct (#1533).
-	const overriddenBySubMount = localDaemon && dockhandStackDir
-		? pathOverriddenBySubMount(dockhandStackDir, resolve(process.env.DATA_DIR || '/app/data'), getCachedContainerMounts())
+	const viaDataRaw = localDaemon && sourceStackDir ? translateToHostPath(sourceStackDir) : null;
+	// A separate bind mount at a subpath of DATA_DIR makes the DATA_DIR
+	// translation wrong; prefer the more specific mounted host path.
+	const overriddenBySubMount = localDaemon && sourceStackDir
+		? pathOverriddenBySubMount(sourceStackDir, resolve(process.env.DATA_DIR || '/app/data'), getCachedContainerMounts())
 		: false;
-	const dataDirHostPath = viaDataRaw && viaDataRaw !== dockhandStackDir && !overriddenBySubMount ? viaDataRaw : null;
-	const mountHostPath = localDaemon && dockhandStackDir ? translateContainerPathViaMount(dockhandStackDir) : null;
+	const dataDirHostPath = viaDataRaw && viaDataRaw !== sourceStackDir && !overriddenBySubMount ? viaDataRaw : null;
+	const mountHostPath = localDaemon && sourceStackDir ? translateContainerPathViaMount(sourceStackDir) : null;
 
 	const resolution = resolveHostStackDir({
 		composeFileName: composeFileName0,
@@ -265,23 +269,30 @@ async function planStackDirVolume(
 		// rather than silently capturing a possibly-stale local copy.
 		// Report every candidate we tried so an UNKNOWN is diagnosable without SSH: which
 		// inputs were null tells us WHY (e.g. workingDir null = 0 containers listed).
-		console.log(`[Backup] stackdir plan for "${targetName}": UNKNOWN reason="${resolution.reason}" dockhandStackDir=${dockhandStackDir ?? 'none'} | connType=${envConnType} localDaemon=${localDaemon} remoteStacksDir=${remoteStacksDir ?? 'null'} containers=${stackContainers.length} bindDerived=${bindDerivedHostPath ?? 'null'} dataDir=${dataDirHostPath ?? 'null'} mount=${mountHostPath ?? 'null'} workingDirLabel=${workingDirLabel ?? 'null'}`);
+		console.log(`[Backup] stackdir plan for "${targetName}": UNKNOWN reason="${resolution.reason}" sourceStackDir=${sourceStackDir ?? 'none'} | connType=${envConnType} localDaemon=${localDaemon} remoteStacksDir=${remoteStacksDir ?? 'null'} containers=${stackContainers.length} bindDerived=${bindDerivedHostPath ?? 'null'} dataDir=${dataDirHostPath ?? 'null'} mount=${mountHostPath ?? 'null'} workingDirLabel=${workingDirLabel ?? 'null'}`);
 		return { kind: 'unknown', reason: resolution.reason };
 	}
 	const hostPath = resolution.hostPath;
 	const composeFileName = resolution.composeFile;
 	console.log(`[Backup] stackdir plan for "${targetName}": host bind hostPath=${hostPath} composeFile=${composeFileName} source="${resolution.source}"`);
 
-	// Compose bind DIRECTORIES inside the stack dir are captured separately as their own
-	// /volumes/<key>, so exclude them from the whole-dir stackdir capture. We derive the dirs
-	// by PARSING THE COMPOSE (Dockhand has it locally) - keyed on the compose-relative source,
-	// the same namespace as the on-disk stack dir. isDirRel checks against Dockhand's own copy
-	// of the stack dir (compose file's parent), which is a faithful mirror of the host layout.
-	const isDirRel = (rel: string): boolean => {
-		if (!dockhandStackDir) return false;
-		try { return lstatSync(join(dockhandStackDir, rel)).isDirectory(); } catch { return false; }
-	};
-	const bindDirs = compose.content ? relativeBindDirsFromCompose(compose.content, dockhandStackDir ?? '', isDirRel) : [];
+	// Compose bind directories are captured as separate volumes. Stat against
+	// the owning filesystem, never against a stale Dockhand Hawser mirror.
+	const bindCandidates = compose.content && composeDir ? relativeBindsFromCompose(compose.content, composeDir) : [];
+	const dirs = new Set<string>();
+	for (const rel of bindCandidates) {
+		const rootRel = sourceStackDir && composeDir ? relative(sourceStackDir, join(composeDir, rel)) : rel;
+		if (rootRel.startsWith('..')) continue;
+		if (remoteFiles) {
+			try { if ((await remoteFiles.stat(rootRel)).type === 'directory') dirs.add(rel); } catch { /* missing optional bind */ }
+		} else if (sourceStackDir) {
+			try { if (lstatSync(join(composeDir!, rel)).isDirectory()) dirs.add(rel); } catch { /* missing optional bind */ }
+		}
+	}
+	const bindDirs = compose.content && composeDir
+		? relativeBindDirsFromCompose(compose.content, composeDir, (rel) => dirs.has(rel))
+			.map((rel) => relative(sourceStackDir!, join(composeDir, rel)))
+		: [];
 	const excludePaths = bindDirs.map((rel) => `/volumes/${STACKDIR_VOLUME_KEY}/${rel}`);
 	if (excludePaths.length > 0) {
 		console.log(`[Backup] stackdir "${targetName}": excluding ${excludePaths.length} compose bind dir(s) from the stackdir volume (captured separately as their own volumes): [${bindDirs.join(', ')}]`);
@@ -305,12 +316,12 @@ async function planStackDirVolume(
 		}
 	}
 
-	// The probe (in the helper) hard-fails when the compose is missing under the mounted host dir.
-	// Give it the context to tell the operator what to DO: a defaulted hawser path that comes up
-	// empty means the agent keeps stacks under a different HOST dir, so the fix is to set the
-	// HOST-side "Remote stack path (for backup)" - NOT to redeploy.
+	// The helper probe checks the host path, not the agent's namespace.
+	// An adopted external directory cannot be fixed by remapping STACKS_DIR.
+	const adoptedRoot = isHawser && sourceStackDir && managedRoot && resolve(sourceStackDir) !== resolve(managedRoot);
 	const probeHint: StackDirProbeHint =
-		isHawser && remoteStacksDirDefaulted ? { kind: 'hawser-defaulted', hostPath, envName }
+		adoptedRoot ? { kind: 'hawser-adopted', hostPath, envName }
+		: isHawser && remoteStacksDirDefaulted ? { kind: 'hawser-defaulted', hostPath, envName }
 		: (isHawser || directRemote) && remoteStacksDir
 			? { kind: 'user-set', transport: isHawser ? 'hawser' : 'direct', hostPath, envName }
 		: { kind: 'local' };
@@ -582,22 +593,25 @@ async function collectMetadata(
 		const { readFileSync, readdirSync, lstatSync, statSync } = await import('fs');
 		const { dirname, join, relative, basename } = await import('path');
 		const compose = await getStackComposeFile(targetName, envId ?? undefined);
+		const environment = envId == null ? null : await (await import('../db')).getEnvironment(envId);
+		const remote = environment?.connectionType === 'hawser-standard' || environment?.connectionType === 'hawser-edge';
+		if (remote && (!compose.success || !compose.composePath)) throw new Error(`Hawser stack "${targetName}" has no readable Compose source for backup`);
+		const remoteFiles = remote ? await hawserStackFiles(envId!, targetName) : null;
+		const stackDir = remoteFiles ? (await remoteFiles.binding()).root : compose.success && compose.composePath ? dirname(compose.composePath) : null;
 		if (compose.success && compose.composePath) {
 			// Presence of `stackInfo` IS hasStackFiles (derived, not a stored flag that could
 			// disagree with reality). composeFileName is the ORIGINAL name (immich.yaml /
 			// docker-compose.yml) so restore redeploys from the real file, reproducing the dir
 			// 1:1. fileList/excludedBindDirs are filled by the LIGHT listing walk below.
 			stackInfo = {
-				composeFileName: basename(compose.composePath),
+				composeFileName: remoteFiles ? relative(stackDir!, compose.composePath) : basename(compose.composePath),
 				fileList: [],
 				excludedBindDirs: [],
 				secrets: [],
 			};
 
-			// List the stack dir's files (path + size) for the browse/restore UI. The bytes
-			// themselves ride the helper's host bind mount at /volumes/__dockhand_stackdir__;
-			// this walk over Dockhand's local mirror only records the listing (lstat, no content
-			// read), skipping compose bind dirs that are captured as their own /volumes/<key>.
+			// Metadata lists the agent's bound root for Hawser; the helper still
+			// captures bytes through a host bind on the target daemon.
 			const { STACKDIR_VOLUME_KEY } = await import('./stackdir-plan');
 			// Ordered multi-file set (primary first), relative to the captured
 			// stack dir, so restore can re-register and redeploy the FULL set
@@ -605,43 +619,58 @@ async function collectMetadata(
 			// dir can't be captured 1:1 — reject the backup instead of silently
 			// downgrading restore to a materially different single-file stack.
 			if (compose.composePaths && compose.composePaths.length > 1) {
-				const captureDir = dirname(compose.composePath);
-				const relPaths = compose.composePaths.map((p) => relative(captureDir, p));
+				const relPaths = compose.composePaths.map((p) => relative(stackDir!, p));
 				if (!relPaths.every((p) => p && !p.startsWith('..'))) {
 					throw new Error(`stack "${targetName}" uses Compose files outside the stack directory (${compose.composePaths.join(', ')}); multi-file backup requires every configured file inside the stack dir`);
 				}
 				stackInfo.composePaths = relPaths;
 			}
 			{
-				try {
-					const { relativeBindDirsFromCompose, isUnderRelDir, isLoadBearingStackFile } = await import('./stackfile-filter');
-					const stackDir = dirname(compose.composePath);
-					const isDirRel = (rel: string): boolean => { try { return lstatSync(join(stackDir, rel)).isDirectory(); } catch { return false; } };
-					const excludeRelDirs = compose.content ? relativeBindDirsFromCompose(compose.content, stackDir, isDirRel) : [];
-					const listed: Array<{ path: string; bytes: number }> = [];
-					const walkList = (dir: string) => {
-						let names: string[];
-						try { names = readdirSync(dir); } catch { return; }
-						for (const entry of names) {
-							if (listed.length >= 5000) return;   // runaway guard
-							const abs = join(dir, entry);
-							const relPath = relative(stackDir, abs);
-							if (excludeRelDirs.length > 0 && !isLoadBearingStackFile(relPath) && isUnderRelDir(relPath, excludeRelDirs)) continue;
-							let st;
-							try { st = lstatSync(abs); } catch { continue; }
-							if (st.isSymbolicLink()) { if (isLoadBearingStackFile(relPath)) { try { const r = statSync(abs); if (r.isFile()) listed.push({ path: relPath, bytes: r.size }); } catch { /* skip */ } } continue; }
-							if (st.isDirectory()) { walkList(abs); continue; }
-							if (st.isFile()) listed.push({ path: relPath, bytes: st.size });
-						}
-					};
-					walkList(stackDir);
-					listed.sort((a, b) => a.path.localeCompare(b.path));
-					if (stackInfo) { stackInfo.fileList = listed; stackInfo.excludedBindDirs = excludeRelDirs; }
-
-					console.log(`[Backup] stackfiles "${targetName}": captured via HOST bind mount at /volumes/${STACKDIR_VOLUME_KEY} - listed ${listed.length} file(s), ${excludeRelDirs.length} bind dir(s) excluded`);
-				} catch (e) {
-					console.warn(`[Backup] stackfiles "${targetName}": listing failed (files still captured via bind):`, e instanceof Error ? e.message : e);
+				const { relativeBindDirsFromCompose, relativeBindsFromCompose, isUnderRelDir, isLoadBearingStackFile, listBoundStackFiles } = await import('./stackfile-filter');
+				const listed: Array<{ path: string; bytes: number }> = [];
+				if (remoteFiles) {
+					const composeDir = dirname(compose.composePath);
+					const bindCandidates = compose.content ? relativeBindsFromCompose(compose.content, composeDir) : [];
+					const dirs = new Set<string>();
+					for (const rel of bindCandidates) {
+						const rootRel = relative(stackDir!, join(composeDir, rel));
+						if (rootRel.startsWith('..')) continue;
+						try { if ((await remoteFiles.stat(rootRel)).type === 'directory') dirs.add(rel); } catch { /* optional bind missing */ }
+					}
+					const excludeRelDirs = compose.content
+						? relativeBindDirsFromCompose(compose.content, composeDir, (rel) => dirs.has(rel))
+							.map((rel) => relative(stackDir!, join(composeDir, rel)))
+						: [];
+					stackInfo.fileList = await listBoundStackFiles(remoteFiles.list, excludeRelDirs);
+					stackInfo.excludedBindDirs = excludeRelDirs;
+				} else {
+					try {
+						const isDirRel = (rel: string): boolean => { try { return lstatSync(join(stackDir!, rel)).isDirectory(); } catch { return false; } };
+						const excludeRelDirs = compose.content ? relativeBindDirsFromCompose(compose.content, stackDir!, isDirRel) : [];
+						const walkList = (dir: string) => {
+							let names: string[];
+							try { names = readdirSync(dir); } catch { return; }
+							for (const entry of names) {
+								if (listed.length >= 5000) return;
+								const abs = join(dir, entry);
+								const relPath = relative(stackDir!, abs);
+								if (excludeRelDirs.length > 0 && !isLoadBearingStackFile(relPath) && isUnderRelDir(relPath, excludeRelDirs)) continue;
+								let st;
+								try { st = lstatSync(abs); } catch { continue; }
+								if (st.isSymbolicLink()) { if (isLoadBearingStackFile(relPath)) { try { const r = statSync(abs); if (r.isFile()) listed.push({ path: relPath, bytes: r.size }); } catch { /* skip */ } } continue; }
+								if (st.isDirectory()) { walkList(abs); continue; }
+								if (st.isFile()) listed.push({ path: relPath, bytes: st.size });
+							}
+						};
+						walkList(stackDir!);
+						listed.sort((a, b) => a.path.localeCompare(b.path));
+						stackInfo.fileList = listed;
+						stackInfo.excludedBindDirs = excludeRelDirs;
+					} catch (e) {
+						console.warn(`[Backup] stackfiles "${targetName}": listing failed (files still captured via bind):`, e instanceof Error ? e.message : e);
+					}
 				}
+				console.log(`[Backup] stackfiles "${targetName}": captured via HOST bind mount at /volumes/${STACKDIR_VOLUME_KEY} - listed ${stackInfo.fileList.length} file(s), ${stackInfo.excludedBindDirs.length} bind dir(s) excluded`);
 			}
 			// Carry the stack's secret env vars IN the snapshot so a restore reproduces a
 			// WORKING stack — secrets and all — even after the source stack (and its DB
@@ -831,6 +860,80 @@ async function materialiseStackFiles(destination: any, snapId: string, stackName
 	}
 }
 
+type RestoredHawserStackFiles = { root: string; composePaths: string[]; envPath: string | null };
+
+async function restoreHawserStackFiles(
+	destinationId: number,
+	snapshotId: string,
+	stackName: string,
+	environmentId: number,
+	merge: boolean,
+): Promise<RestoredHawserStackFiles> {
+	const { join, resolve } = await import('path');
+	const { randomUUID } = await import('crypto');
+	const { firstComposePathOutsideDir, validateComposePathsInput } = await import('../compose-files');
+	const { getEnvSetting, getEnvironment } = await import('../db');
+	const { STACKDIR_VOLUME_KEY } = await import('./stackdir-plan');
+	const { buildRemoteStackFilesRestore } = await import('./restore-script');
+	const { assertSafeRestoreTarget } = await import('./security');
+	const metadata = await getSnapshotMetadata(destinationId, snapshotId);
+	const primary = metadata?.stack?.composeFileName;
+	if (!primary) throw new Error('snapshot has no recorded Compose filename; cannot restore stack files');
+	const paths = metadata?.stack?.composePaths?.length ? metadata.stack.composePaths : [primary];
+	const excluded = metadata?.stack?.excludedBindDirs ?? [];
+	const unsafe = firstComposePathOutsideDir([...paths, ...excluded], '')
+		?? [...paths, ...excluded].find((path) => path.includes('\\') || path.includes('\0') || path.split('/').includes('..'));
+	const invalidCompose = validateComposePathsInput(paths);
+	if (unsafe || invalidCompose || paths[0] !== primary) throw new Error(`snapshot has invalid stack-file paths (${unsafe ?? invalidCompose ?? primary}); refusing remote restore`);
+	const files = await hawserStackFiles(environmentId, stackName);
+	let binding;
+	try { binding = await files.binding(); }
+	catch (error) {
+		if (!(error instanceof Error && 'status' in error && error.status === 404)) throw error;
+		binding = await files.bind(paths);
+	}
+	const root = binding.root;
+	// The helper runs on the Docker host. An optional host-side setting maps
+	// Hawser's managed root where the agent itself runs in a container.
+	const configured = await getEnvSetting('remote_stacks_dir', environmentId);
+	let hostRoot = root;
+	if (typeof configured === 'string' && configured.trim()) {
+		const environment = await getEnvironment(environmentId);
+		const managedRoot = stackDirIn(
+			await agentStacksDir(environmentId, environment?.connectionType === 'hawser-edge'), stackName);
+		if (resolve(root) === resolve(managedRoot)) hostRoot = stackDirIn(normalizeBaseDir(configured), stackName);
+	}
+	assertSafeRestoreTarget(hostRoot);
+	// Marker proves the helper's host bind resolves to the SAME directory the
+	// agent owns, rather than Docker silently creating an empty host directory.
+	const probe = `.dockhand-restore-probe-${randomUUID()}`;
+	const probeFile = await files.write(probe, Buffer.from('dockhand-restore'));
+	try {
+		const script = `test -f '/volumes/${STACKDIR_VOLUME_KEY}/${probe}' || { echo 'Hawser stack root is not mounted at the configured Docker host path; set the environment host-side stack path' >&2; exit 1; }; ` +
+			buildRemoteStackFilesRestore(snapshotId, paths, [...excluded, probe], merge);
+		const result = await boundRunner(await loadDest(destinationId)).runInHelper({
+			script, binds: [`${hostRoot}:/volumes/${STACKDIR_VOLUME_KEY}:rw`],
+			envId: environmentId, name: `dockhand-restore-${snapshotId.slice(0, 12)}`,
+		});
+		if (result.exitCode !== 0) throw new Error(result.stderr.trim() || `remote stack-file restore failed (${result.exitCode})`);
+	} finally {
+		await files.delete(probe, probeFile.revision).catch((error) => {
+			console.warn(`[Restore] could not remove temporary Hawser restore probe for "${stackName}":`, error instanceof Error ? error.message : error);
+		});
+	}
+	for (const path of paths) {
+		if ((await files.stat(path)).type !== 'file') throw new Error(`restored Compose file "${path}" is not a regular file on Hawser`);
+	}
+	let envPath: string | null = null;
+	try { if ((await files.stat('.env')).type === 'file') envPath = join(root, '.env'); }
+	catch (error) { if (!(error instanceof Error && 'status' in error && error.status === 404)) throw error; }
+	if (binding.composeFileNames.join('\0') !== paths.join('\0')) {
+		const rebound = await files.bind(paths);
+		if (rebound.root !== root) throw new Error('Hawser stack root changed while restoring files; refusing to register');
+	}
+	return { root, composePaths: paths, envPath };
+}
+
 function restorePorts(destination: any, access: { isEnterprise: boolean; canAccessEnvironment: (id: number) => Promise<boolean> }, onProgress?: (status: string, message: string) => void): RestorePorts {
 	const run = boundRunner(destination);
 	return {
@@ -932,7 +1035,7 @@ function restorePorts(destination: any, access: { isEnterprise: boolean; canAcce
 			const { redeployStackFromDir, getStackDir } = await import('../stacks');
 			const { existsSync } = await import('fs');
 			const { join } = await import('path');
-			const { upsertStackSource } = await import('../db');
+			const { upsertStackSource, getEnvironment } = await import('../db');
 			const { runRedeployStack } = await import('./redeploy-stack-core');
 
 			const log = (msg: string) => console.log(`[Restore:redeploy ${name}] ${msg}`);
@@ -947,9 +1050,11 @@ function restorePorts(destination: any, access: { isEnterprise: boolean; canAcce
 			// to the stack dir, primary first). Absent on older snapshots.
 			const relComposePaths = meta?.stack?.composePaths ?? [];
 
-			const stackDir = await getStackDir(name, envId ?? undefined);
-			const destination = await loadDest(destId);
-			const composePath = join(stackDir, composeFileName);
+			const environment = envId == null ? null : await getEnvironment(envId);
+			const remote = environment?.connectionType === 'hawser-standard' || environment?.connectionType === 'hawser-edge';
+			let stackDir = remote ? '' : await getStackDir(name, envId ?? undefined);
+			const destination = remote ? null : await loadDest(destId);
+			let restoredRemote: RestoredHawserStackFiles | null = null;
 
 			// Order matters: materialise -> register(internal) -> deploy. Registration happens
 			// BEFORE the deploy so a failed `docker compose up` still leaves an editable managed
@@ -971,28 +1076,32 @@ function restorePorts(destination: any, access: { isEnterprise: boolean; canAcce
 						log(`restored ${secrets.length} secret(s) from snapshot → env ${envId ?? 'local'}`);
 					}
 				},
-				// Materialise into the CANONICAL stack dir (stacks/<envName>/<stackName>/) so the
-				// restored stack is a normal managed stack on disk, not a throwaway /tmp copy
-				// (#1329). Carries the path-traversal + data-loss + atomic-swap guards;
-				// overwrite=true because an in-place restore is destructive by design.
+				// The helper writes Hawser files directly into the bound Docker-host
+				// directory. Local/direct keeps the existing atomic Dockhand swap.
 				materialise: async () => {
+					if (remote) {
+						restoredRemote = await restoreHawserStackFiles(destId, snapId, name, envId!, false);
+						stackDir = restoredRemote.root;
+						log(`restored snapshot stack files on Hawser at ${stackDir}`);
+						return true;
+					}
 					log(`materialising snapshot stackfiles → canonical dir: ${stackDir} (compose: ${composeFileName})`);
 					const wrote = await materialiseStackFiles(destination, snapId, name, stackDir, true);
-					return wrote && existsSync(composePath);
+					return wrote && existsSync(join(stackDir, composeFileName));
 				},
 				register: async () => {
-					const envPath = existsSync(join(stackDir, '.env')) ? join(stackDir, '.env') : null;
-					// Defense in depth: the metadata parser rejects traversing paths,
-					// but the metadata is untrusted input — re-check before anything
-					// gets registered and executed outside the stack dir.
 					const { firstComposePathOutsideDir } = await import('../compose-files');
-					const escaping = firstComposePathOutsideDir(relComposePaths, '');
-					if (escaping) {
-						throw new Error(`snapshot composePaths entry "${escaping}" escapes the stack dir; refusing to register`);
-					}
-					const absComposePaths = relComposePaths.length > 0 ? relComposePaths.map((rel) => join(stackDir, rel)) : undefined;
-					await upsertStackSource({ stackName: name, environmentId: envId ?? null, sourceType: 'internal', composePath: composePath, composePaths: absComposePaths, envPath });
-					log(`registered: composePath=${composePath} composePaths=${absComposePaths?.length ?? 1} envPath=${envPath ?? '(none)'}`);
+					const escaping = firstComposePathOutsideDir([composeFileName, ...relComposePaths], '');
+					if (escaping) throw new Error(`snapshot Compose path "${escaping}" escapes the stack dir; refusing to register`);
+					const envPath = remote ? restoredRemote!.envPath : existsSync(join(stackDir, '.env')) ? join(stackDir, '.env') : null;
+					const paths = remote ? restoredRemote!.composePaths : relComposePaths;
+					const absComposePaths = paths.length > 0 ? paths.map((rel) => join(stackDir, rel)) : undefined;
+					await upsertStackSource({
+						stackName: name, environmentId: envId ?? null, sourceType: 'internal',
+						composePath: join(stackDir, composeFileName), composePaths: absComposePaths, envPath,
+						...(remote ? { fileLocation: 'hawser' as const } : {}),
+					});
+					log(`registered: composePath=${join(stackDir, composeFileName)} composePaths=${absComposePaths?.length ?? 1} envPath=${envPath ?? '(none)'}`);
 				},
 				deploy: async () => {
 					// Deliberately does NOT create a stack_deploy run record: this call goes
@@ -1007,11 +1116,23 @@ function restorePorts(destination: any, access: { isEnterprise: boolean; canAcce
 			});
 		},
 		readSnapshotMetadata: (destId, snapId) => getSnapshotMetadata(destId, snapId),
-		// Materialise the snapshot's captured stack files into Dockhand's LOCAL data
-		// dir (targetPath) so Dockhand can manage/redeploy the restored stack. The stack
-		// dir is always at /volumes/__dockhand_stackdir__ in the snapshot; materialise
-		// reads it from there and swaps it into targetPath.
+		// Hawser restores through the target host helper and registers the bound
+		// remote root; local/direct retain Dockhand's atomic materialisation.
 		writeLocalStackFiles: async (destId, snapId, stackName, targetPath, overwrite, envId) => {
+			const environment = envId == null ? null : await (await import('../db')).getEnvironment(envId);
+			if (environment?.connectionType === 'hawser-standard' || environment?.connectionType === 'hawser-edge') {
+				const restored = await restoreHawserStackFiles(destId, snapId, stackName, envId!, !overwrite);
+				if (restored.root !== targetPath) throw new Error(`Hawser stack root changed while restoring "${stackName}"`);
+				const { join } = await import('path');
+				const { upsertStackSource } = await import('../db');
+				await upsertStackSource({
+					stackName, environmentId: envId!, sourceType: 'internal', fileLocation: 'hawser',
+					composePath: join(restored.root, restored.composePaths[0]),
+					composePaths: restored.composePaths.map((path) => join(restored.root, path)),
+					envPath: restored.envPath,
+				});
+				return true;
+			}
 			const destination = await loadDest(destId);
 			const wrote = await materialiseStackFiles(destination, snapId, stackName, targetPath, overwrite);
 			// Register the materialised stack as managed (internal) so the UI can EDIT and
@@ -1047,9 +1168,27 @@ function restorePorts(destination: any, access: { isEnterprise: boolean; canAcce
 			}
 			return wrote;
 		},
-		stackDirFor: async (stackName, envId) => {
+		stackDirFor: async (stackName, envId, snapshotId, destinationId) => {
 			const { getStackDir } = await import('../stacks');
+			const environment = envId == null ? null : await (await import('../db')).getEnvironment(envId);
+			if (environment?.connectionType === 'hawser-standard' || environment?.connectionType === 'hawser-edge') {
+				const files = await hawserStackFiles(envId!, stackName);
+				try { return (await files.binding()).root; }
+				catch (error) {
+					if (!(error instanceof Error && 'status' in error && error.status === 404)) throw error;
+					if (!snapshotId || destinationId == null) throw new Error('snapshot metadata is required to bind a new Hawser stack');
+					const metadata = await getSnapshotMetadata(destinationId, snapshotId);
+					const primary = metadata?.stack?.composeFileName;
+					if (!primary) throw new Error('snapshot has no recorded Compose filename; cannot bind Hawser stack');
+					return (await files.bind(metadata?.stack?.composePaths?.length ? metadata.stack.composePaths : [primary])).root;
+				}
+			}
 			return getStackDir(stackName, envId ?? undefined);
+		},
+		stackFilesOnHawser: async (envId) => {
+			if (envId == null) return false;
+			const environment = await (await import('../db')).getEnvironment(envId);
+			return environment?.connectionType === 'hawser-standard' || environment?.connectionType === 'hawser-edge';
 		},
 		// --- clone (cross-env restore) -----------------------------------------------
 		volumeExists: async (name, envId) => {

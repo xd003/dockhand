@@ -5,7 +5,32 @@
 
 // @ts-expect-error -- bun:test is a runtime built-in with no types installed
 import { test, expect, describe } from 'bun:test';
-import { computeDeletions, hashContent, hashShippedFiles, encodeHawserFileContent, retainOmittedHashes, changedHawserFiles, withRequiredHawserFiles } from '../src/lib/server/git-deletions';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { computeDeletions, hashContent, hashDirFiles, hashShippedFiles, encodeHawserFileContent, retainOmittedHashes, changedHawserFiles, trackedGitFiles, withRequiredHawserFiles } from '../src/lib/server/git-deletions';
+
+test('Hawser Git publication excludes untracked host-only files under the selected Compose context', () => {
+	const repo = mkdtempSync(join(tmpdir(), 'dockhand-git-files-'));
+	try {
+		const context = join(repo, 'apps', 'web');
+		mkdirSync(context, { recursive: true });
+		execFileSync('git', ['init', '-q'], { cwd: repo });
+		writeFileSync(join(context, 'compose.yaml'), 'services: {}\n');
+		writeFileSync(join(context, 'config.txt'), 'tracked\n');
+		execFileSync('git', ['add', '--', 'apps/web/compose.yaml', 'apps/web/config.txt'], { cwd: repo });
+		writeFileSync(join(context, 'data.bin'), Buffer.from([0, 255, 1]));
+		writeFileSync(join(context, 'config-local.txt'), 'host only\n');
+
+		expect(hashDirFiles(context, trackedGitFiles(context))).toEqual({
+			'compose.yaml': hashContent('services: {}\n'),
+			'config.txt': hashContent('tracked\n')
+		});
+	} finally {
+		rmSync(repo, { recursive: true, force: true });
+	}
+});
 
 describe('hashShippedFiles', () => {
 	test('text entries hash to the same value as hashContent of the UTF-8 bytes the agent writes', () => {

@@ -6,9 +6,10 @@
  */
 
 import { readdirSync, existsSync, statSync, readFileSync } from 'node:fs';
-import { join, basename, dirname, resolve } from 'node:path';
+import { join, basename, dirname, resolve, relative } from 'node:path';
 import yaml from 'js-yaml';
-import { getExternalStackPaths, getStackSources, upsertStackSource, type StackSourceType } from './db';
+import { getEnvironment, getExternalStackPaths, getStackSources, upsertStackSource, type StackSourceType } from './db';
+import { hawserStackFiles, hawserComposeProjectLabels } from './hawser-stack-files';
 import { DockerConnectionError } from './docker';
 import { normalizeStackName } from '$lib/utils/stack-name';
 import { shouldSkipScanDir } from '$lib/utils/scan-skip';
@@ -227,10 +228,27 @@ export async function adoptStack(
 		return { success: false, error: 'Already adopted' };
 	}
 
-	// The compose file must live on Dockhand's own filesystem - it is the source of truth
-	// Dockhand reads on view/edit and pushes to the remote on deploy. The GUI file browser
-	// can only pick a local path, but a direct API call can pass any string, including a
-	// remote agent's STACKS_DIR path that Dockhand can't read (#1375). Reject it here.
+	const environment = await getEnvironment(environmentId);
+	const hawser = environment?.connectionType === 'hawser-standard' || environment?.connectionType === 'hawser-edge';
+	if (hawser) {
+		try {
+			const files = await hawserStackFiles(environmentId, stack.name);
+			const labels = await hawserComposeProjectLabels(environmentId, stack.name, stack.composePath);
+			const bound = await files.enroll(labels.root, labels.composeFileNames);
+			const paths = bound.composeFileNames.map((path) => join(bound.root, path));
+			if (!paths.includes(stack.composePath)) throw new Error('Selected Compose file does not belong to the running Hawser Compose project');
+			for (const path of bound.composeFileNames) await files.read(path);
+			const envPath = stack.envPath || join(bound.root, '.env');
+			if (stack.envPath) await files.read(relative(bound.root, envPath));
+			await upsertStackSource({
+				stackName: stack.name, environmentId, sourceType: 'external',
+				fileLocation: 'hawser', composePath: paths[0], composePaths: paths, envPath: stack.envPath ? envPath : null
+			});
+			return { success: true, adoptedName: stack.name };
+		} catch (error) {
+			return { success: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	}
 	if (stack.composePath && !existsSync(stack.composePath)) {
 		return {
 			success: false,

@@ -15,6 +15,7 @@
  */
 import { shellQuote } from './restic-script';
 import { buildInPlaceRestoreScript, SWAP_NEW } from './swap';
+import { STACKDIR_VOLUME_KEY } from './stackdir-plan';
 
 /**
  * Build the in-place restore script. One restic per volume so each lands in its
@@ -179,6 +180,42 @@ export function buildCloneRestore(
 export function cloneStagingName(snapshotId: string): string {
 	const safe = snapshotId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 16) || 'x';
 	return `.dockhand-clone-${safe}`;
+}
+
+/**
+ * Restore stack files on the target Docker host, not into Dockhand's stacks
+ * tree. The agent owns the mounted root; only its children move, so the
+ * agent's root identity remains valid after an in-place restore. Bind-mounted
+ * data directories are excluded from the snapshot and never moved aside.
+ */
+export function buildRemoteStackFilesRestore(snapshotId: string, composePaths: string[], protectedDirs: string[], merge: boolean, root = `/volumes/${STACKDIR_VOLUME_KEY}`): string {
+	const stage = `${root}/.dockhand-restore-new`;
+	const old = `${root}/.dockhand-restore-old`;
+	const nested = `${stage}${root}`;
+	const protectedNames = [...new Set(protectedDirs.map((path) => path.split('/')[0]))];
+	const skip = ['.dockhand-restore-new', '.dockhand-restore-old', ...protectedNames].map(shellQuote).join('|');
+	const required = composePaths.map((path) =>
+		`test -f ${shellQuote(`${nested}/${path}`)} || { echo ${shellQuote(`snapshot is missing restored Compose file: ${path}`)} >&2; exit 1; }`
+	).join('; ');
+	const stageContents = `( cd ${shellQuote(nested)}; for e in * .[!.]* ..?*; do ` +
+		`[ -e "$e" ] || [ -L "$e" ] || continue; ` +
+		`case "$e" in '.dockhand-restore-new'|'.dockhand-restore-old') continue;; esac; ` +
+		(protectedNames.length ? `case "$e" in ${protectedNames.map(shellQuote).join('|')}) ` +
+			`if [ -L "$e" ] || [ -L ${shellQuote(root)}/"$e" ]; then echo 'Refusing symlink in protected stack bind directory' >&2; exit 1; fi; ` +
+			`mkdir -p ${shellQuote(root)}/"$e"; cp -a -- "$e"/. ${shellQuote(root)}/"$e"/; continue;; esac; ` : '') +
+		(merge ? `cp -a -- "$e" ${shellQuote(root)}/;` : `mv -- "$e" ${shellQuote(root)}/;`) +
+		`done )`;
+	const aside = merge ? '' : `( cd ${shellQuote(root)}; for e in * .[!.]* ..?*; do ` +
+		`[ -e "$e" ] || [ -L "$e" ] || continue; ` +
+		`case "$e" in ${skip}) continue;; esac; ` +
+		`mv -- "$e" ${shellQuote(old)}/; done )`;
+	return `set -e; trap ${shellQuote(`rc=$?; if [ "$rc" -ne 0 ] && [ -d ${shellQuote(old)} ]; then echo ${shellQuote(`Remote stack restore interrupted; original files remain at ${old}. Recover them before retrying.`)} >&2; fi`)} 0; test -d ${shellQuote(root)}; ` +
+		`if [ -e ${shellQuote(old)} ]; then echo ${shellQuote(`Previous stack restore is incomplete; recover original files from ${old} before retrying`)} >&2; exit 1; fi; ` +
+		`rm -rf ${shellQuote(stage)}; mkdir -p ${shellQuote(stage)}; ` +
+		`restic ${['restore', '--json', snapshotId, '--target', stage, '--include', root].map(shellQuote).join(' ')}; ` +
+		`test -d ${shellQuote(nested)}; ${required}; ` +
+		`${merge ? '' : `mkdir ${shellQuote(old)}; ${aside}; `}` +
+		`${stageContents}; rm -rf ${shellQuote(stage)}${merge ? '' : ` ${shellQuote(old)}`}`;
 }
 
 /**

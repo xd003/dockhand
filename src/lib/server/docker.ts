@@ -39,6 +39,7 @@ import { isOwnedBackupHelper } from './backups/reap-core';
 import type { EnvironmentConnectionInput } from '$lib/utils/docker-environment-uniqueness';
 import { normalizeSocketPath as normalizeSocketPathPure } from '$lib/utils/docker-environment-uniqueness';
 import { cleanPem } from '$lib/utils/pem';
+import { scheduleHawserStackFileMigrations } from './hawser-stack-file-migration.js';
 
 /**
  * Custom error for when an environment is not found.
@@ -4418,12 +4419,20 @@ export async function getHawserInfo(envId: number): Promise<{
 	mode: string;
 	uptime: number;
 	stacksDir?: string;
+	capabilities?: string[];
 } | null> {
 	for (let attempt = 0; attempt < 2; attempt++) {
 		try {
 			const response = await dockerFetch('/_hawser/info', {}, envId);
 			if (response.ok) {
-				return await response.json();
+				const info = await response.json() as {
+					agentId: string; agentName: string; dockerVersion: string; hawserVersion: string;
+					mode: string; uptime: number; stacksDir?: string; capabilities?: string[];
+				};
+				if (info.mode === 'standard' && info.capabilities?.includes('stack-files-v1')) {
+					scheduleHawserStackFileMigrations(envId);
+				}
+				return info;
 			}
 			await drainResponse(response);
 			console.warn(`[Hawser] Info endpoint returned ${response.status} for env ${envId}`);

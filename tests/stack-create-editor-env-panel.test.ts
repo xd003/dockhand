@@ -22,7 +22,8 @@ describe('local stack create editor', () => {
 	});
 
 	test('only allows browsing for an env file during initial internal deployment', () => {
-		expect(modal).toContain("{#if mode === 'create' && !isGitView && !workspaceEnabled}");
-		expect(modal).toContain("{#if mode === 'create' && !isGitView}");
+		// Hawser stacks create their env file inside the agent-owned root, never from a Dockhand path.
+		expect(modal).toContain("{#if mode === 'create' && !isGitView && !workspaceEnabled && !hawserFiles}");
+		expect(modal).toContain("{#if mode === 'create' && !isGitView && !hawserFiles}");
 	});
 });

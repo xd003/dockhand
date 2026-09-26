@@ -34,6 +34,7 @@ import {
 	execGit,
 	getChangedFilesInDir,
 	computeSyncDeletionPlan,
+	isHawserGitEnvironment,
 	notifyGitSync,
 	getGitReposDir,
 	stackRepoPath,
@@ -486,7 +487,9 @@ async function syncGitStackUnlocked(stackId: number, _onProgress?: ProgressCallb
 			logPrefix,
 			composeDir,
 			composeFileName,
-			rawManifest: gitStack.syncedFiles
+			rawManifest: gitStack.syncedFiles,
+			trackedOnly: await isHawserGitEnvironment(gitStack.environmentId),
+			envFileName
 		});
 
 		// Update git stack status
@@ -792,13 +795,24 @@ async function deployGitStackWithProgressCoreUnlocked(
 			}
 		}
 
+		// Determine env filename relative to compose dir (same logic as syncGitStack)
+		let envFileName: string | undefined;
+		if (gitStack.envFilePath) {
+			const envFilePath = repoFilePath(repoPath, gitStack.envFilePath, "Env file path");
+			if (existsSync(envFilePath)) {
+				envFileName = relative(composeDir, envFilePath);
+			}
+		}
+
 		// Deletion sync (#966): manifest-vs-clone deletion plan
 		const logPrefix = `[Stack:${gitStack.stackName}]`;
 		const deletionData = await computeSyncDeletionPlan({
 			logPrefix,
 			composeDir,
 			composeFileName: progressComposeFileName,
-			rawManifest: gitStack.syncedFiles
+			rawManifest: gitStack.syncedFiles,
+			trackedOnly: await isHawserGitEnvironment(gitStack.environmentId),
+			envFileName
 		});
 
 		// Update git stack status
@@ -811,15 +825,6 @@ async function deployGitStackWithProgressCoreUnlocked(
 		if (adoptedPendingClone) consumeAdoptedPendingClone(repoPath);
 
 		cleanupSshKey(credential, env);
-
-		// Determine env filename relative to compose dir (same logic as syncGitStack)
-		let envFileName: string | undefined;
-		if (gitStack.envFilePath) {
-			const envFilePath = repoFilePath(repoPath, gitStack.envFilePath, "Env file path");
-			if (existsSync(envFilePath)) {
-				envFileName = relative(composeDir, envFilePath);
-			}
-		}
 
 		// Deploy using the shared post-sync body (git-deploy-shared.ts): it emits
 		// the change-table + deploy progress, runs docker compose, finalizes the

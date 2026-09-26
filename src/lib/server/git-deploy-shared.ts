@@ -13,14 +13,15 @@
  * into this function.
  */
 
-import { join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import {
+	getEnvironment,
 	getNonSecretEnvVarsAsRecord,
 	getSecretEnvVarsAsRecord,
 	updateGitStack,
 	upsertStackSource
 } from './db';
-import { deployStack, deployStackUnlocked, getStackDir } from './stacks';
+import { deployStack, deployStackUnlocked, getStackDir, isHawserConnection, type StackOperationResult } from './stacks';
 import { createRunRecorder } from './deploy-run-record';
 import { hashComposeContent, hashEnvFingerprint } from './deploy-run-record-core';
 import {
@@ -44,6 +45,7 @@ export interface GitStackForDeploy {
 	repullImages: boolean;
 	composePaths: string | null;
 	repositoryId: number;
+	composePath: string;
 	lastCommit: string | null;
 }
 
@@ -64,19 +66,12 @@ export interface DeployStackFromSyncArgs {
 	preserveEnvPath?: string;
 	/** Adoption preflight already validated the existing managed directory. */
 	allowExistingStackDir?: boolean;
+	/** Existing agent Compose root and files, verified by Hawser before Git conversion. */
+	remoteGitRoot?: string;
+	remoteGitSourceComposePaths?: string[];
 	/** Commit stack_sources only after Compose succeeds. */
-	sourceCommit?: () => Promise<void>;
-	/** Remote adoption transaction details, validated by Hawser. */
-	remoteAdoption?: {
-		adoptionId: string;
-		sourceDir: string;
-		sourceComposeFiles: string[];
-		sourceEnvPath?: string | null;
-		preservedEnvRelativePath?: string;
-		preserveExistingEnv: boolean;
-		explicitGitEnvRelativePath?: string | null;
-		onRemoteAdoptionPrepared?: (result: { managedDirectory?: string; managedEnvRelativePath?: string; managedEnvContent?: string; managedComposeFiles?: string[] }) => void;
-	};
+	sourceCommit?: (result: StackOperationResult) => Promise<void>;
+
 }
 
 /**
@@ -179,6 +174,9 @@ export async function deployStackFromSync(args: DeployStackFromSyncArgs): Promis
 		recorder?.line(line);
 		args.onLine?.(line);
 	};
+	const hawser = isHawserConnection(
+		typeof gitStack.environmentId === 'number' ? await getEnvironment(gitStack.environmentId) : null
+	);
 
 	const deploy = args.lockHeld ? deployStackUnlocked : deployStack;
 	let result: Awaited<ReturnType<typeof deploy>>;
@@ -187,7 +185,7 @@ export async function deployStackFromSync(args: DeployStackFromSyncArgs): Promis
 			name: gitStack.stackName,
 			compose: syncResult.composeContent!,
 			envId: gitStack.environmentId,
-			sourceDir: syncResult.composeDir, // Copy entire directory from git repo
+			sourceDir: syncResult.composeDir, // Checkout; Hawser publishes directly without a local stack mirror
 			composeFileName: syncResult.composeFileName, // Use original compose filename from repo
 			envFileName: syncResult.envFileName, // Env file relative to compose dir (for --env-file flag, optional)
 			composePaths: gitStack.composePaths ? parseComposePathsColumn(gitStack.composePaths) : undefined,
@@ -196,16 +194,16 @@ export async function deployStackFromSync(args: DeployStackFromSyncArgs): Promis
 			noBuildCache: gitStack.noBuildCache,
 			pullPolicy: gitStack.repullImages ? 'always' : undefined,
 			filesToDelete: syncResult.deletionPlan?.toDelete,
+			gitPublishPaths: hawser ? Object.keys(syncResult.newFiles ?? {}) : undefined,
 			isGitDeploy: true, // suppress stack_* notification; we emit git_sync_* below
 			onLine,
 			onComposeStarted: args.onComposeStarted,
 			preserveEnvPath: args.preserveEnvPath,
 			allowExistingStackDir: args.allowExistingStackDir,
 			copyPaths: args.copyPaths,
-			envPath: args.remoteAdoption ? undefined : args.preserveEnvPath,
-			remoteAdoption: args.remoteAdoption
-				? { ...args.remoteAdoption, onRemoteAdoptionPrepared: args.remoteAdoption.onRemoteAdoptionPrepared }
-				: undefined
+			remoteGitRoot: args.remoteGitRoot,
+			remoteGitSourceComposePaths: args.remoteGitSourceComposePaths,
+			envPath: args.preserveEnvPath
 		});
 	} catch (error) {
 		try {
@@ -244,25 +242,37 @@ export async function deployStackFromSync(args: DeployStackFromSyncArgs): Promis
 			});
 		}
 
-		// Record the stack source with resolved compose path for consistency
-		const stackDir = await getStackDir(gitStack.stackName, gitStack.environmentId);
+		// Hawser confirms the bound root after Compose; Dockhand's checkout and
+		// local stack path must never be persisted as remote stack-file paths.
+		const stackDir = hawser
+			? result.managedDirectory
+			: await getStackDir(gitStack.stackName, gitStack.environmentId);
+		if (!stackDir) throw new Error('Hawser did not confirm the bound stack directory after deployment');
 		const resolvedComposePath = syncResult.composeFileName
 			? join(stackDir, syncResult.composeFileName)
 			: undefined;
+		const configuredPaths = gitStack.composePaths ? parseComposePathsColumn(gitStack.composePaths) : null;
+		const resolvedComposePaths = hawser && configuredPaths && syncResult.composeFileName
+			? configuredPaths.map((path) =>
+				join(dirname(resolvedComposePath!), relative(dirname(gitStack.composePath), path))
+			)
+			: configuredPaths;
 
 		console.log(`${logPrefix} Resolved compose path for stack_sources:`, resolvedComposePath);
 
 		if (args.sourceCommit) {
-			await args.sourceCommit();
+			await args.sourceCommit(result);
 		} else {
 			await upsertStackSource({
 				stackName: gitStack.stackName,
 				environmentId: gitStack.environmentId,
 				sourceType: 'git',
+				fileLocation: hawser ? 'hawser' : 'dockhand',
 				gitRepositoryId: gitStack.repositoryId,
 				gitStackId: stackId,
 				composePath: resolvedComposePath,
-				composePaths: gitStack.composePaths ? parseComposePathsColumn(gitStack.composePaths) : null
+				composePaths: resolvedComposePaths,
+				...(hawser && syncResult.envFileName ? { envPath: join(stackDir, syncResult.envFileName) } : {})
 			});
 		}
 

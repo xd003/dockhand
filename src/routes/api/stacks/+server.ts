@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
-import { listComposeStacks, deployStack, getStackComposeFile, saveStackComposeFile, writeStackEnvFile, writeRawStackEnvFile, saveStackEnvVarsToDb } from '$lib/server/stacks';
+import { listComposeStacks, deployStack, getStackComposeFile, saveStackComposeFile, writeStackEnvFile, writeRawStackEnvFile, saveStackEnvVarsToDb, isHawserConnection, hawserWriteStackFile } from '$lib/server/stacks';
 import { EnvironmentNotFoundError, DockerConnectionError } from '$lib/server/docker';
-import { upsertStackSource, getStackSources, secretProviderExists } from '$lib/server/db';
+import { upsertStackSource, getStackSource, getStackComposePaths, getStackSources, getEnvironment, secretProviderExists } from '$lib/server/db';
 import { validateComposePathsInput, validateComposeContentsInput } from '$lib/server/compose-files';
 import { authorize } from '$lib/server/authorize';
 import { auditStack } from '$lib/server/audit';
@@ -13,6 +13,7 @@ import type { RequestHandler } from './$types';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { MAX_STACK_WORKSPACE_TEXT_SIZE, normalizeWorkspacePath, resolveWorkspacePath } from '$lib/server/stack-workspace';
+import { hawserStackFiles } from '$lib/server/hawser-stack-files';
 
 async function publishWorkspaceDraft(name: string, envId: number | undefined, value: unknown): Promise<void> {
 	if (value === undefined) return;
@@ -36,6 +37,22 @@ async function publishWorkspaceDraft(name: string, envId: number | undefined, va
 	});
 	const paths = [...folders, ...textFiles.map(([path]) => path), ...binaryFiles.map(([path]) => path)];
 	if (new Set(paths.map((path) => path.toLocaleLowerCase())).size !== paths.length) throw new Error('Workspace paths must be unique');
+	const environment = envId ? await getEnvironment(envId) : null;
+	if (isHawserConnection(environment)) {
+		const remote = await hawserStackFiles(envId!, name);
+		await remote.binding();
+		// Same semantics as the local draft publish: folders are idempotent and
+		// draft files replace what save already wrote (revision-checked on Hawser).
+		for (const path of folders) {
+			try { await remote.mkdir(path); }
+			catch (error) {
+				if (!(error && typeof error === 'object' && 'status' in error && error.status === 409) || (await remote.stat(path)).type !== 'directory') throw error;
+			}
+		}
+		for (const [path, content] of textFiles) await hawserWriteStackFile(remote, path, Buffer.from(content));
+		for (const [path, content] of binaryFiles) await hawserWriteStackFile(remote, path, content);
+		return;
+	}
 	const stack = await getStackComposeFile(name, envId);
 	if (!stack.success || !stack.stackDir) throw new Error(stack.error || 'Stack directory not found');
 	for (const path of folders) {
@@ -247,13 +264,15 @@ export const POST: RequestHandler = async (event) => {
 
 			// Persist the path the file was actually written to (the default location
 			// when the caller omitted composePath), not null (#1515).
+			const savedSource = await getStackSource(name, envIdNum);
+			const remoteFiles = isHawserConnection(envIdNum ? await getEnvironment(envIdNum) : null);
 			await upsertStackSource({
 				stackName: name,
 				environmentId: envIdNum,
 				sourceType: 'internal',
-				composePath: effectiveComposePath || result.composePath || undefined,
-				composePaths: composePaths || undefined,
-				envPath: envPath || undefined,
+				composePath: result.composePath || effectiveComposePath || undefined,
+				composePaths: remoteFiles ? (savedSource?.composePaths ? getStackComposePaths(savedSource) : undefined) : composePaths || undefined,
+				envPath: remoteFiles ? savedSource?.envPath : envPath || undefined,
 				secretProviderId,
 				workspaceEnabled: body.workspaceEnabled === true,
 			});
@@ -294,13 +313,15 @@ export const POST: RequestHandler = async (event) => {
 
 		// Record the stack in DB before deploying - ensures it exists even if deploy fails.
 		// Persist the actual written path (default location when composePath omitted), not null (#1515).
+		const savedSource = await getStackSource(name, envIdNum);
+		const remoteFiles = isHawserConnection(envIdNum ? await getEnvironment(envIdNum) : null);
 		await upsertStackSource({
 			stackName: name,
 			environmentId: envIdNum,
 			sourceType: 'internal',
-			composePath: effectiveComposePath || saveResult.composePath || undefined,
-			composePaths: composePaths || undefined,
-			envPath: envPath || undefined,
+			composePath: saveResult.composePath || effectiveComposePath || undefined,
+			composePaths: remoteFiles ? (savedSource?.composePaths ? getStackComposePaths(savedSource) : undefined) : composePaths || undefined,
+			envPath: remoteFiles ? savedSource?.envPath : envPath || undefined,
 			secretProviderId,
 			workspaceEnabled: body.workspaceEnabled === true,
 		});

@@ -3089,6 +3089,7 @@ export interface StackSourceData {
 	stackName: string;
 	environmentId: number | null;
 	sourceType: StackSourceType;
+	fileLocation: 'dockhand' | 'hawser';
 	gitRepositoryId: number | null;
 	gitStackId: number | null;
 	composePath: string | null;
@@ -3219,6 +3220,7 @@ export async function upsertStackSource(data: {
 	stackName: string;
 	environmentId?: number | null;
 	sourceType: StackSourceType;
+	fileLocation?: 'dockhand' | 'hawser';
 	gitRepositoryId?: number | null;
 	gitStackId?: number | null;
 	composePath?: string | null;
@@ -3249,6 +3251,7 @@ export async function upsertStackSource(data: {
 		await db.update(stackSources)
 			.set({
 				sourceType: data.sourceType,
+				fileLocation: data.fileLocation ?? existing.fileLocation,
 				gitRepositoryId: newRepoId,
 				gitStackId: newStackId,
 				composePath: primaryPath,
@@ -3269,6 +3272,7 @@ export async function upsertStackSource(data: {
 			stackName: data.stackName,
 			environmentId: data.environmentId ?? null,
 			sourceType: data.sourceType,
+			fileLocation: data.fileLocation ?? 'dockhand',
 			gitRepositoryId: data.gitRepositoryId || null,
 			gitStackId: data.gitStackId || null,
 			composePath: primaryPath,
@@ -3285,7 +3289,7 @@ export async function upsertStackSource(data: {
 export async function updateStackSource(
 	stackName: string,
 	environmentId: number | null,
-	updates: { sourceType?: StackSourceType; gitRepositoryId?: number | null; gitStackId?: number | null; composePath?: string | null; composePaths?: string[] | null; envPath?: string | null; secretProviderId?: number | null; icon?: string | null; workspaceEnabled?: boolean }
+	updates: { sourceType?: StackSourceType; fileLocation?: 'dockhand' | 'hawser'; gitRepositoryId?: number | null; gitStackId?: number | null; composePath?: string | null; composePaths?: string[] | null; envPath?: string | null; secretProviderId?: number | null; icon?: string | null; workspaceEnabled?: boolean }
 ): Promise<boolean> {
 	const existing = await getStackSource(stackName, environmentId);
 	if (!existing) return false;
@@ -3293,6 +3297,7 @@ export async function updateStackSource(
 	await db.update(stackSources)
 		.set({
 			sourceType: updates.sourceType !== undefined ? updates.sourceType : existing.sourceType,
+			fileLocation: updates.fileLocation ?? existing.fileLocation,
 			gitRepositoryId: updates.gitRepositoryId !== undefined ? updates.gitRepositoryId : existing.gitRepositoryId,
 			gitStackId: updates.gitStackId !== undefined ? updates.gitStackId : existing.gitStackId,
 			composePath: updates.composePath !== undefined ? updates.composePath : (updates.composePaths?.[0] ?? existing.composePath),

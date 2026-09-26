@@ -1,10 +1,12 @@
 import { json } from '@sveltejs/kit';
-import { getStackEnvVars, setStackEnvVars, getStackSource, getStackInjectedSecretKeys, getSecretProviderById } from '$lib/server/db';
-import { findStackDir } from '$lib/server/stacks';
+import { getStackEnvVars, setStackEnvVars, getStackSource, getEnvironment, getStackInjectedSecretKeys, getSecretProviderById } from '$lib/server/db';
+import { findStackDir, hawserRelativeFilePath } from '$lib/server/stacks';
 import { authorize } from '$lib/server/authorize';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import type { RequestHandler } from './$types';
+import { hawserStackFiles } from '$lib/server/hawser-stack-files';
+import { ensureHawserStackFilesReady } from '$lib/server/hawser-stack-file-migration';
 
 /**
  * Parse a .env file content into key-value pairs
@@ -37,12 +39,12 @@ function parseEnvFile(content: string): Record<string, string> {
 /**
  * @openapi
  * summary: Get a stack's env vars plus injected provider keys
- * description: The source of `variables` depends on the stack type. For a GIT stack, ALL variables (secret and non-secret) come from the database via this endpoint - the DB is the canonical store the UI, `POST /env/validate`, and deploys read. For an INTERNAL/adopted stack, non-secrets come from the on-disk `.env` file (written via `PUT /env/raw`) and only secrets come from the DB. Secret values are masked as `***` and never returned in plaintext. Each variable is `{ key, value, isSecret }`.
+ * description: The source of `variables` depends on the stack type. For a GIT stack, ALL variables (secret and non-secret) come from the database via this endpoint - the DB is the canonical store the UI, `POST /env/validate`, and deploys read. For an INTERNAL/adopted stack, non-secrets come from the stack's `.env` file (written via `PUT /env/raw`) and only secrets come from the DB. On a Hawser environment that file is read from the Hawser agent's stack directory (the only copy); an offline or outdated agent makes this request fail instead of falling back to a Dockhand copy. Secret values are masked as `***` and never returned in plaintext. Each variable is `{ key, value, isSecret }`.
  * path: name:string The stack name
  * query: env:integer Environment id the stack belongs to
  * resp-200: {variables:array<{key:string!, value:string!, isSecret:boolean!}>!, injectedSecretKeys:array<string>, secretProvider:object}
  * resp-403: Permission denied (needs stacks:view)
- * resp-500: Failed to read env vars
+ * resp-503: Env file could not be read (e.g. the Hawser agent is offline, must be upgraded, or migration is pending); agent 4xx statuses are passed through
  */
 export const GET: RequestHandler = async ({ params, url, cookies }) => {
 	const auth = await authorize(cookies);
@@ -96,17 +98,25 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 				variables.push({ key: dbVar.key, value: dbVar.value, isSecret: dbVar.isSecret });
 			}
 		} else {
-			// Internal/adopted stacks: non-secrets from file, secrets from DB
-			if (envFilePath && existsSync(envFilePath)) {
-				try {
-					const content = readFileSync(envFilePath, 'utf-8');
-					const fileVars = parseEnvFile(content);
-					for (const [key, value] of Object.entries(fileVars)) {
-						variables.push({ key, value, isSecret: false });
+			// Internal/adopted stacks: non-secrets from the authoritative file, secrets from DB.
+			const environment = envIdNum ? await getEnvironment(envIdNum) : null;
+			if (environment?.connectionType === 'hawser-standard' || environment?.connectionType === 'hawser-edge') {
+				await ensureHawserStackFilesReady(stackName, envIdNum!);
+				const files = await hawserStackFiles(envIdNum!, stackName);
+				const { root } = await files.binding();
+				const latest = await getStackSource(stackName, envIdNum);
+				const path = latest?.envPath || join(dirname(latest?.composePath || join(root, 'compose.yaml')), '.env');
+				if (latest?.envPath !== '') {
+					try {
+						const content = new TextDecoder().decode((await files.read(hawserRelativeFilePath(root, path))).content);
+						for (const [key, value] of Object.entries(parseEnvFile(content))) variables.push({ key, value, isSecret: false });
+					} catch (error) {
+						if (!(error && typeof error === 'object' && 'status' in error && error.status === 404)) throw error;
 					}
-				} catch {
-					// Ignore file read errors
 				}
+			} else if (envFilePath && existsSync(envFilePath)) {
+				const content = readFileSync(envFilePath, 'utf-8');
+				for (const [key, value] of Object.entries(parseEnvFile(content))) variables.push({ key, value, isSecret: false });
 			}
 
 			// Secrets come from the database (never written to file)
@@ -129,7 +139,9 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 		return json({ variables, injectedSecretKeys, secretProvider });
 	} catch (error) {
 		console.error('Error getting stack env vars:', error);
-		return json({ error: 'Failed to get environment variables' }, { status: 500 });
+		const agentStatus = error && typeof error === 'object' && 'status' in error && typeof error.status === 'number' ? error.status : null;
+		if (agentStatus) return json({ error: error instanceof Error ? error.message : 'Failed to get environment variables' }, { status: agentStatus });
+		return json({ error: error instanceof Error ? error.message : 'Failed to get environment variables' }, { status: 503 });
 	}
 };
 

@@ -7,12 +7,14 @@
 	import { Input } from '$lib/components/ui/input';
 	import * as Dialog from '$lib/components/ui/dialog';
 	import CodeEditor from '$lib/components/CodeEditor.svelte';
+	import { currentEnvironment, environments } from '$lib/stores/environment';
 
 	interface GitState { tracked: boolean; ignored: boolean; mixed?: boolean }
 	interface Entry { path: string; name: string; type: 'file' | 'directory'; size: number; depth?: number; git?: GitState | null }
 	export interface WorkspaceDraft { files: Record<string, string>; binaryFiles: Record<string, string>; folders: string[] }
 	interface Props { apiUrl?: string; readonly?: boolean; theme?: 'light' | 'dark'; rootName?: string; draft?: WorkspaceDraft; onDraftChange?: (draft: WorkspaceDraft) => void; onFilesChanged?: (paths: string[]) => Promise<void> | void; onConverted?: () => Promise<void> | void; stackConfig?: Snippet; onStackConfigSelect?: () => void }
 	let { apiUrl, readonly = false, theme = 'dark', rootName = 'stack', draft, onDraftChange, onFilesChanged, onConverted, stackConfig, onStackConfigSelect }: Props = $props();
+	const hawserHost = $derived($environments.some((env) => env.id === $currentEnvironment?.id && (env.connectionType === 'hawser-standard' || env.connectionType === 'hawser-edge')));
 	let entries = $state<Entry[]>([]);
 	let expanded = $state(new Set<string>());
 	let rootExpanded = $state(true);
@@ -51,9 +53,9 @@
 	});
 
 	function gitLabel(state: GitState): string {
-		if (state.mixed) return 'Git tracked and local files';
+		if (state.mixed) return `Git tracked and ${hawserHost ? 'Hawser host' : 'local'} files`;
 		if (state.tracked) return 'Git tracked';
-		if (state.ignored) return 'Local only';
+		if (state.ignored) return hawserHost ? 'Hawser host only' : 'Local only';
 		return 'Untracked';
 	}
 
@@ -351,8 +353,8 @@
 			<Dialog.Title>{saveDialog === 'untracked' ? 'Save untracked file' : saveDialog === 'convert' ? 'Convert stack to Internal?' : 'Save Git-tracked file'}</Dialog.Title>
 			<Dialog.Description>
 				{#if saveDialog === 'untracked'}Choose whether to add <code>{activePath}</code> to Git or keep it only on this host.
-				{:else if saveDialog === 'tracked'}Push this change to Git, or keep it local by converting the stack to Internal.
-				{:else}Tracked files cannot safely remain local while Git synchronization is active. This will disable Git synchronization and webhooks, preserve the stack files, and save this change locally.{/if}
+				{:else if saveDialog === 'tracked'}Push this change to Git, or keep it {hawserHost ? 'on the Hawser host' : 'local'} by converting the stack to Internal.
+				{:else}Tracked files cannot safely remain host-only while Git synchronization is active. This will disable Git synchronization and webhooks, preserve the stack files, and save this change {hawserHost ? 'on the Hawser host' : 'locally'}.{/if}
 			</Dialog.Description>
 		</Dialog.Header>
 		{#if saveDialog !== 'convert'}
@@ -361,9 +363,9 @@
 		<Dialog.Footer>
 			<Button variant="outline" onclick={() => saveDialog = null}>Cancel</Button>
 			{#if saveDialog === 'convert'}
-				<Button onclick={() => persist('internal')}>Convert & save locally</Button>
+				<Button onclick={() => persist('internal')}>Convert & save {hawserHost ? 'on Hawser' : 'locally'}</Button>
 			{:else}
-				<Button variant="outline" onclick={keepLocal}>Keep local only</Button>
+				<Button variant="outline" onclick={keepLocal}>Keep {hawserHost ? 'on Hawser host' : 'local only'}</Button>
 				<Button onclick={() => persist('push')} disabled={!commitMessage.trim()}>{saveDialog === 'untracked' ? 'Track & push' : 'Push changes'}</Button>
 			{/if}
 		</Dialog.Footer>

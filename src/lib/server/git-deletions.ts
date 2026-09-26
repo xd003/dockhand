@@ -18,6 +18,7 @@
  * History rewrites are irrelevant by design: deletion converges the deploy
  * dir toward the clone state, regardless of how the commits got there.
  */
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, unlinkSync, rmdirSync, lstatSync } from 'node:fs';
 import { join, resolve, sep, dirname, basename, isAbsolute } from 'node:path';
@@ -253,7 +254,7 @@ export function withRequiredHawserFiles(
  * Returns { relativePath: sha256hex } with '/' separators.
  * Skips .git directories (mirrors the cpSync filter used by the deploy copy).
  */
-export function hashDirFiles(dir: string): Record<string, string> {
+export function hashDirFiles(dir: string, includedPaths?: ReadonlySet<string>): Record<string, string> {
 	const result: Record<string, string> = {};
 	const root = resolve(dir);
 
@@ -270,7 +271,7 @@ export function hashDirFiles(dir: string): Record<string, string> {
 			const rel = relPrefix ? `${relPrefix}/${entry.name}` : entry.name;
 			if (entry.isDirectory()) {
 				walk(abs, rel);
-			} else if (entry.isFile()) {
+			} else if (entry.isFile() && (!includedPaths || includedPaths.has(rel))) {
 				try {
 					result[rel] = hashContent(readFileSync(abs));
 				} catch {
@@ -284,6 +285,15 @@ export function hashDirFiles(dir: string): Record<string, string> {
 
 	walk(root, '');
 	return result;
+}
+
+/** Git's tracked file list is relative to the selected checkout subdirectory. */
+export function trackedGitFiles(dir: string): Set<string> {
+	const paths = execFileSync('git', ['ls-files', '--cached', '-z', '--', '.'], {
+		cwd: dir,
+		maxBuffer: 16 * 1024 * 1024
+	}).toString('utf8');
+	return new Set(paths.split('\0').filter(Boolean));
 }
 
 // =============================================================================

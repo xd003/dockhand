@@ -433,7 +433,7 @@ export function closeEdgeConnection(
 	const pendingCount = connection.pendingRequests.size;
 	const streamCount = connection.pendingStreamRequests.size;
 	console.log(
-		`[Hawser] Closing Edge connection for deleted environment ${environmentId}. ` +
+		`[Hawser] Closing Edge connection for environment ${environmentId} (${closeReason}). ` +
 		`Rejecting ${pendingCount} pending requests and ${streamCount} stream requests.`
 	);
 
@@ -1257,6 +1257,16 @@ async function handleHawserWsMessage(ws: any, msg: any, connId: string, remoteIp
 			const connection = handleEdgeConnection(ws, result.environmentId, msg, result.tokenId);
 			wsToEnvId.set(ws, result.environmentId);
 
+			// Send welcome BEFORE anything else goes to the agent. The agent treats the
+			// first frame after hello as the handshake reply and drops the connection on
+			// anything else, and the duplicate-Docker check below must ask the agent for
+			// its daemon ID (GET /info) over this very connection.
+			ws.send(JSON.stringify({
+				type: 'welcome',
+				serverId: 'dockhand',
+				version: HAWSER_PROTOCOL_VERSION
+			}));
+
 			const duplicateCheck = await validateEdgeAgentDockerUniqueness(result.environmentId);
 			if (!duplicateCheck.ok) {
 				console.log(`[Hawser WS] Rejecting agent for env ${result.environmentId}: ${duplicateCheck.error}`);
@@ -1265,13 +1275,6 @@ async function handleHawserWsMessage(ws: any, msg: any, connId: string, remoteIp
 				wsToEnvId.delete(ws);
 				return;
 			}
-
-			// Send welcome
-			ws.send(JSON.stringify({
-				type: 'welcome',
-				serverId: 'dockhand',
-				version: HAWSER_PROTOCOL_VERSION
-			}));
 
 			console.log(`[Hawser WS] Agent authenticated: env=${result.environmentId} agent=${msg.agentName || msg.agentId}`);
 			if (msg.capabilities.includes('stack-files-v1')) {

@@ -39,7 +39,7 @@ test('null hints skip path validation and display a neutral manual-browse fallba
 test('shared file loading clears previous errors and records HTTP and thrown failures', () => {
 	const loader = parent.match(/async function loadFilesFromLocalFilesystem\([\s\S]*?\n\t\}/)?.[0];
 	expect(loader).toMatch(/errors.compose = undefined;\s*try/);
-	expect(loader).toMatch(/errors.compose = err.error \|\| m\.stacks_modal_load_compose_failed\(\);\s*return;/);
+	expect(loader).toMatch(/errors.compose = err.error \|\| m\.stacks_modal_load_compose_failed\(\);\s*return false;/);
 	expect(loader).toContain('errors.compose = e instanceof Error ? e.message : m.stacks_modal_load_files_failed()');
 	expect(en.stacks_modal_load_compose_failed).toBe('Failed to load compose file');
 	expect(en.stacks_modal_load_files_failed).toBe('Failed to load files');

@@ -88,14 +88,15 @@
 		initialTab?: 'editor' | 'graph';
 		onClose: () => void;
 		onSuccess: () => void; // Called after create or save
-		onEditGitSettings?: () => void;
+		onAdoptFromGit?: () => void;
 		/** Untracked stack whose Compose file is gone: start a new internal stack under the same project name. */
 		onCreateInternally?: () => void;
 		/** Create mode: register a new internal stack for this untracked Compose project, reusing its name. */
 		takeoverStackName?: string;
+		onEditGitSettings?: () => void;
 	}
 
-	let { open = $bindable(), mode: propMode, stackName: propStackName = '', initialCompose, initialStackName, readonly = false, gitInfo = null, stackSource = null, initialTab = 'editor', onClose, onSuccess, onEditGitSettings, onCreateInternally, takeoverStackName }: Props = $props();
+	let { open = $bindable(), mode: propMode, stackName: propStackName = '', initialCompose, initialStackName, readonly = false, gitInfo = null, stackSource = null, initialTab = 'editor', onClose, onSuccess, onAdoptFromGit, onCreateInternally, takeoverStackName, onEditGitSettings }: Props = $props();
 
 	let gitCommitCopied = $state<'ok' | 'error' | null>(null);
 	function openGitSettings() {
@@ -2946,6 +2947,25 @@
 										<span class="mt-1 block text-xs leading-4 text-zinc-600 dark:text-zinc-400">{hawserFiles ? 'Select its Compose file on the Hawser host and manage it in place; relative bind paths stay unchanged.' : 'Select its Compose file on Dockhand\'s filesystem and manage it in place; the directory is not moved.'}</span>
 									</span>
 								</button>
+
+								{#if onAdoptFromGit}
+									<button
+										type="button"
+										onclick={onAdoptFromGit}
+										class="group flex min-h-24 items-start gap-3 rounded-lg border border-violet-500/35 bg-violet-500/10 p-3 text-left transition-colors hover:border-violet-400 hover:bg-violet-500/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 dark:border-violet-400/30 dark:bg-violet-400/10 dark:hover:bg-violet-400/15"
+									>
+										<span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-violet-500/15 text-violet-600 dark:text-violet-300">
+											<GitBranch class="h-4 w-4" />
+										</span>
+										<span class="min-w-0 flex-1">
+											<span class="flex items-center justify-between gap-2 text-sm font-semibold text-zinc-800 dark:text-zinc-100">
+												Convert to Git
+												<ArrowRight class="h-3.5 w-3.5 shrink-0 text-violet-500 transition-transform group-hover:translate-x-0.5" />
+											</span>
+											<span class="mt-1 block text-xs leading-4 text-zinc-600 dark:text-zinc-400">Connect a repository; optionally select its Compose file to publish tracked files into that directory in place.</span>
+										</span>
+									</button>
+								{/if}
 							</div>
 							{#if onCreateInternally}
 								<button

@@ -3,10 +3,10 @@
  *
  * Both engines (stack git-stack.ts, centralized git-centralized.ts) run the
  * same "deploy a stack from a successful sync result" skeleton: decide whether
- * to deploy, run docker compose, finalize the deletion sync, record the stack
- * source, mark a failed deploy for retry, and emit the single git_sync_*
- * notification. Extracted here so a fix to that body (e.g. deploy bugfixes)
- * lands in ONE place instead of two/three near-duplicates.
+ * to deploy, record the deploy run, run docker compose, finalize the deletion
+ * sync, record the stack source, mark a failed deploy for retry, and emit the
+ * single git_sync_* notification. Extracted here so a fix to that body (e.g. a
+ * deploy bugfix) lands in ONE place instead of two/three near-duplicates.
  *
  * The SYNC half differs per engine (per-stack re-clone vs shared-clone sync),
  * so each engine keeps its own syncGitStack and feeds the resulting SyncResult
@@ -14,8 +14,16 @@
  */
 
 import { dirname, join, relative } from 'node:path';
-import { getEnvironment, updateGitStack, upsertStackSource } from './db';
-import { deployStack, getStackDir, isHawserConnection, type StackOperationResult } from './stacks';
+import {
+	getEnvironment,
+	getNonSecretEnvVarsAsRecord,
+	getSecretEnvVarsAsRecord,
+	updateGitStack,
+	upsertStackSource
+} from './db';
+import { deployStack, deployStackUnlocked, getStackDir, isHawserConnection, type StackOperationResult } from './stacks';
+import { createRunRecorder } from './deploy-run-record';
+import { hashComposeContent, hashEnvFingerprint } from './deploy-run-record-core';
 import {
 	finalizeDeletionSync,
 	notifyGitSync,
@@ -57,8 +65,20 @@ export interface DeployStackFromSyncArgs {
 	gitStack: GitStackForDeploy;
 	opts: DeployGitStackOpts;
 	syncResult: SyncResult;
+	onLine?: (line: string) => void;
+	onComposeStarted?: () => void;
 	onProgress?: ProgressCallback;
 	logPrefix: string;
+	/** Set by adoption, which already holds the stack lock. */
+	lockHeld?: boolean;
+	/** Existing Dockhand-accessible project directory selected for in-place Git conversion. */
+	projectDir?: string;
+	/** Existing agent Compose root and files, verified by Hawser before Git conversion. */
+	remoteGitRoot?: string;
+	remoteGitSourceComposePaths?: string[];
+	/** Commit stack_sources only after Compose succeeds. */
+	sourceCommit?: (result: StackOperationResult) => Promise<void>;
+
 }
 
 /**
@@ -167,17 +187,52 @@ export async function deployStackFromSync(args: DeployStackFromSyncArgs): Promis
 	console.log(`${logPrefix} Compose filename:`, syncResult.composeFileName);
 	console.log(`${logPrefix} Env filename:`, syncResult.envFileName ?? '(none)');
 
+	let effectiveEnvVars: Record<string, string> = { ...(syncResult.envFileVars ?? {}) };
+	try {
+		const nonSecretVars = await getNonSecretEnvVarsAsRecord(gitStack.stackName, gitStack.environmentId);
+		const secretVars = await getSecretEnvVarsAsRecord(gitStack.stackName, gitStack.environmentId);
+		effectiveEnvVars = { ...nonSecretVars, ...secretVars, ...(syncResult.envFileVars ?? {}) };
+	} catch (error) {
+		console.error(`${logPrefix} Failed to read env vars for run recording (deploy continues):`, error);
+	}
+
+	const recorder = await createRunRecorder({
+		stackName: gitStack.stackName,
+		envId: gitStack.environmentId ?? null,
+		userId: opts.userId,
+		triggeredBy: opts.triggeredBy ?? 'manual',
+		options: {
+			pull: gitStack.repullImages,
+			build: gitStack.buildOnDeploy,
+			forceRecreate
+		},
+		composeHash: hashComposeContent(syncResult.composeContent!),
+		envHash: hashEnvFingerprint(effectiveEnvVars),
+		secrets: Object.values(effectiveEnvVars)
+	}).catch((error) => {
+		console.error(`${logPrefix} Failed to create deploy run recorder (deploy continues):`, error);
+		return null;
+	});
+
+	// Each line is already secret-redacted by deployStack. One stream, three sinks:
+	// the run record's log file, the caller's onLine, and the progress UI.
+	const onLine = (line: string) => {
+		recorder?.line(line);
+		args.onLine?.(line);
+		onProgress?.({ status: 'deploying', logLine: line, step: 5, totalSteps: 5 });
+	};
 	const hawser = isHawserConnection(
 		typeof gitStack.environmentId === 'number' ? await getEnvironment(gitStack.environmentId) : null
 	);
 
+	const deploy = args.lockHeld ? deployStackUnlocked : deployStack;
 	let result: StackOperationResult;
 	try {
-		result = await deployStack({
+		result = await deploy({
 			name: gitStack.stackName,
 			compose: syncResult.composeContent!,
 			envId: gitStack.environmentId,
-			sourceDir: syncResult.composeDir, // Checkout; Hawser receives only its tracked files
+			sourceDir: syncResult.composeDir, // Checkout; Hawser and in-place stacks receive only its tracked files
 			composeFileName: syncResult.composeFileName, // Use original compose filename from repo
 			envFileName: syncResult.envFileName, // Env file relative to compose dir (for --env-file flag, optional)
 			composePaths: gitStack.composePaths ? parseComposePathsColumn(gitStack.composePaths) : undefined,
@@ -188,17 +243,29 @@ export async function deployStackFromSync(args: DeployStackFromSyncArgs): Promis
 			filesToDelete: syncResult.deletionPlan?.toDelete,
 			gitPublishPaths: syncResult.newFiles ? Object.keys(syncResult.newFiles) : undefined,
 			isGitDeploy: true, // suppress stack_* notification; we emit git_sync_* below
-			// Each line is already secret-redacted by deployStack; the progress UI shows it
-			// as the live compose log.
-			onLine: onProgress
-				? (line) => onProgress({ status: 'deploying', logLine: line, step: 5, totalSteps: 5 })
-				: undefined
+			onLine,
+			onComposeStarted: args.onComposeStarted,
+			projectDir: args.projectDir,
+			remoteGitRoot: args.remoteGitRoot,
+			remoteGitSourceComposePaths: args.remoteGitSourceComposePaths
 		});
 	} catch (error) {
+		try {
+			await recorder?.end(false, undefined, error instanceof Error ? error.message : String(error));
+		} catch (recordError) {
+			console.error(`${logPrefix} Failed to close deploy run recorder:`, recordError);
+		}
 		// A throw skips the result branch below, and leaving the stack on 'synced'
 		// is the stuck state the mark records against.
 		await markGitStackDeployFailed(stackId, logPrefix, error instanceof Error ? error.message : String(error));
 		throw error;
+	}
+
+	recorder?.addSecrets(result.resolvedSecrets ?? []);
+	try {
+		await recorder?.end(result.success, undefined, result.success ? undefined : result.error);
+	} catch (error) {
+		console.error(`${logPrefix} Failed to close deploy run recorder:`, error);
 	}
 
 	console.log(`${logPrefix} ----------------------------------------`);
@@ -226,7 +293,7 @@ export async function deployStackFromSync(args: DeployStackFromSyncArgs): Promis
 		// local stack path must never be persisted as remote stack-file paths.
 		const stackDir = hawser
 			? result.managedDirectory
-			: await getStackDir(gitStack.stackName, gitStack.environmentId);
+			: args.projectDir ?? await getStackDir(gitStack.stackName, gitStack.environmentId);
 		if (!stackDir) throw new Error('Hawser did not confirm the bound stack directory after deployment');
 		const resolvedComposePath = syncResult.composeFileName
 			? join(stackDir, syncResult.composeFileName)
@@ -240,17 +307,21 @@ export async function deployStackFromSync(args: DeployStackFromSyncArgs): Promis
 
 		console.log(`${logPrefix} Resolved compose path for stack_sources:`, resolvedComposePath);
 
-		await upsertStackSource({
-			stackName: gitStack.stackName,
-			environmentId: gitStack.environmentId,
-			sourceType: 'git',
-			fileLocation: hawser ? 'hawser' : 'dockhand',
-			gitRepositoryId: gitStack.repositoryId,
-			gitStackId: stackId,
-			composePath: resolvedComposePath,
-			composePaths: resolvedComposePaths,
-			...(hawser && syncResult.envFileName ? { envPath: join(stackDir, syncResult.envFileName) } : {})
-		});
+		if (args.sourceCommit) {
+			await args.sourceCommit(result);
+		} else {
+			await upsertStackSource({
+				stackName: gitStack.stackName,
+				environmentId: gitStack.environmentId,
+				sourceType: 'git',
+				fileLocation: hawser ? 'hawser' : 'dockhand',
+				gitRepositoryId: gitStack.repositoryId,
+				gitStackId: stackId,
+				composePath: resolvedComposePath,
+				composePaths: resolvedComposePaths,
+				...(hawser && syncResult.envFileName ? { envPath: join(stackDir, syncResult.envFileName) } : {})
+			});
+		}
 
 		if (onProgress) {
 			const applySkips = (result.deletion?.skipped ?? []).filter((s) => s.reason !== 'already-absent');

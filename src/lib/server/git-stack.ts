@@ -31,6 +31,8 @@ import {
 	type GitEngine
 } from './git';
 import { deployStackFromSync } from './git-deploy-shared';
+import { withStackLock } from './stacks';
+import type { DeployGitStackOpts } from '../utils/git-deploy-gating';
 
 // Generous per-clone bound: a frozen network/SSH connection must not hold a
 // webhook/worker slot forever (the subprocess is SIGKILLed on timeout).
@@ -75,6 +77,11 @@ function readPendingClone(token: string): PendingCloneRecord | null {
 function cleanupPendingClone(token: string): void {
 	try { rmSync(pendingClonePath(token), { recursive: true, force: true }); } catch { /* best effort */ }
 	try { rmSync(pendingCloneMetadataPath(token), { force: true }); } catch { /* best effort */ }
+}
+
+export function discardPendingGitClone(token: string, repositoryId: number): void {
+	const record = readPendingClone(token);
+	if (record?.repositoryId === repositoryId) cleanupPendingClone(token);
 }
 
 /** Remove abandoned create-flow checkouts without touching stack-owned clones. */
@@ -454,7 +461,7 @@ export async function syncGitStack(stackId: number, _onProgress?: ProgressCallba
 			composeDir,
 			composeFileName,
 			rawManifest: gitStack.syncedFiles,
-			trackedOnly: await publishesTrackedGitFilesOnly(gitStack.environmentId),
+			trackedOnly: await publishesTrackedGitFilesOnly(gitStack.stackName, gitStack.environmentId),
 			envFileName
 		});
 
@@ -506,7 +513,7 @@ export async function syncGitStack(stackId: number, _onProgress?: ProgressCallba
 
 export async function deployGitStack(
 	stackId: number,
-	options?: { force?: boolean; ignoreForceRedeploy?: boolean }
+	options?: Partial<DeployGitStackOpts>
 ): Promise<DeployGitStackResult> {
 	activeStackDeployIds.add(stackId);
 	try {
@@ -518,7 +525,16 @@ export async function deployGitStack(
 
 async function deployGitStackCore(
 	stackId: number,
-	options?: { force?: boolean; ignoreForceRedeploy?: boolean }
+	options?: Partial<DeployGitStackOpts>
+): Promise<DeployGitStackResult> {
+	const gitStack = await getGitStack(stackId);
+	if (!gitStack) return { success: false, error: 'Git stack not found' };
+	return withStackLock(gitStack.stackName, () => deployGitStackCoreUnlocked(stackId, options));
+}
+
+async function deployGitStackCoreUnlocked(
+	stackId: number,
+	options?: Partial<DeployGitStackOpts>
 ): Promise<DeployGitStackResult> {
 	const force = options?.force ?? true; // Default to force for backward compatibility
 
@@ -553,7 +569,21 @@ async function deployGitStackCore(
 	}
 
 	// Deploy using the shared post-sync body (git-deploy-shared.ts).
-	return deployStackFromSync({ stackId, gitStack, opts: { force, ignoreForceRedeploy: false }, syncResult, logPrefix });
+	return deployStackFromSync({
+		stackId,
+		gitStack,
+		opts: {
+			force,
+			ignoreForceRedeploy: options?.ignoreForceRedeploy ?? false,
+			triggeredBy: options?.triggeredBy,
+			userId: options?.userId,
+			onLine: options?.onLine
+		},
+		syncResult,
+		onLine: options?.onLine,
+		logPrefix,
+		lockHeld: true
+	});
 }
 
 export async function deleteGitStackFiles(stackId: number, stackName?: string, environmentId?: number | null): Promise<void> {
@@ -581,6 +611,18 @@ export async function deployGitStackWithProgress(
 }
 
 async function deployGitStackWithProgressCore(
+	stackId: number,
+	onProgress: ProgressCallback
+): Promise<DeployGitStackResult> {
+	const gitStack = await getGitStack(stackId);
+	if (!gitStack) {
+		onProgress({ status: 'error', error: 'Git stack not found' });
+		return { success: false, error: 'Git stack not found' };
+	}
+	return withStackLock(gitStack.stackName, () => deployGitStackWithProgressCoreUnlocked(stackId, onProgress));
+}
+
+async function deployGitStackWithProgressCoreUnlocked(
 	stackId: number,
 	onProgress: ProgressCallback
 ): Promise<DeployGitStackResult> {
@@ -738,7 +780,7 @@ async function deployGitStackWithProgressCore(
 			composeDir,
 			composeFileName: progressComposeFileName,
 			rawManifest: gitStack.syncedFiles,
-			trackedOnly: await publishesTrackedGitFilesOnly(gitStack.environmentId),
+			trackedOnly: await publishesTrackedGitFilesOnly(gitStack.stackName, gitStack.environmentId),
 			envFileName
 		});
 
@@ -771,7 +813,7 @@ async function deployGitStackWithProgressCore(
 			newCommitFull: newCommit,
 			previousManifest: deletionData.previousManifest
 		};
-		return deployStackFromSync({ stackId, gitStack, opts: { force: true, ignoreForceRedeploy: false }, syncResult, onProgress, logPrefix });
+		return deployStackFromSync({ stackId, gitStack, opts: { force: true, ignoreForceRedeploy: false }, syncResult, onProgress, logPrefix, lockHeld: true });
 	} catch (error: any) {
 		cleanupSshKey(credential, env);
 		await updateGitStack(stackId, {

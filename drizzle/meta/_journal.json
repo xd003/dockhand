@@ -136,6 +136,13 @@
       "breakpoints": true
     },
     {
+      "idx": 19,
+      "version": "6",
+      "when": 1790064000000,
+      "tag": "0019_stack_workspace",
+      "breakpoints": true
+    },
+    {
       "idx": 20,
       "version": "6",
       "when": 1790467200000,

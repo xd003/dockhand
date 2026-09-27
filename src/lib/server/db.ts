@@ -3141,6 +3141,7 @@ export interface StackSourceData {
 	projectDir: string | null;
 	secretProviderId: number | null;
 	icon: string | null;
+	workspaceEnabled: boolean;
 	createdAt: string;
 	updatedAt: string;
 }
@@ -3272,6 +3273,7 @@ export async function upsertStackSource(data: {
 	projectDir?: string | null;
 	secretProviderId?: number | null;
 	icon?: string | null;
+	workspaceEnabled?: boolean;
 }): Promise<StackSourceData> {
 	const existing = await getStackSource(data.stackName, data.environmentId);
 
@@ -3306,6 +3308,7 @@ export async function upsertStackSource(data: {
 				...(data.secretProviderId !== undefined && { secretProviderId: data.secretProviderId }),
 				// Same preserve-on-omit for the icon, so a git sync doesn't wipe a user's choice
 				...(data.icon !== undefined && { icon: data.icon }),
+				...(data.workspaceEnabled !== undefined && { workspaceEnabled: data.workspaceEnabled }),
 			})
 			.where(eq(stackSources.id, existing.id));
 		return getStackSource(data.stackName, data.environmentId) as Promise<StackSourceData>;
@@ -3323,7 +3326,8 @@ export async function upsertStackSource(data: {
 			envPath: data.envPath ?? null,
 			projectDir: data.projectDir ?? null,
 			secretProviderId: data.secretProviderId ?? null,
-			icon: data.icon ?? null
+			icon: data.icon ?? null,
+			workspaceEnabled: data.workspaceEnabled ?? false
 		});
 		return getStackSource(data.stackName, data.environmentId) as Promise<StackSourceData>;
 	}
@@ -3332,7 +3336,7 @@ export async function upsertStackSource(data: {
 export async function updateStackSource(
 	stackName: string,
 	environmentId: number | null,
-	updates: { sourceType?: StackSourceType; fileLocation?: 'dockhand' | 'hawser'; gitRepositoryId?: number | null; gitStackId?: number | null; composePath?: string | null; composePaths?: string[] | null; envPath?: string | null; projectDir?: string | null; secretProviderId?: number | null; icon?: string | null }
+	updates: { sourceType?: StackSourceType; fileLocation?: 'dockhand' | 'hawser'; gitRepositoryId?: number | null; gitStackId?: number | null; composePath?: string | null; composePaths?: string[] | null; envPath?: string | null; projectDir?: string | null; secretProviderId?: number | null; icon?: string | null; workspaceEnabled?: boolean }
 ): Promise<boolean> {
 	const existing = await getStackSource(stackName, environmentId);
 	if (!existing) return false;
@@ -3349,6 +3353,7 @@ export async function updateStackSource(
 			projectDir: updates.projectDir !== undefined ? updates.projectDir : existing.projectDir,
 			secretProviderId: updates.secretProviderId !== undefined ? updates.secretProviderId : existing.secretProviderId,
 			icon: updates.icon !== undefined ? updates.icon : existing.icon,
+			workspaceEnabled: updates.workspaceEnabled !== undefined ? updates.workspaceEnabled : existing.workspaceEnabled,
 			updatedAt: new Date().toISOString()
 		})
 		.where(eq(stackSources.id, existing.id));

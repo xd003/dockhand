@@ -36,8 +36,8 @@
 	import { readJobResponse } from '$lib/utils/sse-fetch';
 	import FilesystemBrowser from './FilesystemBrowser.svelte';
 	import StackFileEditor from './StackFileEditor.svelte';
+	import StackWorkspace, { type WorkspaceDraft } from './StackWorkspace.svelte';
 	import ComposeValidatePanel, { findingLintMarkers } from './ComposeValidatePanel.svelte';
-	import type { StackFileEditorDraft } from '$lib/stack-file-editor';
 	import WebhookSecretInput from '$lib/components/WebhookSecretInput.svelte';
 	import WebhookUrlCopyField from '$lib/components/WebhookUrlCopyField.svelte';
 	import { ensureWebhookSecret, webhookSecretValidationError } from '$lib/utils/webhook-secret';
@@ -97,6 +97,7 @@
 
 	interface Props {
 		open: boolean;
+		readonly?: boolean;
 		gitStack?: GitStack | null;
 		environmentId?: number | null;
 		icon?: string | null;
@@ -111,7 +112,7 @@
 		onRepositoryCreated?: () => void;
 	}
 
-	let { open = $bindable(), gitStack = null, adoptionTarget = null, environmentId = null, icon = null, repositories, credentials, onClose, onSaved, onOpenStackView, onRepositoryCreated }: Props = $props();
+	let { open = $bindable(), readonly = false, gitStack = null, adoptionTarget = null, environmentId = null, icon = null, repositories, credentials, onClose, onSaved, onOpenStackView, onRepositoryCreated }: Props = $props();
 	const isAdopting = $derived(adoptionTarget !== null && gitStack === null);
 	function openStackView(tab: 'editor' | 'graph') {
 		onOpenStackView?.(tab);
@@ -124,6 +125,7 @@
 
 	// value: '' clear, 'upload:<dataUrl>' custom upload, or a lucide name / 'selfhst:<ref>'.
 	async function onIconSelect(value: string) {
+		if (readonly) return;
 		if (!gitStack?.stackName) return;
 		const target = appendEnvParam(`/api/stacks/${encodeURIComponent(gitStack.stackName)}/icon`, effectiveEnvId);
 		try {
@@ -417,17 +419,37 @@
 		const paths = formComposePaths.map((path) => path.trim()).filter(Boolean);
 		if (paths.length === 0) return;
 		try {
-			const query = new URLSearchParams(isCentralizedMode ? { shared: '1' } : { token: temporaryCloneToken! });
-			for (const path of paths) query.append('path', path);
-			const response = await fetch(`/api/git/repositories/${formRepositoryId}/draft-files?${query}`);
-			const data = await response.json();
+			const checkout = isCentralizedMode ? { shared: '1' } : { token: temporaryCloneToken! };
+			const composeQuery = new URLSearchParams(checkout);
+			for (const path of paths) composeQuery.append('path', path);
+			const composeSlash = paths[0].lastIndexOf('/');
+			workspaceRoot = composeSlash < 0 ? '' : paths[0].slice(0, composeSlash);
+			const workspaceQuery = new URLSearchParams(checkout);
+			workspaceQuery.set('directory', workspaceRoot);
+			// Converting in place: files outside Git in the selected project directory are part of the workspace too.
+			const projectRequest = isAdopting && existingComposePath ? fetch(adoptionFilesUrl('')) : null;
+			const [response, workspaceResponse, projectResponse] = await Promise.all([
+				fetch(`/api/git/repositories/${formRepositoryId}/draft-files?${composeQuery}`),
+				fetch(`/api/git/repositories/${formRepositoryId}/draft-files?${workspaceQuery}`),
+				projectRequest
+			]);
+			const [data, workspace, project] = await Promise.all([response.json(), workspaceResponse.json(), projectResponse?.json()]);
 			if (seq !== draftLoadSeq) return;
 			if (!response.ok) throw new Error(data.error || 'Failed to load Compose files');
+			if (!workspaceResponse.ok) throw new Error(workspace.error || 'Failed to load stack workspace');
+			if (projectResponse && !projectResponse.ok) throw new Error(project.error || 'Failed to load project files');
 			const entries = Array.isArray(data.entries) ? data.entries : [];
 			const contents = Object.fromEntries(entries.map((entry: any) => [entry.path, entry.content]));
 			draftComposeContents = contents;
-			draftComposeRevisions = Object.fromEntries(entries.filter((entry: any) => typeof entry.revision === 'string').map((entry: any) => [entry.path, entry.revision]));
-			draftComposeClassifications = entries.map((entry: any) => ({ path: entry.path, tracked: entry.tracked === true, ignored: entry.ignored === true }));
+			workspaceDraft = { files: { ...(workspace.files ?? {}) }, binaryFiles: { ...(workspace.binaryFiles ?? {}) }, folders: Array.isArray(workspace.folders) ? workspace.folders : [] };
+			adoptionGitFiles = new Set([...Object.keys(workspaceDraft.files), ...Object.keys(workspaceDraft.binaryFiles)]);
+			adoptionGitFolders = new Set(workspaceDraft.folders);
+			adoptionGitOriginals = { ...workspaceDraft.files };
+			adoptionLocalOriginals = new Map();
+			draftGitDecisions = {};
+			if (project) workspaceDraft = mergeAdoptionEntries(workspaceDraft, project.entries ?? [], '');
+			draftComposeRevisions = workspace.revisions ?? Object.fromEntries(entries.filter((entry: any) => typeof entry.revision === 'string').map((entry: any) => [entry.path, entry.revision]));
+			draftComposeClassifications = Array.isArray(workspace.classifications) ? workspace.classifications : entries.map((entry: any) => ({ path: entry.path, tracked: entry.tracked === true, ignored: entry.ignored === true }));
 			draftActiveComposePath = paths[0];
 			draftEditorDirty = false;
 			draftEditorReady = true;
@@ -438,14 +460,126 @@
 		}
 	}
 
-	function applyGitDraftEditor(draft: StackFileEditorDraft) {
-		formComposePaths = [...draft.composePaths];
-		formComposePath = formComposePaths[0] || 'compose.yaml';
-		draftComposeContents = { ...draft.composeContents };
+	function applyGitWorkspaceDraft(draft: WorkspaceDraft) {
+		workspaceDraft = draft;
+		draftComposeContents = Object.fromEntries(Object.entries(draft.files).map(([path, content]) => [workspaceRepositoryPath(path), content]));
 		draftEditorDirty = true;
-		previewedComposePaths = [...draft.composePaths];
-		previewedComposeContents = { ...draft.composeContents };
-		previewedComposeContent = draft.composeContents[draft.composePaths[0]] ?? '';
+		previewedComposeContents = { ...draftComposeContents };
+		previewedComposeContent = draftComposeContents[formComposePaths[0] || formComposePath] ?? '';
+	}
+
+	function workspaceRepositoryPath(path: string) {
+		return workspaceRoot ? `${workspaceRoot}/${path}` : path;
+	}
+
+	/** Save choices from the workspace, keyed by repository path, applied when the stack deploys. */
+	let draftGitDecisions: Record<string, { decision: 'commit' | 'local'; message?: string }> = {};
+
+	/** Changed files without a recorded choice stay local; nothing reaches Git unless its save chose to push. */
+	function applyDraftGitDecisions(body: Record<string, unknown>, paths: string[]) {
+		const chosen = paths.flatMap((path) => draftGitDecisions[path] ? [[path, draftGitDecisions[path]] as const] : []);
+		body.editorDecisions = Object.fromEntries(chosen.map(([path, choice]) => [path, choice.decision]));
+		body.trackedDecision = 'internal';
+		body.untrackedDecision = 'local';
+		const messages = [...new Set(chosen.flatMap(([, choice]) => choice.decision === 'commit' && choice.message ? [choice.message] : []))];
+		if (messages.length) body.commitMessage = messages.join('\n');
+	}
+
+	/** Git state of a new stack's checkout files; files created in the draft are untracked. */
+	function checkoutGitState(path: string, type: 'file' | 'directory') {
+		const classifications = new Map(draftComposeClassifications.map((entry) => [entry.path, entry]));
+		if (type === 'file') {
+			const entry = classifications.get(workspaceRepositoryPath(path));
+			return { tracked: entry?.tracked === true, ignored: entry?.ignored === true };
+		}
+		const states = [...Object.keys(workspaceDraft.files), ...Object.keys(workspaceDraft.binaryFiles)]
+			.filter((file) => file.startsWith(`${path}/`))
+			.map((file) => classifications.get(workspaceRepositoryPath(file)));
+		if (states.some((entry) => entry?.tracked)) return { tracked: true, ignored: false, mixed: states.some((entry) => !entry?.tracked) };
+		return { tracked: false, ignored: states.length > 0 && states.every((entry) => entry?.ignored) };
+	}
+
+	// In-place conversion: the workspace overlays the selected project directory with the
+	// Git checkout. Git files replace same-path project files when the stack deploys; the
+	// project's other files are loaded on demand and edited before Compose runs.
+	type AdoptionOriginal = { type: 'file' | 'directory'; revision?: string; content?: string; contentBase64?: string };
+	let adoptionGitFiles = new Set<string>();
+	let adoptionGitFolders = new Set<string>();
+	let adoptionGitOriginals: Record<string, string> = {};
+	let adoptionLocalOriginals = new Map<string, AdoptionOriginal>();
+
+	function adoptionFilesUrl(path: string, content = false) {
+		const query = new URLSearchParams({ existingComposePath, path });
+		if (content) query.set('content', '1');
+		return appendEnvParam(`/api/stacks/${encodeURIComponent(adoptionTarget!.stackName)}/adoption-files?${query}`, effectiveEnvId);
+	}
+
+	function mergeAdoptionEntries(draft: WorkspaceDraft, entries: Array<{ path: string; type: 'file' | 'directory' }>, listed: string): WorkspaceDraft {
+		const next = { files: { ...draft.files }, binaryFiles: { ...draft.binaryFiles }, folders: [...draft.folders], pending: [...(draft.pending ?? [])], unlisted: (draft.unlisted ?? []).filter((path) => path !== listed) };
+		for (const entry of entries) {
+			if (adoptionLocalOriginals.has(entry.path)) continue;
+			adoptionLocalOriginals.set(entry.path, { type: entry.type });
+			if (entry.type === 'directory') {
+				if (!next.folders.includes(entry.path)) next.folders.push(entry.path);
+				next.unlisted.push(entry.path);
+			} else if (!adoptionGitFiles.has(entry.path)) next.pending.push(entry.path);
+		}
+		return next;
+	}
+
+	async function loadAdoptionDraftPath(path: string): Promise<WorkspaceDraft> {
+		const listing = workspaceDraft.unlisted?.includes(path);
+		const response = await fetch(adoptionFilesUrl(path, !listing));
+		const data = await response.json();
+		if (!response.ok) throw new Error(data.error || `Failed to load ${path}`);
+		if (listing) {
+			workspaceDraft = mergeAdoptionEntries(workspaceDraft, data.entries ?? [], path);
+			return workspaceDraft;
+		}
+		adoptionLocalOriginals.set(path, { type: 'file', revision: data.revision, content: data.content, contentBase64: data.contentBase64 });
+		workspaceDraft = {
+			...workspaceDraft,
+			files: data.binary ? workspaceDraft.files : { ...workspaceDraft.files, [path]: data.content },
+			binaryFiles: data.binary ? { ...workspaceDraft.binaryFiles, [path]: data.contentBase64 } : workspaceDraft.binaryFiles,
+			pending: workspaceDraft.pending?.filter((pendingPath) => pendingPath !== path)
+		};
+		return workspaceDraft;
+	}
+
+	function adoptionGitState(path: string, type: 'file' | 'directory') {
+		const localOnly = { tracked: false, ignored: true };
+		if (type === 'file') return adoptionGitFiles.has(path) ? { tracked: true, ignored: false } : localOnly;
+		if (!adoptionGitFolders.has(path)) return localOnly;
+		const mixed = [...adoptionLocalOriginals.keys()].some((local) => local.startsWith(`${path}/`) && !adoptionGitFiles.has(local) && !adoptionGitFolders.has(local));
+		return { tracked: true, ignored: false, mixed };
+	}
+
+	/** Project-file edits outside Git, as the difference between the draft and what was loaded. */
+	function adoptionLocalChanges() {
+		const draft = workspaceDraft;
+		const files = new Set([...Object.keys(draft.files), ...Object.keys(draft.binaryFiles), ...(draft.pending ?? [])]);
+		const folders = new Set([...draft.folders, ...(draft.unlisted ?? [])]);
+		for (const path of [...files, ...folders]) {
+			for (let index = path.indexOf('/'); index > 0; index = path.indexOf('/', index + 1)) folders.add(path.slice(0, index));
+		}
+		const writes: Array<{ path: string; content?: string; contentBase64?: string; expectedRevision?: string | null }> = [];
+		const expectedRevision = (path: string) => {
+			const original = adoptionLocalOriginals.get(path);
+			return original?.type === 'file' ? original.revision : null;
+		};
+		for (const [path, content] of Object.entries(draft.files)) {
+			if (adoptionGitFiles.has(path) || adoptionLocalOriginals.get(path)?.content === content) continue;
+			writes.push({ path, content, expectedRevision: expectedRevision(path) });
+		}
+		for (const [path, contentBase64] of Object.entries(draft.binaryFiles)) {
+			if (adoptionGitFiles.has(path) || adoptionLocalOriginals.get(path)?.contentBase64 === contentBase64) continue;
+			writes.push({ path, contentBase64, expectedRevision: expectedRevision(path) });
+		}
+		const deletions = [...adoptionLocalOriginals]
+			.filter(([path, original]) => !adoptionGitFiles.has(path) && (original.type === 'file' ? !files.has(path) : !folders.has(path)))
+			.map(([path, original]) => ({ path, expectedRevision: original.revision }));
+		const created = draft.folders.filter((path) => !adoptionLocalOriginals.has(path) && !adoptionGitFolders.has(path));
+		return writes.length || deletions.length || created.length ? { writes, deletions, folders: created } : null;
 	}
 
 	async function copyDraftCompose() {
@@ -637,6 +771,9 @@
 	let temporaryCloneRepositoryId = $state<number | null>(null);
 	let temporaryCloneBranch = $state<string | null>(null);
 	let draftEditorReady = $state(false);
+	let workspaceEnabled = $state(false);
+	let workspaceRoot = $state('');
+	let workspaceDraft = $state<WorkspaceDraft>({ files: {}, binaryFiles: {}, folders: [] });
 	let draftEditorDirty = $state(false);
 	let draftComposeContents = $state<Record<string, string>>({});
 	let draftComposeRevisions = $state<Record<string, string>>({});
@@ -1328,18 +1465,27 @@
 				}))
 			};
 			if (temporaryCloneToken && !gitStack) body.temporaryCloneToken = temporaryCloneToken;
-			if (!gitStack && draftEditorReady && draftEditorDirty) {
-				body.composeContents = draftComposeContents;
+			if (!gitStack && draftEditorReady && draftEditorDirty && isAdopting && existingComposePath) {
+				// Only changed checkout files go through Git; everything else is a project-file edit.
+				const gitChanges = Object.fromEntries(Object.entries(workspaceDraft.files)
+					.filter(([path, content]) => adoptionGitFiles.has(path) && adoptionGitOriginals[path] !== content)
+					.map(([path, content]) => [workspaceRepositoryPath(path), content]));
+				if (Object.keys(gitChanges).length > 0) {
+					body.composeContents = gitChanges;
+					body.editorRevisions = draftComposeRevisions;
+					body.editorClassifications = draftComposeClassifications.filter((entry) => entry.path in gitChanges);
+					applyDraftGitDecisions(body, Object.keys(gitChanges));
+				}
+				body.localChanges = adoptionLocalChanges();
+			} else if (!gitStack && draftEditorReady && draftEditorDirty) {
+				body.composeContents = workspaceEnabled
+					? Object.fromEntries(Object.entries(workspaceDraft.files).map(([path, content]) => [workspaceRepositoryPath(path), content]))
+					: draftComposeContents;
 				body.editorRevisions = draftComposeRevisions;
 				body.editorClassifications = draftComposeClassifications;
-				const commitChanges = window.confirm('Commit and push tracked configuration changes? Cancel keeps them local for this deployment.');
-				body.trackedDecision = commitChanges ? 'commit' : 'internal';
-				const addChanges = window.confirm('Add untracked configuration changes to Git? Cancel keeps them local.');
-				body.untrackedDecision = addChanges ? 'add' : 'local';
-				if (commitChanges || addChanges) {
-					body.commitMessage = window.prompt('Git commit message', `Update ${formStackName} configuration`) || undefined;
-				}
+				applyDraftGitDecisions(body, Object.keys(body.composeContents));
 			}
+			body.workspaceEnabled = workspaceEnabled;
 
 			if (isCentralizedMode) {
 				// Centralized: stack webhook only under force redeploy; schedules live on the repository.
@@ -1599,16 +1745,16 @@
 		class="max-w-none w-[calc(100vw-4rem)] h-[95vh] flex flex-col p-0 gap-0 shadow-xl border-zinc-200 dark:border-zinc-700 max-md:w-[calc(100vw-1rem)]! max-md:h-[calc(100dvh-1rem)]! max-md:max-w-none! max-md:max-h-[calc(100dvh-1rem)]! max-md:rounded-2xl! max-md:border! max-md:border-border!"
 		showCloseButton={false}
 	>
-		<Dialog.Header class="px-4 py-3 text-left sm:px-5 border-b border-zinc-200 dark:border-zinc-700 flex-shrink-0">
-			<div class="flex items-center justify-between">
-				<div class="flex items-center gap-3">
-					{#if gitStack}
+		<Dialog.Header class="min-h-32 px-4 py-3 text-left sm:px-8 sm:py-5 border-b border-zinc-200 dark:border-zinc-700 flex-shrink-0 max-md:pt-[max(0.75rem,env(safe-area-inset-top))]">
+			<div class="flex items-start justify-between gap-4">
+				<div class="flex min-w-0 items-start gap-3.5">
+					{#if gitStack && !readonly}
 						<button
 							type="button"
 							aria-label="Change stack icon"
 							title="Change stack icon"
 							onclick={() => (showIconPicker = true)}
-							class="p-1.5 rounded-md bg-zinc-200 dark:bg-zinc-700 hover:ring-2 hover:ring-primary transition-shadow"
+							class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-zinc-300 bg-zinc-100 dark:border-zinc-600 dark:bg-zinc-800 hover:ring-2 hover:ring-primary transition-shadow"
 						>
 							{#if formIcon}
 								<StackIcon icon={formIcon} stackName={gitStack.stackName} envId={effectiveEnvId} class="w-4 h-4 text-zinc-600 dark:text-zinc-300" />
@@ -1617,24 +1763,24 @@
 							{/if}
 						</button>
 					{:else}
-						<div class="p-1.5 rounded-md bg-zinc-200 dark:bg-zinc-700">
+						<div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-zinc-300 bg-zinc-100 dark:border-zinc-600 dark:bg-zinc-800">
 							<GitBranch class="w-4 h-4 text-zinc-600 dark:text-zinc-300" />
 						</div>
 					{/if}
-					<div>
-						<Dialog.Title class="text-sm font-semibold text-zinc-800 dark:text-zinc-100">
-							{isAdopting ? 'Convert to Git' : gitStack ? 'Edit git stack' : 'Deploy from Git'}
+					<div class="min-w-0">
+						<Dialog.Title class="truncate text-base font-semibold text-zinc-800 dark:text-zinc-100">
+							{isAdopting ? 'Convert to Git' : readonly ? 'Git stack settings' : gitStack ? 'Edit git stack' : 'Deploy from Git'}
 						</Dialog.Title>
-						<Dialog.Description class="text-xs text-zinc-500 dark:text-zinc-400">
-							{isAdopting ? (existingComposePath ? 'Reuse the running Compose project without moving its original files' : 'Take over the running Compose project from a Git repository') : gitStack ? 'Update git stack settings' : 'Deploy a compose stack from a Git repository'}
+						<Dialog.Description class="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+							{isAdopting ? (existingComposePath ? 'Reuse the running Compose project without moving its original files' : 'Take over the running Compose project from a Git repository') : readonly ? 'Viewing settings only' : gitStack ? 'Update git stack settings' : 'Deploy a compose stack from a Git repository'}
 						</Dialog.Description>
-						<div class="flex items-center gap-2 mt-1">
+						<div class="mt-2.5 flex flex-wrap items-center gap-2">
 							<Badge variant="outline" class="text-2xs py-0 px-1.5">
 								{gitStack
 									? (gitStack.engine === 'centralized' ? 'Centralized (shared clone)' : 'Per-stack clone')
 									: (isCentralizedMode ? 'Centralized (shared clone)' : 'Per-stack clone')}
 							</Badge>
-							{#if gitStack && gitStack.engine === 'stack'}
+							{#if gitStack && gitStack.engine === 'stack' && !readonly}
 								<Button size="sm" variant="outline" class="h-5 px-2 text-2xs" onclick={migrateStack} disabled={migrating}>
 									{#if migrating}<Loader2 class="w-3 h-3 animate-spin" />{/if}
 									Migrate to centralized
@@ -1649,7 +1795,7 @@
 					type="button"
 					aria-label="Close stack editor"
 					onclick={onClose}
-					class="p-1.5 rounded-md text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors"
+					class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-zinc-200 bg-zinc-50 text-zinc-500 transition-colors hover:border-zinc-300 hover:text-zinc-700 dark:border-zinc-700 dark:bg-zinc-800 dark:hover:text-zinc-300 max-md:h-11 max-md:w-11"
 				>
 					<X class="w-4 h-4" />
 				</button>
@@ -1658,18 +1804,19 @@
 
 		<!-- Stack views. A new Git stack gains Editor only after its first Compose load. -->
 		{#if gitStack || draftEditorReady}
-			<div class="flex items-center gap-1 overflow-x-auto border-b border-zinc-200 px-5 dark:border-zinc-700 flex-shrink-0">
+			<div class="flex flex-shrink-0 items-center overflow-x-auto border-b border-zinc-200 px-5 py-1.5 max-md:px-4 dark:border-zinc-700">
+			<div class="flex items-center gap-0.5 rounded-lg bg-muted/70 p-1" role="tablist" aria-label="Stack views">
 				{#if gitStack}
 				<button
 					type="button"
-					class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 px-3 max-md:px-2 py-2 text-sm transition-colors {activeTab === 'settings' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
+					class="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm transition-colors {activeTab === 'settings' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:bg-background/50 hover:text-foreground'}"
 					onclick={() => (activeTab = 'settings')}
 				>
 					<Settings2 class="h-3.5 w-3.5" /> Settings
 				</button>
 				<button
 					type="button"
-					class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 border-transparent px-3 max-md:px-2 py-2 text-sm text-muted-foreground transition-colors hover:text-foreground"
+					class="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-background/50 hover:text-foreground"
 					onclick={() => openStackView('editor')}
 				>
 					<Code class="h-3.5 w-3.5" /> Editor
@@ -1677,14 +1824,14 @@
 				{:else}
 				<button
 					type="button"
-					class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 px-3 max-md:px-2 py-2 text-sm transition-colors {activeTab === 'settings' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
+					class="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm transition-colors {activeTab === 'settings' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:bg-background/50 hover:text-foreground'}"
 					onclick={() => (activeTab = 'settings')}
 				>
 					<Settings2 class="h-3.5 w-3.5" /> Settings
 				</button>
 				<button
 					type="button"
-					class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 px-3 max-md:px-2 py-2 text-sm transition-colors {activeTab === 'editor' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
+					class="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm transition-colors {activeTab === 'editor' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:bg-background/50 hover:text-foreground'}"
 					onclick={() => (activeTab = 'editor')}
 				>
 					<Code class="h-3.5 w-3.5" /> Editor
@@ -1693,14 +1840,14 @@
 				{#if gitStack}
 				<button
 					type="button"
-					class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 border-transparent px-3 max-md:px-2 py-2 text-sm text-muted-foreground transition-colors hover:text-foreground"
+					class="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-background/50 hover:text-foreground"
 					onclick={() => openStackView('graph')}
 				>
 					<GitGraph class="h-3.5 w-3.5" /> Graph
 				</button>
 				<button
 					type="button"
-					class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 px-3 max-md:px-2 py-2 text-sm transition-colors {activeTab === 'deploys' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
+					class="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm transition-colors {activeTab === 'deploys' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:bg-background/50 hover:text-foreground'}"
 					onclick={() => (activeTab = 'deploys')}
 				>
 					<History class="h-3.5 w-3.5" /> Deploys
@@ -1714,10 +1861,10 @@
 						<Badge variant="secondary" class="ml-0.5 h-4 min-w-4 justify-center rounded-full px-1 text-[10px] tabular-nums">{deploysTally.total}</Badge>
 					{/if}
 				</button>
-				{#if $page.data.backupsEnabled}
+				{#if $page.data.backupsEnabled && !readonly}
 					<button
 						type="button"
-						class="relative -mb-px flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm transition-colors {activeTab === 'backups' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
+						class="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm transition-colors {activeTab === 'backups' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:bg-background/50 hover:text-foreground'}"
 						onclick={() => (activeTab = 'backups')}
 					>
 						<Archive class="h-3.5 w-3.5" /> Backups
@@ -1726,6 +1873,7 @@
 					</button>
 				{/if}
 				{/if}
+			</div>
 			</div>
 		{/if}
 
@@ -1741,10 +1889,17 @@
 			</div>
 		{:else if activeTab === 'deploys' && gitStack}
 			<div class="flex min-h-0 flex-1 flex-col p-5">
-				<DeploysPanel stackName={gitStack.stackName} envId={effectiveEnvId} reloadKey={deploysReloadKey} onTally={(t) => (deploysTally = t)} />
+				<DeploysPanel stackName={gitStack.stackName} envId={effectiveEnvId} reloadKey={deploysReloadKey} onTally={(t) => (deploysTally = t)} {readonly} />
 			</div>
 		{:else if activeTab === 'editor' && !gitStack && draftEditorReady}
+			<div class="flex min-h-11 items-center justify-end border-b px-4">
+				<label class="flex cursor-pointer items-center gap-2 rounded-md border px-2.5 py-1.5 text-xs text-muted-foreground"><input type="checkbox" class="accent-primary" bind:checked={workspaceEnabled} /> Enable Stack Workspace</label>
+			</div>
+			{#snippet stackConfigEditor()}
 			<div bind:this={containerRef} class="flex min-h-0 flex-1 flex-col {isDraggingSplit ? 'select-none' : ''}">
+				{#if !workspaceEnabled}
+					<p class="border-b px-4 py-2 text-xs text-muted-foreground">Preview compose here. Enable Stack Workspace to edit files.</p>
+				{/if}
 				<div class="flex items-center gap-1 border-b border-zinc-200 px-4 dark:border-zinc-700 md:hidden">
 					<button type="button" class="flex-1 py-2 text-sm {mobilePane === 'form' ? 'border-b-2 border-primary' : ''}" onclick={() => mobilePane = 'form'}><Code class="mr-1 inline h-3.5 w-3.5" />Compose</button>
 					<button type="button" class="flex-1 py-2 text-sm {mobilePane === 'vars' ? 'border-b-2 border-primary' : ''}" onclick={() => mobilePane = 'vars'}><FileText class="mr-1 inline h-3.5 w-3.5" />Variables</button>
@@ -1754,12 +1909,12 @@
 						<StackFileEditor
 							composePaths={formComposePaths}
 							composeContents={draftComposeContents}
+							readonly
 							{variableMarkers}
 							lintMarkers={draftValidateMarkers}
 							initialPath={draftActiveComposePath}
 							onActivePathChange={(path) => (draftActiveComposePath = path)}
 							onLintClick={() => (draftValidatePanelOpen = true)}
-							onChange={applyGitDraftEditor}
 						>
 							{#snippet headerActions()}
 								<Button variant="ghost" size="sm" class="h-7 px-2 text-xs text-muted-foreground" onclick={validateGitDraft} disabled={!draftActiveContent} title="Check this compose for problems before deploy">
@@ -1792,9 +1947,10 @@
 									</div>
 								</div>
 							</div>
-							<SecretProviderPicker bind:secretProviderId={formSecretProviderId} bind:envVars providers={secretProviders} />
+							{#if !workspaceEnabled}<SecretProviderPicker bind:secretProviderId={formSecretProviderId} bind:envVars providers={secretProviders} />{/if}
 							<StackEnvVarsPanel
 								bind:variables={envVars}
+								readonly={readonly || workspaceEnabled}
 								validation={envValidation}
 								{existingSecretKeys}
 								{injectedSecretKeys}
@@ -1806,12 +1962,21 @@
 					</div>
 				</div>
 			</div>
+			{/snippet}
+			{#if workspaceEnabled}
+				<StackWorkspace rootName={workspaceRoot.split('/').pop() || formStackName || 'stack'} draft={workspaceDraft} onDraftChange={applyGitWorkspaceDraft} loadDraftPath={isAdopting && existingComposePath ? loadAdoptionDraftPath : undefined} draftGitState={isAdopting && existingComposePath ? adoptionGitState : checkoutGitState} onDraftGitDecision={(path, decision, message) => draftGitDecisions[workspaceRepositoryPath(path)] = { decision: decision === 'push' ? 'commit' : 'local', message }} onStackConfigSelect={() => mobilePane = 'form'}>
+					{#snippet stackConfig()}{@render stackConfigEditor()}{/snippet}
+				</StackWorkspace>
+			{:else}
+				{@render stackConfigEditor()}
+			{/if}
 		{:else}
 
 		<div bind:this={containerRef} class="flex-1 min-h-0 flex max-md:flex-col {isDraggingSplit ? 'select-none' : ''}">
-			<!-- Left column: Form fields -->
+			<!-- Left column: Form fields. `inert` belongs on the content, never on the
+			     scroller or its ancestors: inert subtrees ignore wheel/touch scrolling. -->
 			<div class="flex min-w-0 flex-1 flex-col overflow-y-auto">
-				<div class="space-y-4 py-4 px-4 sm:px-6">
+				<div inert={readonly} class="space-y-4 py-4 px-4 sm:px-6">
 			<!-- Repository selection -->
 			{#if !gitStack}
 				<div class="space-y-3">
@@ -2077,7 +2242,7 @@
 							class="flex-1 max-md:h-11 font-mono text-xs"
 						/>
 						{#if existingComposePath}
-							<Button variant="outline" size="sm" type="button" title="Clear selection" class="shrink-0" onclick={() => { existingComposePath = ''; }}>
+							<Button variant="outline" size="sm" type="button" title="Clear selection" class="shrink-0" onclick={() => { existingComposePath = ''; if (draftEditorReady) void loadGitDraftEditor(); }}>
 								<X class="w-4 h-4" />
 							</Button>
 						{/if}
@@ -2103,7 +2268,7 @@
 			{#if gitStack?.stackName}
 				<div class="space-y-2">
 					<Label>Tags</Label>
-					<StackTagsSection stackName={gitStack.stackName} envId={effectiveEnvId} />
+					<StackTagsSection stackName={gitStack.stackName} envId={effectiveEnvId} {readonly} />
 				</div>
 			{/if}
 
@@ -2388,10 +2553,10 @@
 		{/if}
 
 		<Dialog.Footer class="px-5 py-2.5 border-t border-zinc-200 dark:border-zinc-700 flex-shrink-0 max-md:grid max-md:w-full max-md:grid-cols-2 max-md:gap-2 max-md:pb-[max(0.625rem,env(safe-area-inset-bottom))]">
-			<Button variant="outline" class="max-md:order-3 max-md:min-h-11 max-md:w-full" onclick={onClose}>{activeTab === 'backups' ? 'Close' : 'Cancel'}</Button>
+			<Button variant="outline" class="max-md:order-3 max-md:min-h-11 max-md:w-full" onclick={onClose}>{readonly || activeTab === 'backups' ? 'Close' : 'Cancel'}</Button>
 			<!-- The deploy-form save buttons belong to the Settings tab. On the Backups
 			     tab the backup panel manages its own saving, so only Close is shown. -->
-			{#if activeTab !== 'backups'}
+			{#if !readonly && activeTab !== 'backups'}
 				{#if gitStack}
 					<Button variant="outline" class="max-md:order-1 max-md:col-span-2 max-md:min-h-11 max-md:w-full" onclick={() => saveGitStack(true)} disabled={formSaving}>
 						{#if formSaving}
@@ -2501,7 +2666,7 @@
 	apiUrl={appendEnvParam('/api/stacks/host-files', effectiveEnvId)}
 	rootPath={existingComposeBrowseRoot.root}
 	initialPath={existingComposeBrowseRoot.path}
-	onSelect={(path) => { existingComposePath = path; }}
+	onSelect={(path) => { existingComposePath = path; if (draftEditorReady) void loadGitDraftEditor(); }}
 	onClose={() => showExistingComposeBrowser = false}
 />
 <!-- Git repository filesystem browser -->

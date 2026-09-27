@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { authorize } from '$lib/server/authorize';
 import { getGitCredential, getGitRepository } from '$lib/server/db';
@@ -56,6 +56,43 @@ function draftFileRevision(content: string): string {
 	return createHash('sha256').update(content, 'utf8').digest('hex');
 }
 
+function readDraftDirectory(root: string, directory: string) {
+	const normalized = directory ? normalizeDraftPath(directory) : '';
+	const target = normalized ? resolveSafeGitFileTarget(root, normalized) : root;
+	if (!lstatSync(target).isDirectory() || lstatSync(target).isSymbolicLink()) throw new Error('Draft directory is not available');
+	const files: Record<string, string> = {};
+	const binaryFiles: Record<string, string> = {};
+	const folders: string[] = [];
+	const repositoryPaths: string[] = [];
+
+	function visit(current: string, prefix: string) {
+		for (const entry of readdirSync(current, { withFileTypes: true })) {
+			if (entry.isSymbolicLink() || ['.git', 'node_modules', 'vendor', 'dist', 'build'].includes(entry.name)) continue;
+			const path = prefix ? `${prefix}/${entry.name}` : entry.name;
+			const absolutePath = resolve(current, entry.name);
+			if (entry.isDirectory()) {
+				folders.push(path);
+				visit(absolutePath, path);
+			} else if (entry.isFile()) {
+				const bytes = readFileSync(absolutePath);
+				if (bytes.byteLength > MAX_DRAFT_FILE_SIZE) continue;
+				const repositoryPath = normalized ? `${normalized}/${path}` : path;
+				repositoryPaths.push(repositoryPath);
+				try {
+					const content = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+					if (content.includes('\0')) throw new Error('binary');
+					files[path] = content;
+				} catch {
+					binaryFiles[path] = bytes.toString('base64');
+				}
+			}
+		}
+	}
+
+	visit(target, '');
+	return { files, binaryFiles, folders, repositoryPaths };
+}
+
 /** Read selected files from an authorized, repository-bound pending checkout. */
 export const GET: RequestHandler = async ({ params, url, cookies }) => {
 	const auth = await authorize(cookies);
@@ -70,8 +107,23 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 	const root = useSharedCheckout ? getRepoPath(repository.name) : getPendingGitClonePath(token!, repositoryId);
 	if (!root || !existsSync(root)) return json({ error: useSharedCheckout ? 'Shared repository checkout not found' : 'Pending repository checkout not found or expired' }, { status: 404 });
 	const rawPaths = [...url.searchParams.getAll('path'), ...url.searchParams.getAll('paths').flatMap((value) => value.split(','))];
-	if (rawPaths.length === 0) return json({ error: 'At least one draft file path is required' }, { status: 400 });
+	if (rawPaths.length === 0 && !url.searchParams.has('directory')) return json({ error: 'At least one draft file path is required' }, { status: 400 });
 	try {
+		if (url.searchParams.has('directory')) {
+			const draft = readDraftDirectory(root, url.searchParams.get('directory') ?? '');
+			const credential = repository.credentialId ? await getGitCredential(repository.credentialId) : null;
+			const classifications = await classifyGitFiles(root, draft.repositoryPaths, credential);
+			return json({
+				files: draft.files,
+				binaryFiles: draft.binaryFiles,
+				folders: draft.folders,
+				revisions: Object.fromEntries(Object.entries(draft.files).map(([path, content]) => {
+					const directory = url.searchParams.get('directory') ?? '';
+					return [directory ? `${directory}/${path}` : path, draftFileRevision(content)];
+				})),
+				classifications
+			});
+		}
 		const paths = [...new Set(rawPaths.map(normalizeDraftPath))];
 		const credential = repository.credentialId ? await getGitCredential(repository.credentialId) : null;
 		const classifications = await classifyGitFiles(root, paths, credential);

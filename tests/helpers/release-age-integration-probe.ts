@@ -61,6 +61,7 @@ const db = {
 };
 mock.module(root + 'db', () => db);
 mock.module(root + 'hawser', () => ({ sendEdgeRequest: noop, sendEdgeStreamRequest: noop, isEdgeConnected: () => false }));
+mock.module(root + 'hawser-stack-file-migration', () => ({ scheduleHawserStackFileMigrations: () => {} }));
 const metadataDatabase = phase === 'metadata-info-failure' ? new Database(':memory:') : null;
 if (metadataDatabase) {
 	metadataDatabase.exec('CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT)');

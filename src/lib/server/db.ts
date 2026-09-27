@@ -3133,11 +3133,14 @@ export interface StackSourceData {
 	stackName: string;
 	environmentId: number | null;
 	sourceType: StackSourceType;
+	fileLocation: 'dockhand' | 'hawser';
 	gitRepositoryId: number | null;
 	gitStackId: number | null;
 	composePath: string | null;
 	composePaths: string | null;
 	envPath: string | null;
+	/** Existing Dockhand-accessible project directory an adopted stack deploys in place; null for managed locations. */
+	projectDir: string | null;
 	secretProviderId: number | null;
 	icon: string | null;
 	createdAt: string;
@@ -3262,11 +3265,13 @@ export async function upsertStackSource(data: {
 	stackName: string;
 	environmentId?: number | null;
 	sourceType: StackSourceType;
+	fileLocation?: 'dockhand' | 'hawser';
 	gitRepositoryId?: number | null;
 	gitStackId?: number | null;
 	composePath?: string | null;
 	composePaths?: string[] | null;
 	envPath?: string | null;
+	projectDir?: string | null;
 	secretProviderId?: number | null;
 	icon?: string | null;
 }): Promise<StackSourceData> {
@@ -3291,11 +3296,13 @@ export async function upsertStackSource(data: {
 		await db.update(stackSources)
 			.set({
 				sourceType: data.sourceType,
+				fileLocation: data.fileLocation ?? existing.fileLocation,
 				gitRepositoryId: newRepoId,
 				gitStackId: newStackId,
 				composePath: primaryPath,
 				composePaths: pathsJson,
 				envPath: data.envPath ?? null,
+				...(data.projectDir !== undefined && { projectDir: data.projectDir }),
 				updatedAt: new Date().toISOString(),
 				// Preserve existing binding when caller (like git) omits it
 				...(data.secretProviderId !== undefined && { secretProviderId: data.secretProviderId }),
@@ -3310,11 +3317,13 @@ export async function upsertStackSource(data: {
 			stackName: data.stackName,
 			environmentId: data.environmentId ?? null,
 			sourceType: data.sourceType,
+			fileLocation: data.fileLocation ?? 'dockhand',
 			gitRepositoryId: data.gitRepositoryId || null,
 			gitStackId: data.gitStackId || null,
 			composePath: primaryPath,
 			composePaths: pathsJson,
 			envPath: data.envPath ?? null,
+			projectDir: data.projectDir ?? null,
 			secretProviderId: data.secretProviderId ?? null,
 			icon: data.icon ?? null
 		});
@@ -3325,16 +3334,21 @@ export async function upsertStackSource(data: {
 export async function updateStackSource(
 	stackName: string,
 	environmentId: number | null,
-updates: { composePath?: string | null; composePaths?: string[] | null; envPath?: string | null; secretProviderId?: number | null; icon?: string | null }
+	updates: { sourceType?: StackSourceType; fileLocation?: 'dockhand' | 'hawser'; gitRepositoryId?: number | null; gitStackId?: number | null; composePath?: string | null; composePaths?: string[] | null; envPath?: string | null; projectDir?: string | null; secretProviderId?: number | null; icon?: string | null }
 ): Promise<boolean> {
 	const existing = await getStackSource(stackName, environmentId);
 	if (!existing) return false;
 
 	await db.update(stackSources)
 		.set({
+			sourceType: updates.sourceType !== undefined ? updates.sourceType : existing.sourceType,
+			fileLocation: updates.fileLocation ?? existing.fileLocation,
+			gitRepositoryId: updates.gitRepositoryId !== undefined ? updates.gitRepositoryId : existing.gitRepositoryId,
+			gitStackId: updates.gitStackId !== undefined ? updates.gitStackId : existing.gitStackId,
 			composePath: updates.composePath !== undefined ? updates.composePath : (updates.composePaths?.[0] ?? existing.composePath),
 			composePaths: updates.composePaths !== undefined ? serializeComposePaths(updates.composePaths) : existing.composePaths,
 			envPath: updates.envPath !== undefined ? updates.envPath : existing.envPath,
+			projectDir: updates.projectDir !== undefined ? updates.projectDir : existing.projectDir,
 			secretProviderId: updates.secretProviderId !== undefined ? updates.secretProviderId : existing.secretProviderId,
 			icon: updates.icon !== undefined ? updates.icon : existing.icon,
 			updatedAt: new Date().toISOString()

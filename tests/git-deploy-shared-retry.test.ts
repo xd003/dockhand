@@ -33,6 +33,7 @@ beforeEach(() => {
 	});
 	registerDbFake('upsertStackSource', async () => {});
 	registerStacksFake('getStackDir', async () => '/tmp/stack');
+	registerStacksFake('isHawserConnection', () => false);
 	registerStacksFake('deployStack', async (opts: { forceRecreate?: boolean }) => {
 		deployCalls.push(opts);
 		return deployImpl();
@@ -47,6 +48,7 @@ const gitStack = (over: Partial<GitStackForDeploy> = {}): GitStackForDeploy => (
 	noBuildCache: false,
 	repullImages: false,
 	composePaths: null,
+	composePath: 'compose.yaml',
 	repositoryId: 1,
 	syncStatus: 'synced',
 	syncError: null,

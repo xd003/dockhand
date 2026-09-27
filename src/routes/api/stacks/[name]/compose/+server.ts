@@ -1,6 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getStackComposeFile, deployStack, saveStackComposeFile, requireComposeFile } from '$lib/server/stacks';
+import { getStackSource, updateStackSource } from '$lib/server/db';
 import { authorize } from '$lib/server/authorize';
 import { createJobResponse } from '$lib/server/sse';
 import { validateComposePathsInput, validateComposeContentsInput } from '$lib/server/compose-files';
@@ -10,7 +11,7 @@ import { hashComposeContent, hashEnvFingerprint } from '$lib/server/deploy-run-r
 // GET /api/stacks/[name]/compose - Get compose file content
 /**
  * @openapi
- * summary: Get a stack's compose file content plus its resolved compose/env paths
+ * summary: Get a stack's Compose content and file paths (Hawser paths are on the agent, not Dockhand)
  * path: name:string The stack name
  * query: env:integer Environment id the stack belongs to
  * resp-403: Permission denied (needs stacks:view)
@@ -192,6 +193,15 @@ export const PUT: RequestHandler = async ({ params, request, url, cookies }) => 
 					secrets: Object.values(effectiveEnvVars)
 				});
 			}
+			// Deploy with docker compose up -d --force-recreate.
+			// Force recreate ensures env var changes are applied.
+			// Update DB with multi-file staging paths if provided.
+			if (composePaths !== undefined && (await getStackSource(name, envIdNum))?.fileLocation !== 'hawser') {
+				await updateStackSource(name, envIdNum ?? null, {
+					composePaths: pathOptions?.composePaths ?? undefined
+				});
+			}
+			const deployComposePaths = composeInfo.composePaths ?? [];
 
 			// Deploy via SSE to keep connection alive during long operations
 			return createJobResponse(async (send) => {
@@ -234,6 +244,13 @@ export const PUT: RequestHandler = async ({ params, request, url, cookies }) => 
 		}
 
 		// No restart: the content is already persisted above.
+		// Preserve multi-file paths after save (mirrors restart path)
+		if (composePaths !== undefined && (await getStackSource(name, envIdNum))?.fileLocation !== 'hawser') {
+			await updateStackSource(name, envIdNum ?? null, {
+				composePaths: pathOptions?.composePaths ?? undefined
+			});
+		}
+
 		return json({ success: true });
 	} catch (error: any) {
 		console.error(`Error updating compose file for stack ${name}:`, error);

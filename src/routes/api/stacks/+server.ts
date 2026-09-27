@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
-import { listComposeStacks, deployStack, saveStackComposeFile, writeStackEnvFile, writeRawStackEnvFile, saveStackEnvVarsToDb } from '$lib/server/stacks';
+import { listComposeStacks, deployStack, saveStackComposeFile, writeStackEnvFile, writeRawStackEnvFile, saveStackEnvVarsToDb, isHawserConnection } from '$lib/server/stacks';
 import { EnvironmentNotFoundError, DockerConnectionError } from '$lib/server/docker';
-import { upsertStackSource, getStackSources, secretProviderExists } from '$lib/server/db';
+import { upsertStackSource, getStackSource, getStackComposePaths, getStackSources, getEnvironment, secretProviderExists } from '$lib/server/db';
 import { validateComposePathsInput, validateComposeContentsInput } from '$lib/server/compose-files';
 import { authorize } from '$lib/server/authorize';
 import { auditStack } from '$lib/server/audit';
@@ -174,53 +174,6 @@ export const POST: RequestHandler = async (event) => {
 			return json({ error: 'The selected secret provider no longer exists. Reopen the stack and pick a current provider.' }, { status: 400 });
 		}
 
-		// If start is false, only create the compose file without deploying
-		if (start === false) {
-			const result = await saveStackComposeFile(name, compose, true, envIdNum, {
-				composePath: effectiveComposePath || undefined,
-				composePaths: composePaths || undefined,
-				composeContents: composeContents || undefined,
-				envPath: envPath || undefined
-			});
-			if (!result.success) {
-				return json({ error: result.error }, { status: 400 });
-			}
-
-			// Save environment variables
-			// - rawEnvContent → .env file (non-secrets with comments)
-			// - secrets only → DB (for shell injection at runtime)
-			if (rawEnvContent) {
-				await writeRawStackEnvFile(name, rawEnvContent, envIdNum, envPath || undefined);
-			}
-			if (envVars && Array.isArray(envVars) && envVars.length > 0) {
-				const secrets = envVars.filter((v: any) => v.isSecret);
-				if (secrets.length > 0) {
-					await saveStackEnvVarsToDb(name, secrets, envIdNum);
-				}
-				// Fallback: if no rawEnvContent, generate .env from non-secret vars
-				if (!rawEnvContent) {
-					await writeStackEnvFile(name, envVars, envIdNum, envPath || undefined);
-				}
-			}
-
-			// Persist the path the file was actually written to (the default location
-			// when the caller omitted composePath), not null (#1515).
-			await upsertStackSource({
-				stackName: name,
-				environmentId: envIdNum,
-				sourceType: 'internal',
-				composePath: effectiveComposePath || result.composePath || undefined,
-				composePaths: composePaths || undefined,
-				envPath: envPath || undefined,
-				secretProviderId,
-			});
-
-			// Audit log
-			await auditStack(event, 'create', name, envIdNum);
-
-			return json({ success: true, started: false });
-		}
-
 		// ALWAYS save compose file first - deployStack expects it to exist
 		const saveResult = await saveStackComposeFile(name, compose, true, envIdNum, {
 			composePath: effectiveComposePath || undefined,
@@ -231,35 +184,42 @@ export const POST: RequestHandler = async (event) => {
 		if (!saveResult.success) {
 			return json({ error: saveResult.error }, { status: 400 });
 		}
-
 		// Save environment variables BEFORE deploying so they're available during start
-		if (rawEnvContent || (envVars && Array.isArray(envVars) && envVars.length > 0)) {
-			if (rawEnvContent) {
-				await writeRawStackEnvFile(name, rawEnvContent, envIdNum, envPath || undefined);
+		// - rawEnvContent → .env file (non-secrets with comments)
+		// - secrets only → DB (for shell injection at runtime)
+		if (rawEnvContent) {
+			await writeRawStackEnvFile(name, rawEnvContent, envIdNum, envPath || undefined);
+		}
+		if (envVars && Array.isArray(envVars) && envVars.length > 0) {
+			const secrets = envVars.filter((v: any) => v.isSecret);
+			if (secrets.length > 0) {
+				await saveStackEnvVarsToDb(name, secrets, envIdNum);
 			}
-			if (envVars && Array.isArray(envVars) && envVars.length > 0) {
-				const secrets = envVars.filter((v: any) => v.isSecret);
-				if (secrets.length > 0) {
-					await saveStackEnvVarsToDb(name, secrets, envIdNum);
-				}
-				// Fallback: if no rawEnvContent, generate .env from non-secret vars
-				if (!rawEnvContent) {
-					await writeStackEnvFile(name, envVars, envIdNum, envPath || undefined);
-				}
+			// Fallback: if no rawEnvContent, generate .env from non-secret vars
+			if (!rawEnvContent) {
+				await writeStackEnvFile(name, envVars, envIdNum, envPath || undefined);
 			}
 		}
 
 		// Record the stack in DB before deploying - ensures it exists even if deploy fails.
 		// Persist the actual written path (default location when composePath omitted), not null (#1515).
+		const savedSource = await getStackSource(name, envIdNum);
+		const remoteFiles = isHawserConnection(envIdNum ? await getEnvironment(envIdNum) : null);
 		await upsertStackSource({
 			stackName: name,
 			environmentId: envIdNum,
 			sourceType: 'internal',
-			composePath: effectiveComposePath || saveResult.composePath || undefined,
-			composePaths: composePaths || undefined,
-			envPath: envPath || undefined,
-			secretProviderId
+			composePath: saveResult.composePath || effectiveComposePath || undefined,
+			composePaths: remoteFiles ? (savedSource?.composePaths ? getStackComposePaths(savedSource) : undefined) : composePaths || undefined,
+			envPath: remoteFiles ? savedSource?.envPath : envPath || undefined,
+			secretProviderId,
 		});
+
+		// If start is false, only create the compose file without deploying
+		if (start === false) {
+			await auditStack(event, 'create', name, envIdNum);
+			return json({ success: true, started: false });
+		}
 
 		// This endpoint has no requireComposeFile() call to hash the way the
 		// dedicated deploy endpoint does -- compose and the effective env are

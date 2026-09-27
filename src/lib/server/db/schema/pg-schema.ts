@@ -375,11 +375,13 @@ export const stackSources = pgTable('stack_sources', {
 	stackName: text('stack_name').notNull(),
 	environmentId: integer('environment_id').references(() => environments.id, { onDelete: 'cascade' }),
 	sourceType: text('source_type').notNull().default('internal'),
+	fileLocation: text('file_location').$type<'dockhand' | 'hawser'>().notNull().default('dockhand'),
 	gitRepositoryId: integer('git_repository_id').references(() => gitRepositories.id, { onDelete: 'set null' }),
 	gitStackId: integer('git_stack_id').references(() => gitStacks.id, { onDelete: 'set null' }),
 	composePath: text('compose_path'), // Primary compose file path (denormalized from composePaths[0])
 	composePaths: text('compose_paths'), // JSON array of ordered compose file paths
 	envPath: text('env_path'), // Custom path to .env file (for stacks with non-default location)
+	projectDir: text('project_dir'), // Selected existing directory an adopted stack deploys in place (null = managed location)
 	secretProviderId: integer('secret_provider_id').references(() => secretProviders.id, { onDelete: 'set null' }),
 	// Names (no values) of secret keys injected from the bound provider on the last
 	// deploy, so container inspect can mask them without a live provider call.

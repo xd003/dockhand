@@ -366,6 +366,7 @@
 	// Working paths: what we're currently editing (always strings, never null)
 	let workingComposePath = $state('');
 	let workingEnvPath = $state('');
+	let localStackDir = $state('');
 
 	// Multi compose paths (ordered list)
 	let workingComposePaths = $state<string[]>([]);
@@ -626,7 +627,9 @@
 	);
 
 	// Derived: display path for env (actual or suggested)
-	const displayEnvPath = $derived(workingEnvPath || suggestedEnvPath || '');
+	const displayEnvPath = $derived(
+		mode === 'create' && !newStackName.trim() ? '' : (workingEnvPath || suggestedEnvPath || '')
+	);
 
 	// Path change confirmation dialog state
 	let showPathChangeConfirm = $state(false);
@@ -1479,6 +1482,7 @@
 	);
 	const gitStackId = $derived(stackSource?.gitStack?.id ?? null);
 	const activeComposeDisplayPath = $derived(activeComposePath || workingComposePaths[0] || workingComposePath || '');
+	const composePathForDisplay = $derived(mode === 'create' && !newStackName.trim() ? '' : activeComposeDisplayPath);
 
 	function shortGitUrl(url: string): string {
 		return url.replace(/^https?:\/\/(www\.)?github\.com\//, '').replace(/\.git$/, '');
@@ -1651,6 +1655,7 @@
 		loadError = null;
 		error = null;
 		needsFileLocation = false;
+		localStackDir = '';
 
 		try {
 			const envId = $currentEnvironment?.id ?? null;
@@ -1741,6 +1746,7 @@
 			// Set working paths
 			workingComposePath = data.composePath || '';
 			workingEnvPath = data.envPath || '';
+			localStackDir = data.stackDir || '';
 			// The compose endpoint returns resolved paths as an array; retain support
 			// for the persisted JSON string used by older responses.
 			if (Array.isArray(data.composePaths)) {
@@ -2927,6 +2933,7 @@
 								composeContents={{ ...composeContents, ...(activeComposePath ? { [activeComposePath]: composeContent } : {}) }}
 								readonly={readonly}
 								initialPath={activeComposeDisplayPath}
+								displayPath={composePathForDisplay}
 								onActivePathChange={switchComposeFile}
 								onChange={applyEditorDraft}
 								variableMarkers={variableMarkers}
@@ -2961,13 +2968,12 @@
 						<div class="w-1 flex-shrink-0 cursor-col-resize bg-zinc-200 transition-colors hover:bg-blue-400 dark:bg-zinc-700 dark:hover:bg-blue-500 max-md:hidden" role="separator" aria-orientation="vertical" onmousedown={startSplitDrag} tabindex="0"></div>
 							<div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden {mobilePane === 'vars' ? 'max-md:flex-1' : 'max-md:hidden'}">
 							<div class="flex min-h-0 flex-1 flex-col px-4 py-4 sm:px-8 sm:py-6">
-								{#if !isGitView}<SecretProviderPicker bind:secretProviderId={formSecretProviderId} bind:envVars providers={secretProviders} onchange={() => { markDirty(); debouncedValidate(); }} />{/if}
 								<div class="mb-5 flex items-center gap-3 rounded-lg border border-zinc-200 bg-zinc-50 px-3.5 py-3 dark:border-zinc-700 dark:bg-zinc-800/40">
 									<FileText class="h-4 w-4 shrink-0 text-muted-foreground" />
 									<div class="min-w-0 flex-1">
 										<div class="text-[11px] text-muted-foreground">Env file</div>
 										<div class="truncate font-mono text-xs text-zinc-600 dark:text-zinc-300" title={displayEnvPath}>
-											{displayEnvPath || 'Enter stack name above'}
+											{displayEnvPath || 'Enter a stack name to preview the path'}
 										</div>
 									</div>
 									{#if mode === 'create' && !isGitView && !hawserFiles}
@@ -2990,6 +2996,7 @@
 										{/if}
 									</button>
 								</div>
+								{#if !isGitView}<SecretProviderPicker bind:secretProviderId={formSecretProviderId} bind:envVars providers={secretProviders} onchange={() => { markDirty(); debouncedValidate(); }} />{/if}
 								<StackEnvVarsPanel bind:this={envVarsPanelRef} bind:variables={envVars} bind:rawContent={rawEnvContent} validation={effectiveValidation} existingSecretKeys={mode === 'edit' ? existingSecretKeys : new Set()} injectedSecretKeys={mode === 'edit' ? injectedSecretKeys : []} providerType={selectedProviderType} providerName={selectedProviderName} providerBound={selectedProviderBound} {probeError} {providerKeySet} readonly={readonly && !isGitView} onchange={() => { markDirty(); debouncedValidate(); }} theme={editorTheme} infoText={isGitView ? "Repository values are read-only defaults. Changed, new, and secret values are saved as Dockhand overrides and applied on the next deploy." : "These variables will be written to a .env file in the stack directory and passed to the compose command."} class="min-h-0 flex-1" />
 							</div>
 						</div>
@@ -3294,7 +3301,7 @@
 										<div class="min-w-0 flex-1">
 											<div class="text-[11px] text-muted-foreground">{isGitView ? 'Repository env file' : 'Env file'}</div>
 											<div class="truncate font-mono text-xs text-zinc-600 dark:text-zinc-300" title={displayEnvPath}>
-												{displayEnvPath || (mode === 'create' ? 'Enter stack name above' : 'Not specified')}
+												{displayEnvPath || (mode === 'create' ? 'Enter a stack name to preview the path' : 'Not specified')}
 											</div>
 										</div>
 										{#if mode === 'create' && !isGitView && !hawserFiles}

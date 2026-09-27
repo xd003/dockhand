@@ -53,6 +53,7 @@ import {
 	type GitEngine
 } from './git';
 import { deployStackFromSync } from './git-deploy-shared';
+import { withGitRepositoryMutationLock } from './git-stack-files';
 import { withStackLock } from './stacks';
 
 // Generous per-clone bound: a frozen network/SSH connection must not wedge the
@@ -302,7 +303,7 @@ export async function syncRepositoryExclusive(repoId: number): Promise<SyncResul
 		console.log(`[Git] Waiting for in-flight sync of repository ${repoId}...`);
 		return existing;
 	}
-	const promise = repoSyncSemaphore.run(() => syncRepository(repoId)).finally(() => {
+	const promise = repoSyncSemaphore.run(() => withGitRepositoryMutationLock(repoId, () => syncRepository(repoId))).finally(() => {
 		repoSyncInFlight.delete(repoId);
 	});
 	repoSyncInFlight.set(repoId, promise);

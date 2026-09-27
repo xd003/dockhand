@@ -2205,7 +2205,7 @@ let gitMigratingStackId = $state<number | null>(null);
 								<div class="grid grid-cols-2 gap-2">
 									{#if (stack.status === 'not deployed' || stack.status === 'created') && source.gitStack}
 										{#if $canAccess('stacks', 'edit')}
-											<button type="button" onclick={() => openGitModal(source.gitStack)} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><Pencil class="size-4" />Edit Git stack</button>
+											<button type="button" onclick={() => openGitModal(source.gitStack)} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><Pencil class="size-4" />Edit Git settings</button>
 										{/if}
 										<GitDeployProgressPopover stackId={source.gitStack.id} stackName={stack.name} onComplete={fetchStacks}>
 											{#snippet children()}
@@ -2224,7 +2224,9 @@ let gitMigratingStackId = $state<number | null>(null);
 											<button type="button" onclick={() => migrateGitStackFromList(source.gitStack)} disabled={gitMigratingStackId === source.gitStack.id} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted disabled:opacity-50"><ArrowRightCircle class="size-4" />Migrate Git mode</button>
 										{/if}
 										{#if $canAccess('stacks', 'edit')}
-											<button type="button" onclick={() => source.sourceType === 'git' && source.gitStack ? openGitModal(source.gitStack) : editStack(stack.name)} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><Pencil class="size-4" />Edit</button>
+											<button type="button" onclick={() => source.sourceType === 'git' && source.gitStack ? openGitModal(source.gitStack) : editStack(stack.name)} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><Pencil class="size-4" />{source.sourceType === 'git' ? 'Edit Git settings' : 'Edit'}</button>
+											{#if source.sourceType === 'git' && source.gitStack}
+											{/if}
 										{/if}
 										{#if stack.containers.length > 0}
 											<button type="button" onclick={() => viewStackLogs(stack)} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><ScrollText class="size-4" />View logs</button>
@@ -2746,14 +2748,14 @@ let gitMigratingStackId = $state<number | null>(null);
 											{/if}
 										</button>
 									{/if}
-									<button
-										type="button"
-										onclick={(e) => { e.stopPropagation(); openGitModal(source.gitStack); }}
+											<button
+												type="button"
+												onclick={(e) => { e.stopPropagation(); openGitModal(source.gitStack); }}
 										title="Edit git stack"
 										class="p-1 rounded hover:bg-muted transition-colors opacity-70 hover:opacity-100 cursor-pointer"
 									>
-										<Pencil class="grid-action-icon grid-action-edit text-muted-foreground hover:text-purple-500" />
-									</button>
+												<Pencil class="grid-action-icon grid-action-edit text-muted-foreground hover:text-purple-500" />
+											</button>
 								{:else}
 									<!-- Internal stacks (including those needing file location) -->
 									<button

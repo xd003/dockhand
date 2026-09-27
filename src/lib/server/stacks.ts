@@ -2773,7 +2773,7 @@ export async function stopStack(
  *
  * Falls back to individual container restart for stacks without compose files.
  */
-export async function restartStack(
+async function restartStackUnlocked(
 	stackName: string,
 	envId?: number | null,
 	mode: 'restart' | 'ordered' | 'recreate' = 'restart',
@@ -2820,6 +2820,15 @@ export async function restartStack(
 	await cleanupOrphanStackContainers(stackName, envId, 'restart');
 
 	return composeResult;
+}
+
+export async function restartStack(
+	stackName: string,
+	envId?: number | null,
+	mode: 'restart' | 'ordered' | 'recreate' = 'restart',
+	onLine?: (line: string) => void
+): Promise<StackOperationResult> {
+	return withStackLock(stackName, () => restartStackUnlocked(stackName, envId, mode, onLine));
 }
 
 /**

@@ -1,12 +1,11 @@
 <script lang="ts">
-	import { tick, type Snippet } from 'svelte';
+	import { tick } from 'svelte';
 	import { Button } from '$lib/components/ui/button';
 	import StackEnvVarsEditor, { type EnvVar, type ValidationResult } from '$lib/components/StackEnvVarsEditor.svelte';
 	import CodeEditor from '$lib/components/CodeEditor.svelte';
 	import ConfirmPopover from '$lib/components/ConfirmPopover.svelte';
-	import { Plus, Upload, Trash2, List, FileText, AlertTriangle, ShieldAlert, HelpCircle, Info, Check, KeyRound } from 'lucide-svelte';
+	import { Plus, Upload, Trash2, List, FileText, ShieldAlert, HelpCircle, Info } from 'lucide-svelte';
 	import * as Tooltip from '$lib/components/ui/tooltip';
-	import { getProviderIcon } from '$lib/components/provider-icons';
 	import { providerTypeLabel } from '../../routes/settings/secrets/ProviderModal.svelte';
 	import { effectiveMissing, isInlineProviderRef } from '$lib/utils/invault-markers';
 	import { parseRawContent, generateRawContent, keysInRawContent, mergeParsedIntoVariables, textEditorContent as deriveTextEditorContent } from '$lib/utils/env-panel-core';
@@ -39,11 +38,9 @@
 		/** Key NAMES the live probe found in the bound provider (present RIGHT NOW).
 		 *  These are not "missing" even without a local value. Empty on probe failure. */
 		providerKeySet?: Set<string>;
-		showInterpolationHint?: boolean;
 		theme?: 'light' | 'dark';
 		class?: string;
 		onchange?: () => void;
-		headerActions?: Snippet;
 	}
 
 	let {
@@ -63,11 +60,9 @@
 		providerBound = true,
 		probeError = null,
 		providerKeySet = new Set<string>(),
-		showInterpolationHint = false,
 		theme = 'dark',
 		class: className = '',
-		onchange,
-		headerActions
+		onchange
 	}: Props = $props();
 
 
@@ -307,80 +302,58 @@
 </script>
 
 <div class="flex flex-col h-full {className}">
-	<!-- Header -->
-	<div class="px-4 py-2.5 border-b border-zinc-200 dark:border-zinc-700 flex flex-col gap-1.5">
-		<!-- Header row: title + info + view toggle + validation pills + actions -->
-		<div class="flex items-center gap-2 justify-between">
-			<div class="flex items-center gap-2 flex-wrap min-w-0">
-				<span class="text-xs text-zinc-500 dark:text-zinc-400 shrink-0">Environment variables</span>
-			{#if infoText}
+	<div class="mb-3 flex flex-col gap-2">
+		<div class="flex items-center justify-between gap-2">
+			<div class="flex flex-wrap items-center gap-2 min-w-0">
+				<div class="flex items-center gap-0.5 rounded bg-zinc-100 p-0.5 dark:bg-zinc-800">
+					<button type="button" class="flex items-center gap-1 rounded px-1.5 py-0.5 text-2xs transition-colors {viewMode === 'form' ? 'bg-white text-zinc-800 shadow-sm dark:bg-zinc-700 dark:text-zinc-100' : 'text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200'}" onclick={() => handleViewModeChange('form')} title="Form view">
+						<List class="h-3 w-3" />
+					</button>
+					<button type="button" class="flex items-center gap-1 rounded px-1.5 py-0.5 text-2xs transition-colors {viewMode === 'text' ? 'bg-white text-zinc-800 shadow-sm dark:bg-zinc-700 dark:text-zinc-100' : 'text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200'}" onclick={() => handleViewModeChange('text')} title="Text view">
+						<FileText class="h-3 w-3" />
+					</button>
+				</div>
+				{#if effectiveValidation}
+					<div class="flex flex-wrap gap-1">
+						{#if effectiveValidation.missing.length > 0}
+							<span class="inline-flex items-center rounded bg-red-100 px-1.5 py-0.5 text-2xs font-medium text-red-700 dark:bg-red-900/30 dark:text-red-300">{effectiveValidation.missing.length} missing</span>
+						{/if}
+						{#if effectiveValidation.required.length > 0}
+							<span class="inline-flex items-center rounded bg-green-100 px-1.5 py-0.5 text-2xs font-medium text-green-700 dark:bg-green-900/30 dark:text-green-300">{effectiveValidation.required.length - effectiveValidation.missing.length} defined</span>
+						{/if}
+					</div>
+				{/if}
+			</div>
+			<div class="flex items-center gap-1 shrink-0">
+				{#if infoText}
+					<Tooltip.Root>
+						<Tooltip.Trigger><HelpCircle class="h-3.5 w-3.5 cursor-help text-muted-foreground" /></Tooltip.Trigger>
+						<Tooltip.Content class="max-w-xs text-xs">{@html infoText}</Tooltip.Content>
+					</Tooltip.Root>
+				{/if}
 				<Tooltip.Root>
 					<Tooltip.Trigger>
-						<HelpCircle class="w-3.5 h-3.5 text-muted-foreground cursor-help shrink-0" />
+						<button type="button" class="flex h-7 w-7 items-center justify-center rounded-md border border-zinc-200 text-muted-foreground hover:text-foreground dark:border-zinc-700" aria-label="Show syntax legend">
+							<HelpCircle class="h-3.5 w-3.5" />
+						</button>
 					</Tooltip.Trigger>
-					<Tooltip.Content>
-						<div class="w-80">
-							<p class="text-xs text-left">{@html infoText}</p>
+					<Tooltip.Content class="max-w-xs">
+						<div class="space-y-1.5 text-xs">
+							<p><code>${'{VAR}'}</code> — required</p>
+							<p><code>${'{VAR:-default}'}</code> — optional</p>
+							<p><code>${'{VAR:?error}'}</code> — required w/ error</p>
 						</div>
 					</Tooltip.Content>
 				</Tooltip.Root>
-			{/if}
-			<!-- View mode toggle -->
-			<div class="flex items-center gap-0.5 bg-zinc-100 dark:bg-zinc-800 rounded p-0.5 shrink-0">
-				<button
-					type="button"
-					class="flex items-center gap-1 px-1.5 py-0.5 rounded text-2xs transition-colors {viewMode === 'form' ? 'bg-white dark:bg-zinc-700 text-zinc-800 dark:text-zinc-100 shadow-sm' : 'text-zinc-500 dark:text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200'}"
-					onclick={() => handleViewModeChange('form')}
-					title="Form view"
-				>
-					<List class="w-3 h-3" />
-				</button>
-				<button
-					type="button"
-					class="flex items-center gap-1 px-1.5 py-0.5 rounded text-2xs transition-colors {viewMode === 'text' ? 'bg-white dark:bg-zinc-700 text-zinc-800 dark:text-zinc-100 shadow-sm' : 'text-zinc-500 dark:text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200'}"
-					onclick={() => handleViewModeChange('text')}
-					title="Text view (raw .env file)"
-				>
-					<FileText class="w-3 h-3" />
-				</button>
-			</div>
-			<!-- Validation status pills -->
-			{#if effectiveValidation}
-				<div class="flex gap-1 flex-wrap">
-					{#if effectiveValidation.missing.length > 0}
-						<span class="inline-flex items-center px-1.5 py-0.5 rounded text-2xs font-medium bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300">
-							{effectiveValidation.missing.length} missing
-						</span>
-					{/if}
-					{#if effectiveValidation.required.length > 0}
-						<span class="inline-flex items-center px-1.5 py-0.5 rounded text-2xs font-medium bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300">
-							{effectiveValidation.required.length - effectiveValidation.missing.length} defined
-						</span>
-					{/if}
-					{#if effectiveValidation.optional.length > 0}
-						<span class="inline-flex items-center px-1.5 py-0.5 rounded text-2xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">
-							{effectiveValidation.optional.length} optional
-						</span>
-					{/if}
-				</div>
-			{/if}
-			</div>
-			<!-- Actions - right-aligned -->
-			{#if !readonly}
-				<div class="flex items-center gap-1 shrink-0">
-					{#if headerActions}
-						{@render headerActions()}
-					{/if}
-					<Button type="button" size="sm" variant="ghost" onclick={handleLoadFromFile} class="h-6 text-xs px-2">
-						<Upload class="w-3.5 h-3.5" />
+				{#if !readonly}
+					<Button type="button" size="sm" variant="ghost" onclick={handleLoadFromFile} class="h-7 px-2 text-xs">
+						<Upload class="h-3.5 w-3.5" />
 						Load
 					</Button>
-					{#if viewMode === 'form'}
-						<Button type="button" size="sm" variant="ghost" onclick={addEnvVariable} class="h-6 text-xs px-2">
-							<Plus class="w-3.5 h-3.5" />
-							Add
-						</Button>
-					{/if}
+					<Button type="button" size="sm" variant="ghost" onclick={addEnvVariable} class="h-7 px-2 text-xs">
+						<Plus class="h-3.5 w-3.5" />
+						Add
+					</Button>
 					<ConfirmPopover
 						bind:open={confirmClearOpen}
 						title="Clear all variables?"
@@ -395,179 +368,77 @@
 								type="button"
 								size="sm"
 								variant="ghost"
-								class="h-6 text-xs px-2 {hasContent ? 'text-destructive hover:text-destructive' : 'text-muted-foreground/50 cursor-not-allowed'}"
+								class="h-7 px-2 text-xs {hasContent ? 'text-destructive hover:text-destructive' : 'text-muted-foreground/50 cursor-not-allowed'}"
 								disabled={!hasContent}
 							>
-								<Trash2 class="w-3.5 h-3.5" />
+								<Trash2 class="h-3.5 w-3.5" />
 								Clear
 							</Button>
 						{/snippet}
 					</ConfirmPopover>
-				</div>
-				<input
-					bind:this={fileInputRef}
-					type="file"
-					accept=".env,.env.*,text/plain"
-					class="hidden"
-					onchange={handleFileSelect}
-				/>
-			{/if}
+				{/if}
+			</div>
 		</div>
-		<!-- Help text -->
-		{#if viewMode === 'form'}
-			{#if showInterpolationHint}
-				<div class="flex items-start gap-2 px-2.5 py-2 rounded bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800/50">
-					<Info class="w-4 h-4 text-blue-500 shrink-0 mt-0.5" />
-					<p class="text-xs text-blue-700 dark:text-blue-300">
-						These variables are available for <strong>compose file interpolation</strong> using <code class="bg-blue-100 dark:bg-blue-800/40 px-1 rounded">${'{VAR_NAME}'}</code> syntax.
-						To pass them to containers, reference them in the compose file's <code class="bg-blue-100 dark:bg-blue-800/40 px-1 rounded">environment:</code> section.
-					</p>
-				</div>
-			{/if}
-			<div class="flex flex-wrap gap-x-3 gap-y-0.5 text-2xs text-zinc-400 dark:text-zinc-500 font-mono">
-				<span><span class="text-zinc-500 dark:text-zinc-400">${`{VAR}`}</span> required</span>
-				<span><span class="text-zinc-500 dark:text-zinc-400">${`{VAR:-default}`}</span> optional</span>
-				<span><span class="text-zinc-500 dark:text-zinc-400">${`{VAR:?error}`}</span> required w/ error</span>
-			</div>
-		{:else if showInterpolationHint && secretCount > 0}
-			<!-- Interpolation hint + secrets hint combined for text view -->
-			<div class="flex flex-col gap-1.5">
-				<div class="flex items-start gap-2 px-2.5 py-2 rounded bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800/50">
-					<Info class="w-4 h-4 text-blue-500 shrink-0 mt-0.5" />
-					<p class="text-xs text-blue-700 dark:text-blue-300">
-						These variables are available for <strong>compose file interpolation</strong> using <code class="bg-blue-100 dark:bg-blue-800/40 px-1 rounded">${'{VAR_NAME}'}</code> syntax.
-						To pass them to containers, reference them in the compose file's <code class="bg-blue-100 dark:bg-blue-800/40 px-1 rounded">environment:</code> section.
-					</p>
-				</div>
-				<div class="flex items-start gap-2 px-2.5 py-2 rounded bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/50">
-					<ShieldAlert class="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
-					<div class="text-xs text-amber-700 dark:text-amber-300">
-						<span class="font-medium">{secretCount} secret{secretCount === 1 ? '' : 's'} not shown.</span>
-						<span class="text-amber-600 dark:text-amber-400">Secrets are never written to disk and are injected via shell environment when the stack starts.</span>
-					</div>
-				</div>
-			</div>
-		{:else if showInterpolationHint}
-			<!-- Interpolation hint only (no secrets) -->
-			<div class="flex items-start gap-2 px-2.5 py-2 rounded bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800/50">
-				<Info class="w-4 h-4 text-blue-500 shrink-0 mt-0.5" />
-				<p class="text-xs text-blue-700 dark:text-blue-300">
-					These variables are available for <strong>compose file interpolation</strong> using <code class="bg-blue-100 dark:bg-blue-800/40 px-1 rounded">${'{VAR_NAME}'}</code> syntax.
-					To pass them to containers, reference them in the compose file's <code class="bg-blue-100 dark:bg-blue-800/40 px-1 rounded">environment:</code> section.
-				</p>
-			</div>
-		{:else if secretCount > 0}
-			<!-- Text view hint about secrets (only shown when secrets exist) -->
-			<div class="flex items-start gap-2 px-2.5 py-2 rounded bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/50">
-				<ShieldAlert class="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
-				<div class="text-xs text-amber-700 dark:text-amber-300">
-					<span class="font-medium">{secretCount} secret{secretCount === 1 ? '' : 's'} not shown.</span>
-					<span class="text-amber-600 dark:text-amber-400">Secrets are never written to disk and are injected via shell environment when the stack starts.</span>
-				</div>
+		{#if viewMode === 'text' && secretCount > 0}
+			<div class="flex items-start gap-2 rounded border border-amber-200 bg-amber-50 px-2.5 py-2 text-xs text-amber-700 dark:border-amber-800/50 dark:bg-amber-900/20 dark:text-amber-300">
+				<ShieldAlert class="h-4 w-4 shrink-0" />
+				{secretCount} secret{secretCount === 1 ? '' : 's'} not shown. Secrets are injected at deploy and never written to disk.
 			</div>
 		{/if}
-		<!-- Provider-reference placement hint: inline refs only resolve here, not in compose environment: -->
 		{#if hasProviderReference}
-			<div class="flex items-start gap-2 px-2.5 py-2 rounded bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/50">
-				<Info class="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
-				<p class="text-xs text-amber-700 dark:text-amber-300">
-					A secret-provider reference (<code class="bg-amber-100 dark:bg-amber-800/40 px-1 rounded">op://</code>, <code class="bg-amber-100 dark:bg-amber-800/40 px-1 rounded">keepass://</code>, <code class="bg-amber-100 dark:bg-amber-800/40 px-1 rounded">azurekv://</code>, <code class="bg-amber-100 dark:bg-amber-800/40 px-1 rounded">pass://</code>) is resolved <strong>here</strong>, in the stack's environment. It is <strong>not</strong> resolved when written directly in a compose <code class="bg-amber-100 dark:bg-amber-800/40 px-1 rounded">environment:</code> block - reference the variable there with <code class="bg-amber-100 dark:bg-amber-800/40 px-1 rounded">${'{VAR}'}</code> instead.
-				</p>
+			<div class="flex items-start gap-2 rounded border border-amber-200 bg-amber-50 px-2.5 py-2 text-xs text-amber-700 dark:border-amber-800/50 dark:bg-amber-900/20 dark:text-amber-300">
+				<Info class="h-4 w-4 shrink-0" />
+				Provider references resolve in the stack environment, not directly in a Compose <code>environment:</code> block. Reference the variable there using <code>${'{VAR}'}</code>.
 			</div>
 		{/if}
-		<!-- Parse warnings (form mode only) -->
 		{#if viewMode === 'form' && parseWarnings.length > 0}
-			<div class="flex items-start gap-2 px-2 py-1.5 rounded bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/50">
-				<AlertTriangle class="w-3.5 h-3.5 text-amber-500 shrink-0 mt-0.5" />
-				<div class="text-2xs text-amber-700 dark:text-amber-300">
-					<span class="font-medium">Some lines couldn't be parsed:</span>
-					<ul class="mt-0.5 list-disc list-inside">
-						{#each parseWarnings.slice(0, 3) as warning}
-							<li>{warning}</li>
-						{/each}
-						{#if parseWarnings.length > 3}
-							<li>...and {parseWarnings.length - 3} more</li>
-						{/if}
-					</ul>
-					<p class="mt-1 text-amber-600 dark:text-amber-400">Switch to text view to edit these lines.</p>
+			<div class="rounded border border-amber-200 bg-amber-50 px-2.5 py-2 text-xs text-amber-700 dark:border-amber-800/50 dark:bg-amber-900/20 dark:text-amber-300">
+				Some lines couldn't be parsed:
+				<ul class="list-inside list-disc">
+					{#each parseWarnings.slice(0, 3) as warning}<li>{warning}</li>{/each}
+					{#if parseWarnings.length > 3}<li>...and {parseWarnings.length - 3} more</li>{/if}
+				</ul>
+				Switch to text view to edit these lines.
+			</div>
+		{/if}
+		{#if injectedSecretKeys.length > 0}
+			<div class="rounded border px-2.5 py-2 text-xs {providerBound ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800/50 dark:bg-emerald-900/20 dark:text-emerald-300' : 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800/50 dark:bg-amber-900/20 dark:text-amber-300'}">
+				{#if providerBound}
+					<strong>{injectedSecretKeys.length} secret{injectedSecretKeys.length === 1 ? '' : 's'} loaded</strong>
+					from {providerType ? providerTypeLabel(providerType) : 'the provider'}{providerName ? ` · ${providerName}` : ''} at last deploy, never written to <code>.env</code>.
+				{:else}
+					<strong>No secret provider is bound.</strong> These {injectedSecretKeys.length} secret{injectedSecretKeys.length === 1 ? ' was' : 's were'} injected at last deploy; the next deploy will drop {injectedSecretKeys.length === 1 ? 'it' : 'them'}. Reselect a provider to keep them.
+				{/if}
+				<div class="mt-1 flex flex-wrap gap-1">
+					{#each injectedSecretKeys as key}<span class="rounded-full border px-2 py-0.5 font-mono">{key}</span>{/each}
 				</div>
 			</div>
 		{/if}
-		<!-- Provider-injected secrets loaded at the last deploy -->
-		{#if injectedSecretKeys.length > 0 && providerBound}
-			<div class="flex items-start gap-2 px-2.5 py-2 rounded bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800/50">
-				<Check class="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />
-				<div class="text-xs text-emerald-700 dark:text-emerald-300 min-w-0">
-					<div class="flex items-center gap-1.5 flex-wrap">
-						<span class="font-semibold">{injectedSecretKeys.length} secret{injectedSecretKeys.length === 1 ? '' : 's'} loaded</span>
-						<span class="text-emerald-600/70 dark:text-emerald-400/70">from</span>
-						{#if providerType}
-							{@const ProviderIcon = getProviderIcon(providerType)}
-							<span class="inline-flex items-center gap-1 font-medium">
-								<ProviderIcon class="w-3.5 h-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
-								{providerTypeLabel(providerType)}
-							</span>
-							{#if providerName}<span class="text-emerald-600/70 dark:text-emerald-400/70">&middot; {providerName}</span>{/if}
-						{:else}
-							<span class="font-medium">the provider</span>
-						{/if}
-					</div>
-					<p class="text-emerald-600 dark:text-emerald-400 mt-0.5">Injected into the container at last deploy &mdash; never written to <code>.env</code>.</p>
-					<div class="flex flex-wrap gap-1.5 mt-1.5">
-						{#each injectedSecretKeys as key}
-							<span class="inline-flex items-center gap-1 font-mono text-2xs font-semibold px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-800/40 border border-emerald-300 dark:border-emerald-700">
-								<KeyRound class="w-2.5 h-2.5" />{key}
-							</span>
-						{/each}
-					</div>
-				</div>
-			</div>
-		{:else if injectedSecretKeys.length > 0 && !providerBound}
-			<!-- Historical: keys were injected on a previous deploy but no provider is bound now (#1522). -->
-			<div class="flex items-start gap-2 px-2.5 py-2 rounded bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/50">
-				<AlertTriangle class="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
-				<div class="text-xs text-amber-700 dark:text-amber-300 min-w-0">
-					<div class="font-semibold">No secret provider is bound</div>
-					<p class="text-amber-600 dark:text-amber-400 mt-0.5">
-						These {injectedSecretKeys.length} secret{injectedSecretKeys.length === 1 ? ' was' : 's were'} injected on the last deploy but the stack is no longer bound to a provider. The next deploy will drop {injectedSecretKeys.length === 1 ? 'it' : 'them'}. Reselect a provider to keep them.
-					</p>
-					<div class="flex flex-wrap gap-1.5 mt-1.5">
-						{#each injectedSecretKeys as key}
-							<span class="inline-flex items-center gap-1 font-mono text-2xs font-semibold px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-800/40 border border-amber-300 dark:border-amber-700 line-through decoration-amber-500/60">
-								<KeyRound class="w-2.5 h-2.5" />{key}
-							</span>
-						{/each}
-					</div>
-				</div>
-			</div>
-		{/if}
-		<!-- Live provider probe couldn't reach the provider: keys fall back to MISSING -->
 		{#if probeError}
-			<div class="flex items-start gap-2 px-2.5 py-2 rounded bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/50">
-				<AlertTriangle class="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
-				<div class="text-xs text-amber-700 dark:text-amber-300 min-w-0">
-					Couldn't check {providerName ?? 'the secret provider'}: {probeError}
-				</div>
+			<div class="rounded border border-amber-200 bg-amber-50 px-2.5 py-2 text-xs text-amber-700 dark:border-amber-800/50 dark:bg-amber-900/20 dark:text-amber-300">
+				Couldn't check {providerName ?? 'the secret provider'}: {probeError}
 			</div>
 		{/if}
-		<!-- Add missing variables (form mode only) -->
 		{#if viewMode === 'form' && effectiveValidation && effectiveValidation.missing.length > 0 && !readonly}
-			<div class="flex flex-wrap gap-1 items-center">
-				<span class="text-xs text-muted-foreground mr-1">Add missing:</span>
+			<div class="flex flex-wrap items-center gap-1">
+				<span class="mr-1 text-xs text-muted-foreground">Add missing:</span>
 				{#each effectiveValidation.missing as missing}
-					<button
-						type="button"
-						onclick={() => addMissingVariable(missing)}
-						class="text-xs px-1.5 py-0.5 rounded bg-red-100 text-red-700 hover:bg-red-200 dark:bg-red-900/30 dark:text-red-300 dark:hover:bg-red-900/50 transition-colors"
-					>
-						{missing}
-					</button>
+					<button type="button" onclick={() => addMissingVariable(missing)} class="rounded bg-red-100 px-1.5 py-0.5 text-xs text-red-700 transition-colors hover:bg-red-200 dark:bg-red-900/30 dark:text-red-300 dark:hover:bg-red-900/50">{missing}</button>
 				{/each}
 			</div>
 		{/if}
 	</div>
+	{#if !readonly}
+		<input
+			bind:this={fileInputRef}
+			type="file"
+			accept=".env,.env.*,text/plain"
+			class="hidden"
+			onchange={handleFileSelect}
+		/>
+	{/if}
 	<!-- Content area -->
-	<div bind:this={contentAreaRef} class="flex-1 overflow-auto px-4 py-3">
+	<div bind:this={contentAreaRef} class="flex-1 overflow-auto pt-2.5">
 		{#if viewMode === 'form'}
 			<StackEnvVarsEditor
 				bind:variables

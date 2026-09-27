@@ -27273,6 +27273,77 @@
         ]
       }
     },
+    "/api/stacks/{name}/browse-root": {
+      "get": {
+        "operationId": "get_api_stacks_name_browse-root",
+        "tags": [
+          "stacks"
+        ],
+        "summary": "Return where to browse for an untracked stack's Compose file - the host-attached directory holding stack projects (the Hawser agent's STACKS_DIR, or the Dockhand mount exposing the project) and the project's working directory inside it when visible",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Stack name (from GET /api/stacks)"
+          },
+          {
+            "name": "env",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Environment ID the stack belongs to (from GET /api/environments)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "root": {
+                      "type": "string"
+                    },
+                    "path": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "root",
+                    "path"
+                  ]
+                },
+                "example": {
+                  "root": "/opt/stacks",
+                  "path": "/opt/stacks/web"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission denied (requires stacks:edit) or environment access denied"
+          },
+          "503": {
+            "description": "The environment is unreachable, or the Hawser agent did not report its STACKS_DIR"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
     "/api/stacks/{name}/check-path-change": {
       "post": {
         "operationId": "post_api_stacks_name_check-path-change",
@@ -28669,6 +28740,76 @@
             }
           }
         }
+      }
+    },
+    "/api/stacks/{name}/generated-compose": {
+      "get": {
+        "operationId": "get_api_stacks_name_generated-compose",
+        "tags": [
+          "stacks"
+        ],
+        "summary": "Rebuild a Compose project's compose file from its containers, for taking over an untracked stack whose files are gone",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Compose project name (from GET /api/stacks)"
+          },
+          {
+            "name": "env",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Environment ID the project runs on (from GET /api/environments)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "compose": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "compose"
+                  ]
+                },
+                "example": {
+                  "compose": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission denied (requires stacks:create and containers:view) or environment access denied"
+          },
+          "404": {
+            "description": "The project has no containers"
+          },
+          "500": {
+            "description": "Docker could not be queried"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "description": "One service per com.docker.compose.service label, from the lowest-numbered container (replicas become deploy.replicas). Networks and volumes this project created map back to their Compose keys (the default network stays implicit); others are declared external. Generated container names, compose bookkeeping labels and image defaults are dropped. Env keys stored as Dockhand secrets for the stack are emitted as KEY=${KEY}."
       }
     },
     "/api/stacks/{name}/icon": {

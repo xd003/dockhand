@@ -11,7 +11,7 @@
 	import { SELECTOR_VARS } from '$lib/utils/bulk-selector';
 	import { classifyMarker, isInlineProviderRef, resolvedRefVarNames } from '$lib/utils/invault-markers';
 	import { applyQuickFix, findingKey } from '$lib/utils/compose-quick-fix';
-	import { Layers, Save, Play, Code, GitGraph, GitBranch, GitCommitHorizontal, Github, Loader2, AlertCircle, X, Sun, Moon, TriangleAlert, GripVertical, GripHorizontal, FolderOpen, Copy, Check, XCircle, MapPin, ArrowRight, ArrowUp, ArrowDown, Info, Box, FolderSync, Archive, Lock, FileText, ListChecks, History, ChevronDown } from 'lucide-svelte';
+	import { Layers, Save, Play, Code, GitGraph, GitBranch, GitCommitHorizontal, Github, Loader2, AlertCircle, X, Sun, Moon, TriangleAlert, GripVertical, GripHorizontal, FolderOpen, Copy, Check, XCircle, MapPin, ArrowRight, ArrowUp, ArrowDown, Info, Box, FolderSync, Archive, Lock, FileText, FilePlus, ListChecks, History, ChevronDown } from 'lucide-svelte';
 	import ComposeValidatePanel from './ComposeValidatePanel.svelte';
 
 	import BackupPanel from '../containers/BackupPanel.svelte';
@@ -88,9 +88,13 @@
 		stackSource?: { sourceType: string } | null;
 		onClose: () => void;
 		onSuccess: () => void; // Called after create or save
+		/** Untracked stack whose Compose file is gone: start a new internal stack under the same project name. */
+		onCreateInternally?: () => void;
+		/** Create mode: register a new internal stack for this untracked Compose project, reusing its name. */
+		takeoverStackName?: string;
 	}
 
-	let { open = $bindable(), mode: propMode, stackName: propStackName = '', initialCompose, initialStackName, readonly = false, gitInfo = null, stackSource = null, onClose, onSuccess }: Props = $props();
+	let { open = $bindable(), mode: propMode, stackName: propStackName = '', initialCompose, initialStackName, readonly = false, gitInfo = null, stackSource = null, onClose, onSuccess, onCreateInternally, takeoverStackName }: Props = $props();
 
 	let gitCommitCopied = $state<'ok' | 'error' | null>(null);
 
@@ -494,10 +498,11 @@
 						// behind the IN VAULT markers. The server fills them with a placeholder
 						// so config stops calling them missing; no value is sent (#1621).
 						providerKeys: [...providerKeySet],
-						// Only an EDIT of an existing stack has "own" containers to exclude from
-						// collision checks. A NEW stack with a name that clashes with a running
-						// stack must still be flagged, so never self-exclude in create mode.
-						existing: mode === 'edit'
+						// Only an EDIT of an existing stack, or a takeover of the untracked project
+						// under its own name, has "own" containers to exclude from collision checks.
+						// A NEW stack with a name that clashes with a running stack must still be
+						// flagged, so never self-exclude otherwise.
+						existing: mode === 'edit' || (!!takeoverStackName && name === takeoverStackName)
 					})
 				}
 			);
@@ -643,7 +648,9 @@
 	let fileBrowserConfig = $state<{
 		title: string;
 		icon?: Component<{ class?: string }>;
+		initialPath?: string;
 		apiUrl?: string;
+		rootPath?: string;
 		selectFilter?: RegExp;
 		selectMode: 'file' | 'directory' | 'file_or_directory';
 		onSelect: (path: string, name: string) => void;
@@ -674,17 +681,30 @@
 		}
 	}
 
-	function openComposeBrowser() {
+	async function openComposeBrowser() {
 		const isUntracked = needsFileLocation;
+		let root: { root?: string; path?: string } = {};
+		if (isUntracked) {
+			// Untracked projects live in the host-attached stacks mount; don't expose the rest of the container.
+			const response = await fetch(appendEnvParam(`/api/stacks/${encodeURIComponent(stackName)}/browse-root`, $currentEnvironment?.id ?? null));
+			const data = await response.json().catch(() => ({}));
+			if (!response.ok) {
+				toast.error(data.error || 'Failed to locate stack files');
+				return;
+			}
+			root = data;
+		}
 		fileBrowserConfig = {
 			title: isUntracked ? 'Select compose file' : 'Select compose file or directory',
 			selectFilter: /\.ya?ml$/,
 			apiUrl: browserApi,
+			rootPath: root.root,
+			initialPath: root.path,
 			selectMode: isUntracked ? 'file' : 'file_or_directory',
 			onSelect: handleComposeSelect
 		};
-	showFileBrowser = true;
-}
+		showFileBrowser = true;
+	}
 
 /**
 	 * Single mutation point for the multi-file compose state. Keeps the path
@@ -1188,7 +1208,7 @@
 				// Build potential env path in same directory as compose file
 				const dir = finalPath.replace(/\/[^/]+$/, '');
 				const potentialEnvPath = `${dir}/.env`;
-				await loadFilesFromLocalFilesystem(finalPath, potentialEnvPath);
+				if (!(await loadFilesFromLocalFilesystem(finalPath, potentialEnvPath))) return;
 				// Use the selected file's path directly, as the new primary
 				const rest = workingComposePaths.slice(1).filter((p) => p !== finalPath);
 				setComposePathList([finalPath, ...rest], { active: finalPath, content: composeContent });
@@ -1205,9 +1225,11 @@
 			return;
 		}
 
-		// EDIT mode - store the selected path
+		// EDIT mode - store the selected path. Without an explicit env file, the selected
+		// Compose file's directory owns the .env (an untracked stack has no prior path).
+		const dir = finalPath.replace(/\/[^/]+$/, '');
 		if (!isDirectory) {
-			await loadFilesFromLocalFilesystem(finalPath, workingEnvPath || suggestedEnvPath || '');
+			if (!(await loadFilesFromLocalFilesystem(finalPath, workingEnvPath || `${dir}/.env`))) return;
 		}
 		const rest = workingComposePaths.slice(1).filter((p) => p !== finalPath);
 		setComposePathList([finalPath, ...rest], {
@@ -1218,9 +1240,8 @@
 		pathSource = 'browsed';
 		showFileBrowser = false;
 
-		// Auto-suggest .env in the same directory
-		const dir = finalPath.replace(/\/[^/]+$/, '');
-		if (!workingEnvPath) {
+		// Auto-suggest .env in the same directory; a selected file already resolved whether it exists.
+		if (isDirectory && !workingEnvPath) {
 			workingEnvPath = `${dir}/.env`;
 		}
 		isDirty = true;
@@ -1282,8 +1303,8 @@
 		isDirty = true;
 	}
 
-	// Load files from local filesystem (when user selects paths)
-	async function loadFilesFromLocalFilesystem(composeFilePath: string, envFilePath: string) {
+	// Load files from local filesystem (when user selects paths). False when the Compose file could not be loaded.
+	async function loadFilesFromLocalFilesystem(composeFilePath: string, envFilePath: string): Promise<boolean> {
 		errors.compose = undefined;
 		try {
 			// Load compose file
@@ -1296,13 +1317,11 @@
 				if (mode !== 'create') {
 					workingComposePath = composeFilePath;
 				}
-				// Clear the needsFileLocation flag since we now have content
-				needsFileLocation = false;
 				stackContainers = [];
 			} else {
-				const err = await composeResponse.json();
+				const err = await composeResponse.json().catch(() => ({}));
 				errors.compose = err.error || 'Failed to load compose file';
-				return;
+				return false;
 			}
 
 			// Try to load .env file (only set workingEnvPath if it exists AND we're in edit mode)
@@ -1327,7 +1346,9 @@
 		} catch (e) {
 			console.error('Failed to load files:', e);
 			errors.compose = e instanceof Error ? e.message : 'Failed to load files';
+			return false;
 		}
+		return true;
 	}
 
 	// CodeEditor reference for explicit marker updates
@@ -1955,7 +1976,8 @@
 				const existingStack = stacks.find((s: { name: string }) =>
 					s.name.toLowerCase() === newStackName.trim().toLowerCase()
 				);
-				if (existingStack) {
+				// The untracked project being taken over is listed under the same name.
+				if (existingStack && existingStack.name !== takeoverStackName) {
 					showExistsWarning = true;
 					return;
 				}
@@ -2148,6 +2170,26 @@
 		const envPathToSave = workingEnvPath.trim() || suggestedEnvPath || '';
 
 		try {
+			if (needsFileLocation) {
+				if (envId === null) throw new Error('Select an environment before managing this stack');
+				const adoptResponse = await fetch('/api/stacks/adopt', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({
+						// Only an explicitly chosen env file; the suggested default .env may not exist.
+						stacks: [{ name: stackName, composePath: workingComposePath.trim(), envPath: workingEnvPath.trim() || undefined }],
+						environmentId: envId
+					})
+				});
+				const adoptData = await adoptResponse.json().catch(() => ({}));
+				const adoptError = adoptData.failed?.[0]?.error;
+				if (!adoptResponse.ok || adoptError || !adoptData.adopted?.length) {
+					throw new Error(adoptError || adoptData.error || 'Failed to manage stack internally');
+				}
+				stackName = adoptData.adopted[0];
+				needsFileLocation = false;
+			}
+
 			// Build request body - include paths if they've been set/changed
 			const requestBody: Record<string, unknown> = {
 				content: composeContent,
@@ -2427,25 +2469,55 @@
 				});
 			} else if (mode === 'create') {
 				// Set default compose content for create mode (library templates override default)
-				composeContent = initialCompose || defaultCompose;
-				if (initialStackName) {
-					newStackName = initialStackName;
+				composeContent = takeoverStackName ? '' : initialCompose || defaultCompose;
+				if (takeoverStackName || initialStackName) {
+					newStackName = takeoverStackName || initialStackName!;
 					stackNameUserEdited = true;
 				}
 				isDirty = false; // Reset dirty flag for new modal
-				loading = false;
 				// The modal stays mounted, so a binding from a previous open would
 				// otherwise carry into the new stack.
 				formSecretProviderId = null;
 				applyDefaultSecretProvider();
-				// Auto-validate default compose
-				validateEnvVars();
-				runProbe();
+				if (takeoverStackName) {
+					void loadGeneratedCompose(takeoverStackName);
+				} else {
+					loading = false;
+					// Auto-validate default compose
+					validateEnvVars();
+					runProbe();
+				}
 			}
 		} else if (!open) {
 			hasInitialized = false; // Reset when modal closes
 		}
 	});
+
+	/** Takeover create: start from the running project's containers rather than the template. */
+	async function loadGeneratedCompose(project: string) {
+		loading = true;
+		let generated: string;
+		try {
+			const response = await fetch(appendEnvParam(`/api/stacks/${encodeURIComponent(project)}/generated-compose`, $currentEnvironment?.id ?? null));
+			const data = await response.json().catch(() => ({}));
+			if (!response.ok || typeof data.compose !== 'string') throw new Error(data.error || `HTTP ${response.status}`);
+			generated = data.compose;
+		} catch (e) {
+			generated = defaultCompose;
+			toast.warning('Could not rebuild the Compose file from the running containers', {
+				description: `${e instanceof Error ? e.message : String(e)}. Starting from the default template instead.`
+			});
+		}
+		// The modal may have closed or moved on to another stack meanwhile.
+		if (!open || takeoverStackName !== project) return;
+		// The default-location effect may have re-keyed the primary to its absolute path meanwhile.
+		composeContent = generated;
+		composeContents = { ...composeContents, [activeComposePath || workingComposePath]: generated };
+		isDirty = false;
+		loading = false;
+		validateEnvVars();
+		runProbe();
+	}
 
 	// Re-validate when the env vars change (a name affects missing/defined status, a
 	// value can be an inline provider ref). The dependency is the key=value shape alone:
@@ -2603,7 +2675,9 @@
 							{displayName}
 						</Dialog.Title>
 						<Dialog.Description class="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-							{#if mode === 'create'}
+							{#if mode === 'create' && takeoverStackName}
+								Compose file rebuilt from the running containers of untracked project "{takeoverStackName}"; review it, then deploying recreates them from it
+							{:else if mode === 'create'}
 								Create a new Docker Compose stack
 							{:else if readonly}
 								Compose file and dependency graph
@@ -2795,40 +2869,102 @@
 
 				<!-- File location needed banner -->
 				{#if mode === 'edit' && needsFileLocation}
-					<div class="px-4 py-3 border-b border-zinc-200 dark:border-zinc-700 bg-amber-50/50 dark:bg-amber-950/20">
-						<div class="flex items-start gap-3">
-							<AlertCircle class="w-4 h-4 shrink-0 text-amber-500 mt-0.5" />
-							<div class="flex-1 min-w-0">
-								<p class="text-sm text-zinc-600 dark:text-zinc-400 mb-2">
-									{#if readonly}
-										<span class="font-medium text-amber-800 dark:text-amber-300">Untracked stack</span> — this stack is running in Docker but Dockhand doesn't know where its compose file is stored on disk. {$canAccess('stacks', 'edit') ? 'Close this view and use Edit to locate the file.' : 'An editor can locate the file with the edit action.'}
-									{:else}
-										<span class="font-medium text-amber-800 dark:text-amber-300">Untracked stack</span> — this stack is running in Docker but Dockhand doesn't know where its compose file is stored on disk. Browse to locate the file to start editing and managing it.
-									{/if}
-								</p>
+					<div class="border-b border-zinc-200 bg-amber-50/60 px-4 py-2 dark:border-zinc-700 dark:bg-amber-950/20 sm:px-8 sm:py-2.5">
+						<div class="flex items-center gap-3">
+							<div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-amber-500/15 text-amber-600 dark:text-amber-400">
+								<AlertCircle class="h-4 w-4" />
+							</div>
+							<div class="min-w-0 flex-1">
+								<div class="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+									<h2 class="text-sm font-semibold text-amber-900 dark:text-amber-200">Untracked stack</h2>
+									<p class="truncate text-xs text-zinc-600 dark:text-zinc-400">Running in Docker, but its compose file is not registered in Dockhand yet.</p>
+								</div>
 								{#if stackContainers.length > 0}
-									<div class="text-xs text-zinc-500 dark:text-zinc-400">
-										<span class="font-medium text-zinc-700 dark:text-zinc-300">Running containers:</span>
-										<div class="mt-1.5 flex flex-wrap gap-1.5">
-											{#each stackContainers as container}
-												<span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs {container.state === 'running' ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300' : 'bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400'}">
-													<Box class="w-3 h-3" />
+									<div class="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400">
+										<span class="mr-1 font-medium text-zinc-700 dark:text-zinc-300">Running containers</span>
+										{#each stackContainers as container}
+											{#if container.state === 'running'}
+												<span class="inline-flex items-center gap-1.5 rounded-full bg-green-100 px-2 py-0.5 text-green-800 dark:bg-green-900/40 dark:text-green-300">
+													<Box class="h-3 w-3" />
 													{container.name}
 												</span>
-											{/each}
-										</div>
+											{:else}
+												<span class="inline-flex items-center gap-1.5 rounded-full bg-zinc-100 px-2 py-0.5 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400">
+													<Box class="h-3 w-3" />
+													{container.name}
+												</span>
+											{/if}
+										{/each}
 									</div>
 								{/if}
 							</div>
+							<span class="shrink-0 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-700 dark:text-amber-300">Untracked</span>
 						</div>
 					</div>
 				{/if}
 
 				<!-- Content area -->
-				<div bind:this={containerRef} class="flex-1 min-h-0 flex flex-col {isDraggingSplit ? 'select-none' : ''}">
-					{#if activeTab === 'editor'}
-						<!-- Mobile: one pane at a time; desktop keeps the resizable split below. -->
-						<div class="flex items-center gap-1 border-b border-zinc-200 px-4 dark:border-zinc-700 flex-shrink-0 md:hidden">
+		<div bind:this={containerRef} class="flex-1 min-h-0 flex flex-col {isDraggingSplit ? 'select-none' : ''}">
+			{#if activeTab === 'editor'}
+				{#if mode === 'edit' && needsFileLocation && !composeContent && !readonly}
+					<div class="flex min-h-0 flex-1 items-start justify-center overflow-auto px-4 py-8 sm:items-center sm:px-8 sm:py-10">
+						<div class="w-full max-w-4xl">
+							<div class="mb-4 flex items-center gap-3">
+								<div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+									<FolderOpen class="h-4 w-4" />
+								</div>
+								<div>
+									<h2 class="text-base font-semibold text-zinc-800 dark:text-zinc-100">Choose how Dockhand should manage it</h2>
+									<p class="mt-1 text-sm text-zinc-500 dark:text-zinc-400">Pick the source that should own future edits and redeploys.</p>
+								</div>
+							</div>
+							{#if mode === 'edit' && pathHintEnvId && $canAccess('stacks', 'edit')}
+								<DetectedComposeFile
+									{stackName}
+									envId={pathHintEnvId}
+									disabled={loading || saving || pathHintEnvId !== $currentEnvironment?.id}
+									onSelect={handleComposeSelect}
+								/>
+							{/if}
+							<div class="grid gap-3 sm:grid-cols-2">
+								<button
+									type="button"
+									onclick={openComposeBrowser}
+									class="group flex min-h-24 items-start gap-3 rounded-lg border border-blue-500/40 bg-blue-500/10 p-3 text-left transition-colors hover:border-blue-400 hover:bg-blue-500/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 dark:border-blue-400/30 dark:bg-blue-400/10 dark:hover:bg-blue-400/15"
+								>
+									<span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-blue-500/15 text-blue-600 dark:text-blue-300">
+										<FolderOpen class="h-4 w-4" />
+									</span>
+									<span class="min-w-0 flex-1">
+										<span class="flex items-center justify-between gap-2 text-sm font-semibold text-zinc-800 dark:text-zinc-100">
+											Manage internally
+											<ArrowRight class="h-3.5 w-3.5 shrink-0 text-blue-500 transition-transform group-hover:translate-x-0.5" />
+										</span>
+										<span class="mt-1 block text-xs leading-4 text-zinc-600 dark:text-zinc-400">{hawserFiles ? 'Select its Compose file on the Hawser host and manage it in place; relative bind paths stay unchanged.' : 'Select its Compose file on Dockhand\'s filesystem and manage it in place; the directory is not moved.'}</span>
+									</span>
+								</button>
+							</div>
+							{#if onCreateInternally}
+								<button
+									type="button"
+									onclick={onCreateInternally}
+									class="group mt-3 flex w-full items-center gap-3 rounded-lg border border-dashed border-zinc-300 p-3 text-left transition-colors hover:border-zinc-400 hover:bg-zinc-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400 dark:border-zinc-600 dark:hover:border-zinc-500 dark:hover:bg-zinc-800/50"
+								>
+									<span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-zinc-500/10 text-zinc-600 dark:text-zinc-300">
+										<FilePlus class="h-4 w-4" />
+									</span>
+									<span class="min-w-0 flex-1">
+										<span class="block text-sm font-semibold text-zinc-800 dark:text-zinc-100">Compose file no longer exists?</span>
+										<span class="mt-0.5 block text-xs leading-4 text-zinc-600 dark:text-zinc-400">Manage it internally with a Compose file rebuilt from its running containers, saved in Dockhand's stack directory like a new stack; deploying recreates "{stackName}" from it.</span>
+									</span>
+									<ArrowRight class="h-3.5 w-3.5 shrink-0 text-zinc-500 transition-transform group-hover:translate-x-0.5" />
+								</button>
+							{/if}
+						</div>
+					</div>
+				{:else}
+					<!-- Mobile: one pane at a time; desktop keeps the resizable split below. -->
+				<div class="flex items-center gap-1 border-b border-zinc-200 px-4 dark:border-zinc-700 flex-shrink-0 md:hidden">
 							<button
 								type="button"
 								class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 px-2 py-2.5 max-md:py-3 text-sm transition-colors {mobilePane === 'compose' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
@@ -2985,14 +3121,6 @@
 													<p class="mb-4 max-w-sm text-xs text-zinc-500 dark:text-zinc-400">
 														Browse to locate the compose file for this stack.
 													</p>
-													{#if mode === 'edit' && pathHintEnvId && $canAccess('stacks', 'edit')}
-														<DetectedComposeFile
-															{stackName}
-															envId={pathHintEnvId}
-															disabled={loading || saving || pathHintEnvId !== $currentEnvironment?.id}
-															onSelect={handleComposeSelect}
-														/>
-													{/if}
 													<Button variant="outline" size="sm" class="max-md:h-11" onclick={openComposeBrowser}>
 														<FolderOpen class="h-4 w-4" />
 														Browse for compose file
@@ -3170,7 +3298,8 @@
 								</div>
 							</div>
 						</div>
-					{:else if activeTab === 'graph'}
+				{/if}
+			{:else if activeTab === 'graph'}
 						<!-- Graph tab: Full width -->
 						<ComposeGraphViewer
 							bind:this={graphViewerRef}
@@ -3283,7 +3412,7 @@
 
 				{#if !readonly && mode === 'create'}
 					<!-- Create mode buttons -->
-					<Button variant="outline" class="max-md:min-h-11" onclick={() => handleCreate(false)} disabled={saving}>
+					<Button variant="outline" class="max-md:min-h-11" onclick={() => handleCreate(false)} disabled={saving || loading}>
 						{#if saving}
 							<Loader2 class="w-4 h-4 animate-spin" />
 							Creating...
@@ -3301,7 +3430,7 @@
 						<Button
 							class="max-md:min-h-11 max-md:flex-1 rounded-r-none"
 							onclick={() => handleCreate(true, false, createStartDefaults)}
-							disabled={saving}
+							disabled={saving || loading}
 						>
 							{#if saving}
 								<Loader2 class="w-4 h-4 animate-spin" />
@@ -3314,7 +3443,7 @@
 						<RedeployPopover
 							stackName={newStackName}
 							envId={$currentEnvironment?.id ?? null}
-							disabled={saving}
+							disabled={saving || loading}
 							triggerVariant="chevron"
 							defaultPull={createStartDefaults.pull}
 							defaultBuild={createStartDefaults.build}
@@ -3581,6 +3710,8 @@
 	selectFilter={fileBrowserConfig.selectFilter}
 	selectMode={fileBrowserConfig.selectMode}
 	apiUrl={fileBrowserConfig.apiUrl}
+	initialPath={fileBrowserConfig.initialPath}
+	rootPath={fileBrowserConfig.rootPath}
 	onSelect={fileBrowserConfig.onSelect}
 	onClose={() => showFileBrowser = false}
 />

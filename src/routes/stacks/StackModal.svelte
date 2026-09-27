@@ -13,7 +13,7 @@
 	import { probeProviderKeys, providerProbeInput } from '$lib/utils/provider-probe';
 	import { applyQuickFix, findingKey } from '$lib/utils/compose-quick-fix';
 	import { Layers, Save, Play, Code, GitGraph, GitBranch, GitCommitHorizontal, Github, Loader2, AlertCircle, X, Sun, Moon, TriangleAlert, GripVertical, GripHorizontal, FolderOpen, Copy, Check, XCircle, MapPin, ArrowRight, ArrowDown, Box, FolderSync, Archive, Lock, FileText, FilePlus, ListChecks, History, ChevronDown, Settings2, Download } from 'lucide-svelte';
-	import ComposeValidatePanel from './ComposeValidatePanel.svelte';
+	import ComposeValidatePanel, { findingLintMarkers } from './ComposeValidatePanel.svelte';
 	import StackFileEditor from './StackFileEditor.svelte';
 
 	import BackupPanel from '../containers/BackupPanel.svelte';
@@ -467,11 +467,7 @@
 	// so a slow silent re-validate can't overwrite a newer one (fix-spam race).
 	let validateSeq = 0;
 	// Findings mapped to editor lint markers (only those with a line).
-	const validateMarkers = $derived(
-		(validateReport?.findings ?? [])
-			.filter((f) => typeof f.line === 'number' && (!f.source || f.source === activeComposePath || f.source === 'compose'))
-			.map((f) => ({ line: f.line!, severity: f.severity, ruleId: f.ruleId, message: f.message }))
-	);
+	const validateMarkers = $derived(findingLintMarkers(validateReport?.findings ?? [], activeComposePath));
 
 	async function runComposeValidate(opts: { silent?: boolean } = {}) {
 		const primaryContent = primaryComposeContent();

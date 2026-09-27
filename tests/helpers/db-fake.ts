@@ -64,10 +64,12 @@ const KNOWN_EXPORTS = [
 	'updateGitRepository',
 	'updateGitStack',
 	'upsertStackSource',
+	'updateStackSource',
 	'getEnvironment',
 	'logContainerEvent',
 	'getSecretEnvVarsAsRecord',
-	'getNonSecretEnvVarsAsRecord'
+	'getNonSecretEnvVarsAsRecord',
+	'getStackSource'
 ] as const;
 
 const impls: Record<string, AnyFn> = {};

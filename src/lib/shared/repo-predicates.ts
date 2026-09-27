@@ -29,6 +29,11 @@ export function backendSupportsTls(
 	return !!(opts?.isEditing && opts?.hasStoredCert);
 }
 
+/** A Hawser (standard or edge) environment connection. */
+export function isHawserConnectionType(connectionType?: string | null): boolean {
+	return connectionType === 'hawser-standard' || connectionType === 'hawser-edge';
+}
+
 /** An environment reachable over the network (hawser or direct-with-host). */
 export function isRemoteEnvironment(env?: { connectionType?: string | null; host?: string | null } | null): boolean {
 	if (!env) return false;

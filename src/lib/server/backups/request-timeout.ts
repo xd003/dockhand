@@ -88,10 +88,18 @@ export function edgeRequestTimeoutMs(
 	return computeRequestTimeoutMs({ ...input, streamingBody: false, streamingResponse: false }) ?? 30000;
 }
 
+/**
+ * Hawser stack-files requests: an apply batch is tens of MiB written and fsynced file by
+ * file. Hawser gives them the same budget (StackFilesTimeout).
+ */
+export const HAWSER_STACK_FILES_PATH = '/_hawser/stack-files';
+export const HAWSER_STACK_FILES_TIMEOUT_MS = 300000;
+
 export function computeRequestTimeoutMs(input: RequestTimeoutInput): number | null {
 	// No idle timeout when either end streams: a large body upload or a long-lived response.
 	if (input.streamingBody || input.streamingResponse) return null;
 	if (input.path === '/_hawser/compose') return (input.composeTimeoutSecs ?? 900) * 1000;
+	if (input.path === HAWSER_STACK_FILES_PATH) return HAWSER_STACK_FILES_TIMEOUT_MS;
 	if (isPrunePath(input.path)) return 300000;
 	if (isDiskUsagePath(input.path)) return DISK_USAGE_TIMEOUT_MS;
 	if (isStopPath(input.path)) return stopTimeoutMs(input.stopTimeoutSecs, input.stopEnvSecs);

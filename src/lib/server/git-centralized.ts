@@ -40,6 +40,7 @@ import {
 	execGit,
 	getChangedFilesInDir,
 	computeSyncDeletionPlan,
+	publishesTrackedGitFilesOnly,
 	notifyGitSync,
 	getRepoPath,
 	getGitReposDir,
@@ -640,7 +641,9 @@ export async function syncGitStack(stackId: number, onProgress?: ProgressCallbac
 			logPrefix,
 			composeDir,
 			composeFileName,
-			rawManifest: gitStack.syncedFiles
+			rawManifest: gitStack.syncedFiles,
+			trackedOnly: await publishesTrackedGitFilesOnly(gitStack.environmentId),
+			envFileName
 		});
 
 		// Update git stack status

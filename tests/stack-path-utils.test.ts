@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import {
 	findStackNameCollision,
 	moveStackFilePathCrossDevice,
+	resolveGitStackPaths,
 	resolveStackDirForLayout
 } from '../src/lib/server/stack-path-utils';
 
@@ -35,6 +36,19 @@ describe('resolveStackDirForLayout', () => {
 	it('uses flat STACKS_DIR for local stacks and environment scope otherwise', () => {
 		expect(resolveStackDirForLayout('/data/stacks', '/srv/stacks', 'app', 'local', true)).toBe('/srv/stacks/app');
 		expect(resolveStackDirForLayout('/data/stacks', '/srv/stacks', 'app', 'production', false)).toBe('/data/stacks/production/app');
+	});
+});
+
+describe('resolveGitStackPaths', () => {
+	it('resolves compose and env files from the repo context into the deployed stack directory', () => {
+		expect(resolveGitStackPaths(
+			['stacks/linkleaner/compose.yaml', 'stacks/linkleaner/.env'],
+			'stacks/linkleaner',
+			'/data/stacks/linkleaner'
+		)).toEqual([
+			'/data/stacks/linkleaner/compose.yaml',
+			'/data/stacks/linkleaner/.env'
+		]);
 	});
 });
 

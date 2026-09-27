@@ -27,7 +27,8 @@ const KNOWN_EXPORTS = [
 	'saveStackComposeFile',
 	'requireComposeFile',
 	'deployStack',
-	'getStackDir'
+	'getStackDir',
+	'isHawserConnection'
 ] as const;
 
 const impls: Record<string, AnyFn> = {};

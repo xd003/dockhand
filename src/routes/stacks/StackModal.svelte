@@ -29,7 +29,7 @@
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import * as Tabs from '$lib/components/ui/tabs';
 	import { Badge } from '$lib/components/ui/badge';
-	import { currentEnvironment, appendEnvParam } from '$lib/stores/environment';
+	import { currentEnvironment, appendEnvParam, environments } from '$lib/stores/environment';
 	import { persistStackIcon } from '$lib/utils/stack-icon';
 	import { appSettings } from '$lib/stores/settings';
 	import { canAccess } from '$lib/stores/auth';
@@ -37,6 +37,7 @@
 	import { focusFirstInput } from '$lib/utils';
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import { fetchDetectedComposeOverridePaths } from '$lib/compose-overrides';
+	import { isHawserConnectionType } from '$lib/shared/repo-predicates';
 	import * as Alert from '$lib/components/ui/alert';
 	import { ErrorDialog } from '$lib/components/ui/error-dialog';
 	import { readJobResponse } from '$lib/utils/sse-fetch';
@@ -48,6 +49,13 @@
 	import ComposeGraphViewer from './ComposeGraphViewer.svelte';
 	import RedeployPopover from './RedeployPopover.svelte';
 	import { hasBuildSection as detectBuildSection } from '$lib/utils/compose-build-detect';
+	const hawserFiles = $derived($environments.some((env) => env.id === $currentEnvironment?.id && isHawserConnectionType(env.connectionType)));
+	const browserApi = $derived(hawserFiles ? appendEnvParam('/api/stacks/host-files', $currentEnvironment?.id ?? null) : '/api/system/files');
+	function selectedFileUrl(path: string): string {
+		return hawserFiles
+			? `${browserApi}&content=1&projectName=${encodeURIComponent(stackName)}&path=${encodeURIComponent(path)}`
+			: `/api/system/files/content?path=${encodeURIComponent(path)}`;
+	}
 
 
 	// localStorage key for persisted split ratio
@@ -628,6 +636,7 @@
 	let fileBrowserConfig = $state<{
 		title: string;
 		icon?: Component<{ class?: string }>;
+		apiUrl?: string;
 		selectFilter?: RegExp;
 		selectMode: 'file' | 'directory' | 'file_or_directory';
 		onSelect: (path: string, name: string) => void;
@@ -663,6 +672,7 @@
 		fileBrowserConfig = {
 			title: isUntracked ? 'Select compose file' : 'Select compose file or directory',
 			selectFilter: /\.ya?ml$/,
+			apiUrl: browserApi,
 			selectMode: isUntracked ? 'file' : 'file_or_directory',
 			onSelect: handleComposeSelect
 		};
@@ -716,11 +726,11 @@
 
 	async function addDetectedComposeOverrides(primaryPath: string) {
 		try {
-			const overrides = await fetchDetectedComposeOverridePaths('/api/system/files', primaryPath, '/');
+			const overrides = await fetchDetectedComposeOverridePaths(browserApi, primaryPath, '/');
 			if (overrides.length === 0 || workingComposePaths[0] !== primaryPath) return;
 
 			const loaded = await Promise.all(overrides.map(async (path) => {
-				const fileResponse = await fetch(`/api/system/files/content?path=${encodeURIComponent(path)}`);
+				const fileResponse = await fetch(selectedFileUrl(path));
 				if (!fileResponse.ok) return null;
 				const file = await fileResponse.json();
 				return [path, file.content || ''] as const;
@@ -829,6 +839,7 @@
 		fileBrowserConfig = {
 			title: 'Select environment file or directory',
 			selectFilter: /\.env($|\.)/,  // matches .env, .env.local, app.env, etc.
+			apiUrl: browserApi,
 			selectMode: 'file_or_directory',
 			onSelect: handleEnvSelect
 		};
@@ -841,6 +852,7 @@
 			title: `Relocate ${displayName}`,
 			icon: FolderSync,
 			selectMode: 'directory',
+			apiUrl: browserApi,
 			onSelect: handleChangeLocation
 		};
 		showFileBrowser = true;
@@ -1239,7 +1251,7 @@
 		// Load env content when selecting a file (not directory)
 		if (!isDirectory) {
 			try {
-				const envResponse = await fetch(`/api/system/files/content?path=${encodeURIComponent(finalPath)}`);
+				const envResponse = await fetch(selectedFileUrl(finalPath));
 				if (envResponse.ok) {
 					const envData = await envResponse.json();
 					rawEnvContent = envData.content || '';
@@ -1267,7 +1279,7 @@
 	async function loadFilesFromLocalFilesystem(composeFilePath: string, envFilePath: string) {
 		try {
 			// Load compose file
-			const composeResponse = await fetch(`/api/system/files/content?path=${encodeURIComponent(composeFilePath)}`);
+			const composeResponse = await fetch(selectedFileUrl(composeFilePath));
 			if (composeResponse.ok) {
 				const composeData = await composeResponse.json();
 				composeContent = composeData.content || '';
@@ -1286,7 +1298,7 @@
 
 			// Try to load .env file (only set workingEnvPath if it exists AND we're in edit mode)
 			if (envFilePath) {
-				const envResponse = await fetch(`/api/system/files/content?path=${encodeURIComponent(envFilePath)}`);
+				const envResponse = await fetch(selectedFileUrl(envFilePath));
 				if (envResponse.ok) {
 					const envData = await envResponse.json();
 					rawEnvContent = envData.content || '';
@@ -2468,8 +2480,9 @@
 	$effect(() => {
 		if (!open || mode !== 'create') return;
 		const envId = $currentEnvironment?.id ?? null;
-		const location = $appSettings.primaryStackLocation;
-		fetchDefaultBasePath(envId, location);
+		const location = hawserFiles ? null : $appSettings.primaryStackLocation;
+		defaultStackDir = null;
+		void fetchDefaultBasePath(envId, location);
 	});
 
 	// Auto-update default paths when stack name changes in create mode
@@ -2947,7 +2960,7 @@
 														<GitGraph class="mb-4 h-12 w-12 text-zinc-300 dark:text-zinc-600" />
 														<h3 class="mb-2 text-sm font-medium text-zinc-700 dark:text-zinc-300">Compose file not available</h3>
 														<p class="max-w-sm text-xs text-zinc-500 dark:text-zinc-400">
-															Deploy or sync this Git stack first so Dockhand has a local copy of its compose file.
+															Deploy or sync this Git stack first so Hawser has its Compose files.
 														</p>
 													{:else}
 														<FolderOpen class="mb-4 h-12 w-12 text-zinc-300 dark:text-zinc-600" />
@@ -3108,8 +3121,8 @@
 											placeholder="/path/to/.env (optional)"
 											copied={envPathCopied}
 											onCopy={() => copyText(displayEnvPath, (v) => envPathCopied = v)}
-											onBrowse={readonly ? undefined : openEnvBrowser}
-											isEditable={!readonly}
+											onBrowse={!readonly && !hawserFiles ? openEnvBrowser : undefined}
+											isEditable={!readonly && !hawserFiles}
 											isCustom={!!workingEnvPath}
 											defaultText={mode === 'create' ? 'Enter stack name above' : 'Not specified'}
 											isSuggested={isEnvPathSuggested}
@@ -3498,6 +3511,7 @@
 	icon={fileBrowserConfig.icon}
 	selectFilter={fileBrowserConfig.selectFilter}
 	selectMode={fileBrowserConfig.selectMode}
+	apiUrl={fileBrowserConfig.apiUrl}
 	onSelect={fileBrowserConfig.onSelect}
 	onClose={() => showFileBrowser = false}
 />

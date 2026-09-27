@@ -1,11 +1,24 @@
 import { readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
-import { join, resolve, sep as pathSep } from 'node:path';
+import { basename, isAbsolute, join, resolve, sep as pathSep } from 'node:path';
 
 /** True when childPath is rootPath or one of its descendants. */
 export function isPathUnderRoot(childPath: string, rootPath: string): boolean {
 	const child = resolve(childPath);
 	const root = resolve(rootPath);
 	return child === root || child.startsWith(root + pathSep);
+}
+
+/** Resolve repo-relative Git stack paths inside the copied deployment directory. */
+export function resolveGitStackPaths(rawPaths: string[], contextDir: string, stackDir: string | null): string[] {
+	return rawPaths.map((path) => {
+		if (isAbsolute(path) || !stackDir) return path;
+		let deployedPath = path;
+		if (contextDir) {
+			if (path.startsWith(contextDir + '/')) deployedPath = path.slice(contextDir.length + 1);
+			else if (path === contextDir) deployedPath = basename(path);
+		}
+		return join(stackDir, deployedPath);
+	});
 }
 
 export function resolveStackDirForLayout(

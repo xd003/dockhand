@@ -13,9 +13,9 @@
  * into this function.
  */
 
-import { join } from 'node:path';
-import { updateGitStack, upsertStackSource } from './db';
-import { deployStack, getStackDir, type StackOperationResult } from './stacks';
+import { dirname, join, relative } from 'node:path';
+import { getEnvironment, updateGitStack, upsertStackSource } from './db';
+import { deployStack, getStackDir, isHawserConnection, type StackOperationResult } from './stacks';
 import {
 	finalizeDeletionSync,
 	notifyGitSync,
@@ -47,6 +47,7 @@ export interface GitStackForDeploy {
 	repullImages: boolean;
 	composePaths: string | null;
 	repositoryId: number;
+	composePath: string;
 	syncStatus: string | null;
 	syncError: string | null;
 }
@@ -166,13 +167,17 @@ export async function deployStackFromSync(args: DeployStackFromSyncArgs): Promis
 	console.log(`${logPrefix} Compose filename:`, syncResult.composeFileName);
 	console.log(`${logPrefix} Env filename:`, syncResult.envFileName ?? '(none)');
 
+	const hawser = isHawserConnection(
+		typeof gitStack.environmentId === 'number' ? await getEnvironment(gitStack.environmentId) : null
+	);
+
 	let result: StackOperationResult;
 	try {
 		result = await deployStack({
 			name: gitStack.stackName,
 			compose: syncResult.composeContent!,
 			envId: gitStack.environmentId,
-			sourceDir: syncResult.composeDir, // Copy entire directory from git repo
+			sourceDir: syncResult.composeDir, // Checkout; Hawser receives only its tracked files
 			composeFileName: syncResult.composeFileName, // Use original compose filename from repo
 			envFileName: syncResult.envFileName, // Env file relative to compose dir (for --env-file flag, optional)
 			composePaths: gitStack.composePaths ? parseComposePathsColumn(gitStack.composePaths) : undefined,
@@ -181,6 +186,7 @@ export async function deployStackFromSync(args: DeployStackFromSyncArgs): Promis
 			noBuildCache: gitStack.noBuildCache,
 			pullPolicy: gitStack.repullImages ? 'always' : undefined,
 			filesToDelete: syncResult.deletionPlan?.toDelete,
+			gitPublishPaths: syncResult.newFiles ? Object.keys(syncResult.newFiles) : undefined,
 			isGitDeploy: true, // suppress stack_* notification; we emit git_sync_* below
 			// Each line is already secret-redacted by deployStack; the progress UI shows it
 			// as the live compose log.
@@ -216,11 +222,21 @@ export async function deployStackFromSync(args: DeployStackFromSyncArgs): Promis
 			});
 		}
 
-		// Record the stack source with resolved compose path for consistency
-		const stackDir = await getStackDir(gitStack.stackName, gitStack.environmentId);
+		// Hawser confirms the bound root after Compose; Dockhand's checkout and
+		// local stack path must never be persisted as remote stack-file paths.
+		const stackDir = hawser
+			? result.managedDirectory
+			: await getStackDir(gitStack.stackName, gitStack.environmentId);
+		if (!stackDir) throw new Error('Hawser did not confirm the bound stack directory after deployment');
 		const resolvedComposePath = syncResult.composeFileName
 			? join(stackDir, syncResult.composeFileName)
 			: undefined;
+		const configuredPaths = gitStack.composePaths ? parseComposePathsColumn(gitStack.composePaths) : null;
+		const resolvedComposePaths = hawser && configuredPaths && syncResult.composeFileName
+			? configuredPaths.map((path) =>
+				join(dirname(resolvedComposePath!), relative(dirname(gitStack.composePath), path))
+			)
+			: configuredPaths;
 
 		console.log(`${logPrefix} Resolved compose path for stack_sources:`, resolvedComposePath);
 
@@ -228,10 +244,12 @@ export async function deployStackFromSync(args: DeployStackFromSyncArgs): Promis
 			stackName: gitStack.stackName,
 			environmentId: gitStack.environmentId,
 			sourceType: 'git',
+			fileLocation: hawser ? 'hawser' : 'dockhand',
 			gitRepositoryId: gitStack.repositoryId,
 			gitStackId: stackId,
 			composePath: resolvedComposePath,
-			composePaths: gitStack.composePaths ? parseComposePathsColumn(gitStack.composePaths) : null
+			composePaths: resolvedComposePaths,
+			...(hawser && syncResult.envFileName ? { envPath: join(stackDir, syncResult.envFileName) } : {})
 		});
 
 		if (onProgress) {

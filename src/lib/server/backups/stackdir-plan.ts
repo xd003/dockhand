@@ -9,11 +9,9 @@
  * container on the target daemon, so a host path on that daemon is mountable. The snapshot
  * reflects the stack folder AS IT IS ON THE HOST (what the user actually edits).
  *
- * ONE EXCEPTION - a direct-REMOTE env with NO remote_stacks_dir: nothing is staged on the host
- * (deploy went via stdin), so there is no host folder to mount. The caller then tars the
- * compose/config from Dockhand's OWN local copy into the SAME snapshot location instead of
- * hard-failing. This is the only case that doesn't reflect the host 1:1 - because the host has
- * nothing to reflect.
+ * Direct-remote deployments without a host-side stack directory may use stdin
+ * and leave no real Compose folder on that host. They fail explicitly instead
+ * of claiming to have captured files from Dockhand's unrelated local copy.
  *
  * This module resolves the CANDIDATE host path (see resolveHostStackDir). A runtime probe
  * (helper bind + `test -f <composeFile>`) then proves the path is real on the target daemon
@@ -115,9 +113,8 @@ export function deriveStackDirFromBinds(relBindDirs: string[], bindSources: stri
  * container path; `docker compose` then asks the remote daemon to bind `./data`, and the daemon
  * mkdir's a PHANTOM EMPTY dir at that Dockhand-container path on ITS host. Stripping the tail
  * yields a dir that exists remotely but holds NO compose (never staged) -> the probe HARD-FAILS.
- * So distrust bind-derived in exactly that case, letting the caller fall through to kind:'tar'
- * (capture the compose/config from Dockhand's own local copy). When remote_stacks_dir IS set the
- * deploy staged the files there and bind-derived pins the real path, so keep it. Pure + testable.
+ * So distrust bind-derived in exactly that case; without a configured
+ * host-side path, backup cannot safely capture the Compose folder.
  */
 export function trustBindDerivedForEnv(
 	bindDerivedHostPath: string | null,
@@ -211,6 +208,9 @@ export function isLocalDaemon(connectionType: string | null, envTcpHost: string 
 // wrong. `local`: a socket/local-daemon stack -> redeploy staged its files.
 export type StackDirProbeHint =
 	| { kind: 'hawser-defaulted'; hostPath: string; envName: string | null }
+	// An adopted Hawser stack is managed in place at its original Compose directory, which
+	// is the Docker host path Compose itself reported; a STACKS_DIR remap cannot fix it.
+	| { kind: 'hawser-adopted'; hostPath: string; envName: string | null }
 	// `transport` distinguishes how the files reach the host: a hawser agent keeps them
 	// under its own STACKS_DIR (the path just needs to be the right HOST mapping), while a
 	// direct-remote env has Dockhand COPY them there on `up` - so a direct env whose path is
@@ -234,6 +234,9 @@ export function stackDirProbeFixHint(hint: StackDirProbeHint | undefined, hostPa
 	if (hint?.kind === 'user-set' && hint.transport === 'direct') {
 		return ` The Remote stack path is set, but this stack's files aren't on ${envName ?? 'the host'} yet - redeploy the stack so Dockhand stages them${at}. (down/start/restart don't copy; it must be a deploy.)`;
 	}
+	if (hint?.kind === 'hawser-adopted') {
+		return ` This adopted stack is managed in place by Hawser${at}; make sure that directory still exists on the Docker host and is mounted into the Hawser agent at the same path.`;
+	}
 	// Hawser (defaulted or user-set): the agent keeps stacks under its own dir, so an empty
 	// probe means the configured HOST path doesn't map to where the agent actually writes.
 	if (hint?.kind === 'hawser-defaulted' || hint?.kind === 'user-set') {
@@ -253,13 +256,12 @@ export type HostStackDirResolution =
  * unit-testable. The caller passes whichever candidates it could compute; this picks the
  * right one in priority order. */
 export interface HostStackDirInput {
-	/** basename of Dockhand's compose file for the stack (immich.yaml / docker-compose.yml).
-	 * The AUTHORITATIVE compose name - NOT the config_files label, which is `-` when Dockhand
-	 * deploys via stdin (`-f -`). */
+	/** Primary Compose path relative to the captured root on Hawser, or basename
+	 * for local/direct stacks. Do not infer this from Docker's config_files label
+	 * when a direct deployment used stdin (`-f -`). */
 	composeFileName: string | null;
-	/** For a direct-REMOTE env with remote_stacks_dir set: the explicit, user-declared host
-	 * path (<remote_stacks_dir>/<stack>) where the deploy staged the files. Highest priority
-	 * after a bind pins the dir more exactly. Null for socket/hawser/local. */
+	/** Declared target Docker HOST path (direct-remote staging or Hawser's
+	 * agent-bound root/explicit host-side mapping), after any bind-derived path. */
 	remoteStacksDirHostPath?: string | null;
 	/** Host stack dir DERIVED from a relative compose bind's daemon-reported source
 	 * (hostStackDirFromBind). The MOST AUTHORITATIVE source - the daemon knows exactly where its
@@ -298,9 +300,8 @@ export interface HostStackDirInput {
  * A runtime probe (`test -f <composeFile>` in the helper) then CONFIRMS reachability before
  * capture. Pure + unit-testable. */
 export function resolveHostStackDir(input: HostStackDirInput): HostStackDirResolution {
-	// The probe's `test -f` needs a real compose name. `config_files` is `-` for stdin deploys,
-	// so we take the name from Dockhand's own compose file (composeFileName), falling back to the
-	// conventional name.
+	// The probe needs the recorded primary Compose path. `config_files` is `-`
+	// for stdin deploys, so only older unrecorded stacks use the default name.
 	const composeFile = input.composeFileName && input.composeFileName !== '-'
 		? input.composeFileName
 		: 'docker-compose.yml';
@@ -311,7 +312,7 @@ export function resolveHostStackDir(input: HostStackDirInput): HostStackDirResol
 	if (viaBind) return { kind: 'candidate', hostPath: viaBind, composeFile, source: 'derived from a relative compose bind (daemon-reported host source)' };
 
 	const viaRemoteDir = norm(input.remoteStacksDirHostPath);
-	if (viaRemoteDir) return { kind: 'candidate', hostPath: viaRemoteDir, composeFile, source: 'declared host stack path (direct-remote remote_stacks_dir / hawser agent STACKS_DIR)' };
+	if (viaRemoteDir) return { kind: 'candidate', hostPath: viaRemoteDir, composeFile, source: 'declared host stack path (direct-remote remote_stacks_dir / Hawser bound root or remote_stacks_dir host mapping)' };
 
 	const viaData = norm(input.dataDirHostPath);
 	if (viaData) return { kind: 'candidate', hostPath: viaData, composeFile, source: 'DATA_DIR -> HOST_DATA_DIR translation (Dockhand-deployed, local)' };

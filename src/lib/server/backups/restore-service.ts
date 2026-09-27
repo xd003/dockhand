@@ -93,15 +93,12 @@ export interface RestorePorts {
 	redeployStack(name: string, envId: number | null | undefined, destinationId: number, snapshotId: string, restoreSecrets?: boolean): Promise<void>;
 	/** Read the snapshot's stored restore metadata (typed SnapshotLayout), or null. */
 	readSnapshotMetadata(destinationId: number, snapshotId: string): Promise<SnapshotLayout | null>;
-	/** Write the snapshot's captured stack files (/volumes/__dockhand_stackdir__) into
-	 * Dockhand's LOCAL data dir at stacks/<envName>/<stackName>/ so Dockhand can
-	 * manage/redeploy the restored stack, even when the volume data restored to a
-	 * remote env. No-op (returns false) if the snapshot has no stack files. */
+	/** Restore stack files to the target filesystem and register their source. */
 	writeLocalStackFiles(destinationId: number, snapshotId: string, stackName: string, targetPath: string, overwrite: boolean, envId?: number | null): Promise<boolean>;
-	/** Resolve the canonical LOCAL managed stack dir (stacks/<envName>/<stackName>/) for a
-	 * target - where a clone's compose/.env is materialised so the restored stack is a normal
-	 * managed (internal) stack the UI can edit + redeploy. */
-	stackDirFor(stackName: string, envId: number | null | undefined): Promise<string>;
+	/** Resolve the managed stack root in the target environment. */
+	stackDirFor(stackName: string, envId: number | null | undefined, snapshotId?: string, destinationId?: number): Promise<string>;
+	/** Hawser file operations must fail explicitly rather than fall back to local staging. */
+	stackFilesOnHawser?(envId: number | null | undefined): Promise<boolean>;
 
 	// --- clone (cross-env restore) -----------------------------------------------
 	/** Does a NAMED VOLUME with this name already exist on the target env? Used by
@@ -280,12 +277,9 @@ export class RestoreService {
 		return this.runNewLocationTo(job, triggeredBy, volumes, includes);
 	}
 
-	/** Non-destructive STACK restore into a fresh directory. Restores the volume data and,
-	 * unless skipStackFiles is set, the snapshot's stored compose/.env (under
-	 * /volumes/__dockhand_stackdir__). Dockhand ALWAYS materialises the stack files into its own
-	 * managed stack dir and registers the stack, so it can manage/redeploy it - this is
-	 * load-bearing: for a REMOTE env the compose exists only on the remote host otherwise, so
-	 * Dockhand would have nothing to manage. `skipStackFiles` opts out entirely (data-only). */
+	/** Restore a stack to a new location. Volume data is extracted to the
+	 * requested host path; managed stack files go to the target environment's
+	 * stack root (the Hawser root when the target is Hawser). */
 	private async runNewLocationStack(job: RestoreJob, triggeredBy: 'manual' | 'cron', volumes: string[]): Promise<RestoreResult> {
 		const includes = volumes.map((v) => `/volumes/${v}`);
 		const includeStackFiles = job.targetName && !job.skipStackFiles;
@@ -296,18 +290,18 @@ export class RestoreService {
 			const { STACKDIR_VOLUME_KEY } = await import('./stackdir-plan');
 			includes.push(`/volumes/${STACKDIR_VOLUME_KEY}`);
 		}
-		const result = await this.runNewLocationTo(job, triggeredBy, volumes, includes);
-		// Materialise the stack files into the CANONICAL managed stack dir on Dockhand
-		// (stackDirFor -> $DATA_DIR/stacks/<env>/<name>, NOT job.targetPath which is the host path
-		// where the volume DATA landed), and register the stack as managed. Always (unless
-		// skipStackFiles): Dockhand needs the compose locally to edit/redeploy, especially for a
-		// remote env. Best-effort - the volume restore already succeeded.
-		if (result.status !== 'error' && includeStackFiles && job.targetName) {
-			try {
-				const overwrite = job.mergeStackFiles !== true;
-				const stackTargetPath = await this.ports.stackDirFor(job.targetName, job.environmentId);
-				await this.ports.writeLocalStackFiles(job.destinationId, job.snapshotId, job.targetName, stackTargetPath, overwrite, job.environmentId);
-			} catch (e) {
+		const hawser = includeStackFiles && await this.ports.stackFilesOnHawser?.(job.environmentId);
+		const materialise = async () => {
+			const overwrite = job.mergeStackFiles !== true;
+			const stackTargetPath = await this.ports.stackDirFor(job.targetName!, job.environmentId, job.snapshotId, job.destinationId);
+			if (!await this.ports.writeLocalStackFiles(job.destinationId, job.snapshotId, job.targetName!, stackTargetPath, overwrite, job.environmentId)) {
+				throw new Error(`Could not restore stack files for "${job.targetName}"`);
+			}
+		};
+		const result = await this.runNewLocationTo(job, triggeredBy, volumes, includes, hawser ? materialise : undefined);
+		if (result.status !== 'error' && includeStackFiles && !hawser) {
+			try { await materialise(); }
+			catch (e) {
 				console.log(`[restore] ${new Date().toISOString()} materialise stack files threw for "${job.targetName}": ${e instanceof Error ? e.message : String(e)}`);
 			}
 		}
@@ -315,7 +309,7 @@ export class RestoreService {
 	}
 
 	/** Shared non-destructive restore: extract the given includes to targetPath. */
-	private async runNewLocationTo(job: RestoreJob, triggeredBy: 'manual' | 'cron', volumes: string[], includes: string[]): Promise<RestoreResult> {
+	private async runNewLocationTo(job: RestoreJob, triggeredBy: 'manual' | 'cron', volumes: string[], includes: string[], afterRestore?: () => Promise<void>): Promise<RestoreResult> {
 		const op = await this.ports.openOperation(`Restore ${job.snapshotId.slice(0, 8)} → ${job.targetPath}`, job.environmentId, triggeredBy);
 		try {
 			// Defense-in-depth: the helper bind-mounts targetPath rw as root. Refuse a protected
@@ -334,6 +328,7 @@ export class RestoreService {
 				onStderr: (line) => { for (const l of formatResticLines(line)) op.progress('progress', l.startsWith('[dockhand]') ? l : `[restic] ${l}`); } });
 				this.emitResticStdout(op, run.stdout);
 			if (!resticOk(run)) throw new BackupError('RESTIC', run.stderr.trim() || 'restore failed', { exitCode: run.exitCode });
+			if (afterRestore) await afterRestore();
 			await op.close({ kind: 'ok' }, { snapshotId: job.snapshotId, volumes, targetPath: job.targetPath });
 			await this.notifyOk(job, volumes);
 			return { status: 'success', executionId: op.id, restoredVolumes: volumes, targetPath: job.targetPath! };
@@ -358,15 +353,17 @@ export class RestoreService {
 	private runCloneStack(job: RestoreJob, triggeredBy: 'manual' | 'cron', volumes: string[]): Promise<RestoreResult> {
 		return this.runClonePopulate(job, triggeredBy, volumes, async (op) => {
 			if (job.postRestore === 'none') {
-				// Bring nothing up, but materialise the managed stack dir so it's editable +
-				// redeployable. Best-effort (matches runNewLocationStack): the volume clone
-				// already succeeded, so a stackfile write failure must not fail the restore.
+				// Restore files even without a deploy. An unavailable Hawser must
+				// report failure, never leave a falsely-successful local mirror.
 				if (job.targetName) {
-					try {
-						const overwrite = job.mergeStackFiles !== true;
-						const stackTargetPath = await this.ports.stackDirFor(job.targetName, job.environmentId);
-						await this.ports.writeLocalStackFiles(job.destinationId, job.snapshotId, job.targetName, stackTargetPath, overwrite, job.environmentId);
-					} catch (e) {
+					const materialise = async () => {
+						const stackTargetPath = await this.ports.stackDirFor(job.targetName!, job.environmentId, job.snapshotId, job.destinationId);
+						if (!await this.ports.writeLocalStackFiles(job.destinationId, job.snapshotId, job.targetName!, stackTargetPath, job.mergeStackFiles !== true, job.environmentId)) {
+							throw new Error(`Could not restore stack files for "${job.targetName}"`);
+						}
+					};
+					if (await this.ports.stackFilesOnHawser?.(job.environmentId)) await materialise();
+					else try { await materialise(); } catch (e) {
 						console.log(`[restore] ${new Date().toISOString()} clone 'none' writeLocalStackFiles threw for "${job.targetName}": ${e instanceof Error ? e.message : String(e)}`);
 					}
 				}

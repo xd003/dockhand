@@ -1,10 +1,24 @@
 import { json } from '@sveltejs/kit';
-import { findStackDir, getStackComposeFile } from '$lib/server/stacks';
-import { getStackSource } from '$lib/server/db';
+import { findStackDir, getStackComposeFile, hawserRelativeFilePath } from '$lib/server/stacks';
+import { getStackSource, getEnvironment } from '$lib/server/db';
 import { authorize } from '$lib/server/authorize';
 import { existsSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import type { RequestHandler } from './$types';
+import { hawserStackFiles } from '$lib/server/hawser-stack-files';
+import { ensureHawserStackFilesReady } from '$lib/server/hawser-stack-file-migration';
+
+async function remoteEnv(name: string, envId: number | null) {
+	const source = await getStackSource(name, envId);
+	if (!source || envId == null) return null;
+	const env = await getEnvironment(envId);
+	if (env?.connectionType !== 'hawser-standard' && env?.connectionType !== 'hawser-edge') return null;
+	await ensureHawserStackFilesReady(name, envId);
+	const files = await hawserStackFiles(envId, name);
+	const { root } = await files.binding();
+	const current = await getStackSource(name, envId);
+	return { files, root, path: current?.envPath || join(dirname(current?.composePath || join(root, 'compose.yaml')), '.env'), noEnvFile: current?.envPath === '' };
+}
 
 async function resolveEnvFilePath(stackName: string, envId: number | null): Promise<{ path: string | null; noEnvFile: boolean }> {
 	const source = await getStackSource(stackName, envId);
@@ -33,7 +47,7 @@ async function resolveEnvFilePath(stackName: string, envId: number | null): Prom
  * resp-200: {content:string!, noEnvFile:boolean}
  * resp-200-example: {"content":"FOO=bar\n# comment\nBAZ=qux\n"}
  * resp-403: Permission denied (requires stacks:view, or environment access denied on enterprise)
- * resp-500: Failed to get environment file
+ * resp-503: Env file could not be read (e.g. the Hawser agent is offline, must be upgraded, or migration is pending); agent 4xx statuses are passed through
  */
 export const GET: RequestHandler = async ({ params, url, cookies }) => {
 	const auth = await authorize(cookies);
@@ -52,6 +66,17 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 
 	try {
 		const stackName = decodeURIComponent(params.name);
+		const remote = await remoteEnv(stackName, envIdNum);
+		if (remote) {
+			if (remote.noEnvFile) return json({ content: '', noEnvFile: true });
+			try {
+				const file = await remote.files.read(hawserRelativeFilePath(remote.root, remote.path));
+				return json({ content: new TextDecoder().decode(file.content), revision: file.revision });
+			} catch (error) {
+				if (error && typeof error === 'object' && 'status' in error && error.status === 404) return json({ content: '' });
+				throw error;
+			}
+		}
 
 		const { path: envFilePath, noEnvFile } = await resolveEnvFilePath(stackName, envIdNum);
 		if (noEnvFile) {
@@ -70,7 +95,9 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 		return json({ content });
 	} catch (error) {
 		console.error('Error getting raw env file:', error);
-		return json({ error: 'Failed to get environment file' }, { status: 500 });
+		const agentStatus = error && typeof error === 'object' && 'status' in error && typeof error.status === 'number' ? error.status : null;
+		if (agentStatus) return json({ error: error instanceof Error ? error.message : 'Failed to get environment file' }, { status: agentStatus });
+		return json({ error: error instanceof Error ? error.message : 'Failed to get environment file' }, { status: 503 });
 	}
 };
 
@@ -78,7 +105,7 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
  * PUT /api/stacks/[name]/env/raw?env=X
  *
  * @openapi
- * summary: Write raw .env file content to disk for a stack; empty content deletes the .env file, and masked "***" placeholders are rejected to avoid corrupting secrets
+ * summary: Write raw .env file content for a stack (to the Hawser agent's stack directory on Hawser environments); empty content deletes the .env file, and masked "***" placeholders are rejected to avoid corrupting secrets
  * path: name:string! Stack name (from GET /api/stacks)
  * query: env:integer Environment ID the stack belongs to (from GET /api/environments)
  * body: {content:string!}
@@ -87,7 +114,7 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
  * resp-200-example: {"success":true}
  * resp-400: Invalid body (content string required) or refusal to write a masked "***" placeholder
  * resp-403: Permission denied (requires stacks:edit, or environment access denied on enterprise)
- * resp-500: Failed to save environment file
+ * resp-503: Env file could not be written (e.g. the Hawser agent is offline or must be upgraded); a stale revision returns the agent's 409
  */
 export const PUT: RequestHandler = async ({ params, url, cookies, request }) => {
 	const auth = await authorize(cookies);
@@ -107,6 +134,24 @@ export const PUT: RequestHandler = async ({ params, url, cookies, request }) => 
 	try {
 		const stackName = decodeURIComponent(params.name);
 		const body = await request.json();
+		if (typeof body.content !== 'string') return json({ error: 'Invalid request body: content string required' }, { status: 400 });
+		const remote = await remoteEnv(stackName, envIdNum);
+		if (remote) {
+			if (remote.noEnvFile) return json({ success: true, noEnvFile: true });
+			if (body.content.match(/^[A-Za-z_][A-Za-z0-9_]*=\*\*\*$/m)) return json({ error: 'Cannot write masked placeholder "***" to .env file' }, { status: 400 });
+			const path = hawserRelativeFilePath(remote.root, remote.path);
+			let revision: string | undefined;
+			try { revision = (await remote.files.stat(path)).revision; }
+			catch (error) {
+				if (!(error && typeof error === 'object' && 'status' in error && error.status === 404)) throw error;
+			}
+			if (!body.content.trim()) {
+				if (revision) await remote.files.delete(path, revision);
+				return json({ success: true, deleted: !!revision });
+			}
+			await remote.files.write(path, Buffer.from(body.content.endsWith('\n') ? body.content : `${body.content}\n`), revision);
+			return json({ success: true });
+		}
 
 		if (typeof body.content !== 'string') {
 			return json({ error: 'Invalid request body: content string required' }, { status: 400 });
@@ -150,6 +195,8 @@ export const PUT: RequestHandler = async ({ params, url, cookies, request }) => 
 		return json({ success: true });
 	} catch (error) {
 		console.error('Error saving raw env file:', error);
-		return json({ error: 'Failed to save environment file' }, { status: 500 });
+		const agentStatus = error && typeof error === 'object' && 'status' in error && typeof error.status === 'number' ? error.status : null;
+		if (agentStatus) return json({ error: error instanceof Error ? error.message : 'Failed to save environment file' }, { status: agentStatus });
+		return json({ error: error instanceof Error ? error.message : 'Failed to save environment file' }, { status: 503 });
 	}
 };

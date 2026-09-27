@@ -44,6 +44,10 @@ describe('computeRequestTimeoutMs - idle-timeout policy', () => {
 		expect(computeRequestTimeoutMs({ ...base, path: '/_hawser/compose', composeTimeoutSecs: 1800 })).toBe(1800000);
 	});
 
+	it('a Hawser stack-files request gets 300s (a full apply batch is tens of MiB, fsynced per file)', () => {
+		expect(computeRequestTimeoutMs({ ...base, path: '/_hawser/stack-files' })).toBe(300000);
+	});
+
 	it('streaming beats the path-based bumps (a streamed prune/compose still has no timeout)', () => {
 		expect(computeRequestTimeoutMs({ path: '/containers/prune', streamingBody: true, streamingResponse: false })).toBeNull();
 		expect(computeRequestTimeoutMs({ path: '/_hawser/compose', streamingBody: false, streamingResponse: true })).toBeNull();

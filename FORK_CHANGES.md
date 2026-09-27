@@ -94,6 +94,7 @@ Untracked stacks (running in Docker, unknown to Dockhand) can be taken over with
 
 ## Fixes
 
+- **`PUID`/`PGID` are honoured.** Setting them, even to the image default `1001`, runs Dockhand as that user; only leaving both unset keeps it as root. Upstream runs an explicit `1001:1001` as root, so Git checkouts owned by uid 1001 are refused by git and the stack editor reports "Git checkout is unavailable".
 - **Rows stop jumping.** On the stacks and containers lists, live stats don't re-sort the row under your pointer.
 - **Deploy history survives log errors.** If the deploy-log directory isn't writable, the deploy is still recorded with its result (log marked truncated). Fresh containers also get correct ownership on that directory.
 - **Database migrations apply exactly once.** Databases upgraded in a certain order missed some of the fork's migrations (e.g. "no such column: collect_container_metrics"), and re-dated migrations could run twice ("duplicate column"). Applied migrations are now tracked by content, so each one runs exactly once, whatever order it arrives in.

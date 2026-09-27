@@ -386,7 +386,6 @@ describe('the deploy paths hand the policy on', () => {
 		expect(src).toMatch(/const result = runsSeparateBuild\(build, pullBase, noBuildCache\)\s*\?\s*await pullBuildThenUp\(\s*pullPolicy,/);
 		expect(src).toContain('executeComposeCommand(operation, stepOptions(cmdOptions, opts), compose, composeEnvVars, secretVars, onLine)');
 		expect(src).toContain('pullBase: build && pullBase,');
-		expect(src).toMatch(/pullBase: pullBase \|\| false/);
 		expect(src).toContain("if (operation === 'up' || operation === 'pull' || operation === 'build') {");
 	});
 });

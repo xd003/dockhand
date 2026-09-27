@@ -3,6 +3,11 @@ set -e
 
 # Dockhand Docker Entrypoint (Node.js)
 # === Configuration ===
+# Recorded before the defaults are applied: asking for a user and leaving it to
+# us are different requests, and only the second one means run as root. An empty
+# value counts as not asked for, since compose turns an undefined variable into one.
+PUID_WAS_SET=${PUID:+yes}
+PGID_WAS_SET=${PGID:+yes}
 PUID=${PUID:-1001}
 PGID=${PGID:-1001}
 
@@ -73,7 +78,7 @@ fi
 if [ "$PUID" = "0" ]; then
     echo "Running as root user (PUID=0)"
     RUN_USER="root"
-elif [ "$RUNNING_AS_ROOT" = "true" ] && [ "$PUID" = "1001" ] && [ "$PGID" = "1001" ]; then
+elif [ "$RUNNING_AS_ROOT" = "true" ] && [ -z "$PUID_WAS_SET" ] && [ -z "$PGID_WAS_SET" ]; then
     echo "Running as root user"
     RUN_USER="root"
 else
@@ -115,7 +120,7 @@ else
     # as the running user. Switching PUID on an install that ran as root is the one
     # case that does: those folders stay root-owned, and stacks cannot be created or
     # edited until the operator chowns them once. The manual says so.
-    for subdir in db git-repos tmp icons snapshots scanner-cache; do
+    for subdir in db git-repos tmp icons snapshots scanner-cache hawser-migration-archives; do
         if [ -d "$DATA_DIR/$subdir" ]; then
             chown -R "$RUN_USER":"$RUN_USER" "$DATA_DIR/$subdir" 2>/dev/null || true
         fi
@@ -132,7 +137,7 @@ else
     if [ -n "$DATA_DIR" ] && [ "$DATA_DIR" != "/app/data" ] && [ "$DATA_DIR" != "./data" ]; then
         mkdir -p "$DATA_DIR"
         chown "$RUN_USER":"$RUN_USER" "$DATA_DIR" 2>/dev/null || true
-        for subdir in db git-repos tmp icons snapshots scanner-cache; do
+        for subdir in db git-repos tmp icons snapshots scanner-cache hawser-migration-archives; do
             if [ -d "$DATA_DIR/$subdir" ]; then
                 chown -R "$RUN_USER":"$RUN_USER" "$DATA_DIR/$subdir" 2>/dev/null || true
             fi

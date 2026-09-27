@@ -35,6 +35,10 @@ describe('planRemoteStaging', () => {
 		expect(p.hostDir).toBe('/opt/x/web');
 	});
 
+	test('an in-place adopted project is never copied onto the direct host', () => {
+		expect(planRemoteStaging({ ...base, inPlace: true }).stage).toBe(false);
+	});
+
 	test('NO stage when remote_stacks_dir is empty/null (the zero-regression guard)', () => {
 		expect(planRemoteStaging({ ...base, remoteStacksDir: null }).stage).toBe(false);
 		expect(planRemoteStaging({ ...base, remoteStacksDir: '' }).stage).toBe(false);

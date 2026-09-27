@@ -5,7 +5,7 @@
  * proves the flatten + swap lands the restored contents in the live root.
  */
 import { describe, it, expect } from 'bun:test';
-import { buildInPlaceRestore, buildNewLocationRestore, buildCloneRestore, cloneStagingName } from '../../src/lib/server/backups/restore-script';
+import { buildInPlaceRestore, buildNewLocationRestore, buildCloneRestore, buildRemoteStackFilesRestore, cloneStagingName } from '../../src/lib/server/backups/restore-script';
 import { SWAP_NEW, SWAP_ARTIFACTS } from '../../src/lib/server/backups/swap';
 
 describe('buildNewLocationRestore', () => {
@@ -297,5 +297,63 @@ describe('buildInPlaceRestore — real-fs round-trip (models restic writing to s
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
+	});
+});
+
+describe('Hawser stack-file restore on a bound remote root', () => {
+	const { execFileSync } = require('child_process');
+	const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync } = require('fs');
+	const { tmpdir } = require('os');
+	const { join } = require('path');
+
+	it('replaces old files without moving the agent root or deleting excluded bind data', () => {
+		const sandbox = mkdtempSync(join(tmpdir(), 'hawser-restore-'));
+		const root = join(sandbox, 'volumes', '__dockhand_stackdir__');
+		const nested = `${root}/.dockhand-restore-new${root}`;
+		try {
+			mkdirSync(join(root, 'data'), { recursive: true });
+			writeFileSync(join(root, 'compose.yaml'), 'old');
+			writeFileSync(join(root, 'stale.txt'), 'obsolete');
+			writeFileSync(join(root, 'data', 'db.sqlite'), 'live data');
+			const rootInode = require('fs').statSync(root).ino;
+			const script = buildRemoteStackFilesRestore('abcdef12', ['compose.yaml', 'override.yaml'], ['data'], false, root);
+			const mockRestic = `mkdir -p '${nested}/data'; printf new > '${nested}/compose.yaml'; ` +
+				`printf override > '${nested}/override.yaml'; printf config > '${nested}/data/settings.txt'; ` +
+				`printf '\\000\\377\\027' > '${nested}/avatar.bin'`;
+			execFileSync('sh', ['-c', script.replace(/restic 'restore'[^;]*/, mockRestic)]);
+			expect(require('fs').statSync(root).ino).toBe(rootInode);
+			expect(readdirSync(root).sort()).toEqual(['avatar.bin', 'compose.yaml', 'data', 'override.yaml']);
+			expect(readFileSync(join(root, 'compose.yaml'), 'utf8')).toBe('new');
+			expect(readFileSync(join(root, 'data', 'db.sqlite'), 'utf8')).toBe('live data');
+			expect(readFileSync(join(root, 'data', 'settings.txt'), 'utf8')).toBe('config');
+			expect(readFileSync(join(root, 'avatar.bin'))).toEqual(Buffer.from([0, 255, 23]));
+		} finally { rmSync(sandbox, { recursive: true, force: true }); }
+	});
+
+	it('rejects an incomplete snapshot before changing live files', () => {
+		const sandbox = mkdtempSync(join(tmpdir(), 'hawser-restore-'));
+		const root = join(sandbox, 'volumes', '__dockhand_stackdir__');
+		const nested = `${root}/.dockhand-restore-new${root}`;
+		try {
+			mkdirSync(root, { recursive: true });
+			writeFileSync(join(root, 'compose.yaml'), 'live');
+			const script = buildRemoteStackFilesRestore('abcdef12', ['compose.yaml', 'override.yaml'], [], false, root);
+			expect(() => execFileSync('sh', ['-c', script.replace(/restic 'restore'[^;]*/, `mkdir -p '${nested}'; printf old > '${nested}/compose.yaml'`)], { stdio: 'pipe' })).toThrow();
+			expect(readFileSync(join(root, 'compose.yaml'), 'utf8')).toBe('live');
+		} finally { rmSync(sandbox, { recursive: true, force: true }); }
+	});
+
+	it('merges restored files for a non-destructive clone without deleting host-only files', () => {
+		const sandbox = mkdtempSync(join(tmpdir(), 'hawser-restore-'));
+		const root = join(sandbox, 'volumes', '__dockhand_stackdir__');
+		const nested = `${root}/.dockhand-restore-new${root}`;
+		try {
+			mkdirSync(root, { recursive: true });
+			writeFileSync(join(root, 'host-only.txt'), 'keep');
+			const script = buildRemoteStackFilesRestore('abcdef12', ['compose.yaml'], [], true, root);
+			execFileSync('sh', ['-c', script.replace(/restic 'restore'[^;]*/, `mkdir -p '${nested}'; printf restored > '${nested}/compose.yaml'`)]);
+			expect(readFileSync(join(root, 'host-only.txt'), 'utf8')).toBe('keep');
+			expect(readFileSync(join(root, 'compose.yaml'), 'utf8')).toBe('restored');
+		} finally { rmSync(sandbox, { recursive: true, force: true }); }
 	});
 });

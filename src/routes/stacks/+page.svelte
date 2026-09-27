@@ -116,7 +116,7 @@
 	let editingStackName = $state('');
 	let stackModalReadonly = $state(false);
 	let stackModalGitInfo = $state<{ commit?: string; url?: string; branch?: string } | null>(null);
-	let stackModalSource = $state<{ sourceType: string; repository?: { url?: string; branch?: string } | null; gitStack?: { lastCommit?: string | null } | null } | null>(null);
+	let stackModalSource = $state<{ sourceType: string; repository?: { url?: string; branch?: string } | null; gitStack?: { id?: number; lastCommit?: string | null } | null } | null>(null);
 	let stackModalInitialTab = $state<'editor' | 'graph'>('editor');
 	let editingGitStack = $state<any>(null);
 	let adoptionTarget = $state<{ stackName: string; environmentId: number | null; displayName?: string; envPath?: string | null } | null>(null);

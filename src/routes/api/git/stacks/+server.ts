@@ -13,7 +13,7 @@ import {
 	getStackSource,
 	secretProviderExists
 } from '$lib/server/db';
-import { deployGitStack } from '$lib/server/git';
+import { deployGitStack, getRepoPath, provisionSharedClone } from '$lib/server/git';
 import { adoptPendingGitClone } from '$lib/server/git-stack';
 import { validateComposePathsInput } from '$lib/server/compose-files';
 import { getDesiredGitMode } from '$lib/server/git-mode';
@@ -25,10 +25,43 @@ import { allowSecretlessWebhook, webhookConfigRequiresSecret } from '$lib/server
 import { registerSchedule } from '$lib/server/scheduler';
 import { adoptExternalGitStack, validateExternalGitAdoption } from '$lib/server/git-stack-adoption';
 import { acquireStackLock, isHawserConnection } from '$lib/server/stacks';
+import { dirname, relative } from 'node:path';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { getPendingGitClonePath } from '$lib/server/git-stack';
+import { mutateGitStackFiles, type GitFileChange } from '$lib/server/git-stack-files';
+import { repoFilePath, resolveSafeGitFileTarget } from '$lib/server/git-url-safety';
 
 // Stack name validation: Docker Compose requires lowercase; must start with a
 // letter or number, and contain only lowercase letters, numbers, hyphens, underscores
 const STACK_NAME_REGEX = /^[a-z0-9][a-z0-9_-]*$/;
+
+function draftChanges(data: any, repoRoot: string): GitFileChange[] {
+	const composeContents = data.composeContents && typeof data.composeContents === 'object' && !Array.isArray(data.composeContents) ? data.composeContents : {};
+	const composeChanges = Object.entries(composeContents).map(([path, content]) => ({
+		path: relative(repoRoot, repoFilePath(repoRoot, path, 'Compose path')).split('/').join('/'),
+		content: typeof content === 'string' ? content : (() => { throw new Error(`Compose content must be text: ${path}`); })(),
+		expectedRevision: data.editorRevisions?.[path]
+	}));
+	return composeChanges;
+}
+
+function draftClassifications(data: any, repoRoot: string): Array<{ path: string; tracked: boolean; ignored: boolean }> | undefined {
+	if (!Array.isArray(data.editorClassifications)) return undefined;
+	return data.editorClassifications.map((entry: any) => ({
+		...entry,
+		path: relative(repoRoot, repoFilePath(repoRoot, entry.path, 'Compose path')).split('/').join('/')
+	}));
+}
+
+function writeDraftComposeFiles(root: string, data: any): void {
+	const composeContents = data.composeContents && typeof data.composeContents === 'object' && !Array.isArray(data.composeContents) ? data.composeContents : {};
+	for (const [path, content] of Object.entries(composeContents)) {
+		if (typeof content !== 'string') throw new Error(`Compose content must be text: ${path}`);
+		const target = resolveSafeGitFileTarget(root, path);
+		mkdirSync(dirname(target), { recursive: true });
+		writeFileSync(target, content, { encoding: 'utf8', mode: 0o640 });
+	}
+}
 
 /**
  * @openapi
@@ -156,6 +189,10 @@ export const POST: RequestHandler = async (event) => {
 			? data.composePaths
 			: null;
 		const composePath = composePaths?.[0] ?? (data.composePath || 'compose.yaml');
+		let pendingDraftPath: string | null = null;
+		const hasEditorDraft = data.composeContents !== undefined;
+		const draftToken = typeof data.temporaryCloneToken === 'string' ? data.temporaryCloneToken.trim() : '';
+		if (hasEditorDraft && model !== 'centralized' && !draftToken) return json({ error: 'A valid pending repository checkout is required for Git editor drafts' }, { status: 400 });
 
 		if (adoptingExternal) {
 			if (data.deployNow !== true) {
@@ -269,6 +306,47 @@ export const POST: RequestHandler = async (event) => {
 			}
 		}
 
+		if (hasEditorDraft) {
+			const draftRepository = await getGitRepository(Number(repositoryId));
+			pendingDraftPath = model === 'centralized' && draftRepository
+				? getRepoPath(draftRepository.name)
+				: getPendingGitClonePath(draftToken, Number(repositoryId));
+			if (!pendingDraftPath || !existsSync(pendingDraftPath)) return json({ error: model === 'centralized' ? 'Shared repository checkout not found' : 'Pending repository checkout not found or expired' }, { status: 404 });
+			try {
+				for (const change of draftChanges(data, pendingDraftPath)) {
+					if (typeof change.content !== 'string') throw new Error(`Invalid draft content: ${change.path}`);
+				}
+			} catch (error) {
+				return json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 });
+			}
+		}
+
+		let pendingDraftMutation: Awaited<ReturnType<typeof mutateGitStackFiles>> | null = null;
+		if (model === 'stack' && hasEditorDraft && pendingDraftPath) {
+			const repository = await getGitRepository(repositoryId);
+			if (!repository) return json({ error: 'Repository not found' }, { status: 400 });
+			const credential = repository.credentialId ? (await getGitCredentials()).find((entry) => entry.id === repository.credentialId) ?? null : null;
+			const trackedDecision = data.trackedDecision === 'internal' ? 'internal' : 'commit';
+			const untrackedDecision = data.untrackedDecision === 'local' ? 'local' : 'add';
+			const changes = draftChanges(data, pendingDraftPath);
+			if (changes.length > 0) {
+				const expectedClassifications = draftClassifications(data, pendingDraftPath);
+				pendingDraftMutation = await mutateGitStackFiles({
+					repositoryId,
+					repoPath: pendingDraftPath,
+					branch: data.branch || repository.branch,
+					credential,
+					changes,
+					trackedDecision,
+					untrackedDecision,
+					commitMessage: data.commitMessage,
+					expectedClassifications
+				});
+			}
+		}
+		let centralizedDraftMutation: Awaited<ReturnType<typeof mutateGitStackFiles>> | null = null;
+		let centralizedRepoPath: string | null = null;
+
 		const gitStack = await createGitStack(model === 'centralized'
 			? {
 				stackName: trimmedStackName,
@@ -320,11 +398,51 @@ export const POST: RequestHandler = async (event) => {
 			}
 		);
 
+		if (model === 'centralized' && hasEditorDraft && pendingDraftPath) {
+			try {
+				const repository = await getGitRepository(repositoryId);
+				if (!repository) throw new Error('Repository not found');
+				const provision = await provisionSharedClone(repositoryId);
+				if (!provision.success) throw new Error(provision.error || 'Failed to provision the shared repository checkout');
+				centralizedRepoPath = getRepoPath(repository.name);
+				const credential = repository.credentialId ? (await getGitCredentials()).find((entry) => entry.id === repository.credentialId) ?? null : null;
+				const changes = draftChanges(data, pendingDraftPath);
+				if (changes.length > 0) {
+					centralizedDraftMutation = await mutateGitStackFiles({
+						repositoryId,
+						repoPath: centralizedRepoPath,
+						branch: data.branch || repository.branch,
+						credential,
+						changes,
+						trackedDecision: data.trackedDecision === 'internal' ? 'internal' : 'commit',
+						untrackedDecision: data.untrackedDecision === 'local' ? 'local' : 'add',
+						commitMessage: data.commitMessage,
+						expectedClassifications: draftClassifications(data, pendingDraftPath, composePaths, composePath)
+					});
+				}
+			} catch (error) {
+				await deleteGitStack(gitStack.id).catch(() => false);
+				return json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 });
+			}
+		}
+
 		if (model === 'stack' && typeof data.temporaryCloneToken === 'string' && data.temporaryCloneToken.trim()) {
 			const adoption = await adoptPendingGitClone(gitStack.id, data.temporaryCloneToken.trim());
 			if (!adoption.success) {
 				await deleteGitStack(gitStack.id);
 				return json({ error: adoption.error || 'Failed to attach the pre-cloned repository' }, { status: 400 });
+			}
+			if (hasEditorDraft && adoption.path) {
+				writeDraftComposeFiles(adoption.path, data);
+			}
+		}
+
+		if (model === 'centralized' && hasEditorDraft && centralizedRepoPath) {
+			try {
+				writeDraftComposeFiles(centralizedRepoPath, data);
+			} catch (error) {
+				await deleteGitStack(gitStack.id).catch(() => false);
+				return json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 });
 			}
 		}
 

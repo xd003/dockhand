@@ -1,3 +1,17 @@
+<script lang="ts" module>
+	import type { LintMarker } from '$lib/components/CodeEditor.svelte';
+
+	/** Findings with a line in the active compose file (or the merged project), as editor lint markers. */
+	export function findingLintMarkers(
+		findings: ReadonlyArray<Omit<LintMarker, 'line'> & { line?: number; source?: string }>,
+		activePath: string
+	): LintMarker[] {
+		return findings
+			.filter((finding) => typeof finding.line === 'number' && (!finding.source || finding.source === activePath || finding.source === 'compose'))
+			.map((finding) => ({ line: finding.line!, severity: finding.severity, ruleId: finding.ruleId, message: finding.message }));
+	}
+</script>
+
 <script lang="ts">
 	import { Button } from '$lib/components/ui/button';
 	import { CircleX, TriangleAlert, Info, CheckCircle2, ArrowRight, Loader2, RefreshCw, X, ChevronDown, Wand2 } from 'lucide-svelte';

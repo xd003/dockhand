@@ -16,6 +16,7 @@ import { pushMetric } from './metrics-store.js';
 import { secureGetRandomValues, secureRandomUUID } from './crypto-fallback.js';
 import { hashPassword, verifyPassword } from './auth.js';
 import { validateEdgeAgentDockerUniqueness } from './environment-docker-validation.js';
+import { scheduleHawserStackFileMigrations } from './hawser-stack-file-migration.js';
 import { dispatchStreamMessage } from './hawser-core.js';
 export { dispatchStreamMessage };
 
@@ -47,6 +48,7 @@ export interface EdgeConnection {
 	agentVersion: string;
 	dockerVersion: string;
 	hostname: string;
+	stacksDir?: string;
 	capabilities: string[];
 	connectedAt: Date;
 	lastHeartbeat: number;
@@ -532,6 +534,7 @@ export function handleEdgeConnection(
 		agentVersion: hello.version,
 		dockerVersion: hello.dockerVersion,
 		hostname: hello.hostname,
+		stacksDir: hello.stacksDir,
 		capabilities: hello.capabilities,
 		connectedAt: new Date(),
 		lastHeartbeat: Date.now(),
@@ -989,6 +992,7 @@ export interface HelloMessage {
 	token: string;
 	dockerVersion: string;
 	hostname: string;
+	stacksDir?: string;
 	capabilities: string[];
 }
 
@@ -1284,6 +1288,9 @@ async function handleHawserWsMessage(ws: any, msg: any, connId: string, remoteIp
 			}
 
 			console.log(`[Hawser WS] Agent authenticated: env=${result.environmentId} agent=${msg.agentName || msg.agentId}`);
+			if (msg.capabilities.includes('stack-files-v1')) {
+				scheduleHawserStackFileMigrations(result.environmentId);
+			}
 		} catch (error: any) {
 			console.error('[Hawser WS] Auth error:', error.message);
 			ws.send(JSON.stringify({ type: 'error', message: 'Authentication failed' }));

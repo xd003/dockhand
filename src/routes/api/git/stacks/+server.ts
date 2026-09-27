@@ -30,6 +30,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { getPendingGitClonePath } from '$lib/server/git-stack';
 import { mutateGitStackFiles, type GitFileChange } from '$lib/server/git-stack-files';
 import { repoFilePath, resolveSafeGitFileTarget } from '$lib/server/git-url-safety';
+import { parseProjectFileChanges, type ProjectFileChanges } from '$lib/server/adoption-project-files';
 
 // Stack name validation: Docker Compose requires lowercase; must start with a
 // letter or number, and contain only lowercase letters, numbers, hyphens, underscores
@@ -37,10 +38,11 @@ const STACK_NAME_REGEX = /^[a-z0-9][a-z0-9_-]*$/;
 
 function draftChanges(data: any, repoRoot: string): GitFileChange[] {
 	const composeContents = data.composeContents && typeof data.composeContents === 'object' && !Array.isArray(data.composeContents) ? data.composeContents : {};
-	const composeChanges = Object.entries(composeContents).map(([path, content]) => ({
+	const composeChanges = Object.entries(composeContents).map(([path, content]): GitFileChange => ({
 		path: relative(repoRoot, repoFilePath(repoRoot, path, 'Compose path')).split('/').join('/'),
 		content: typeof content === 'string' ? content : (() => { throw new Error(`Compose content must be text: ${path}`); })(),
-		expectedRevision: data.editorRevisions?.[path]
+		expectedRevision: data.editorRevisions?.[path],
+		decision: data.editorDecisions?.[path] === 'commit' || data.editorDecisions?.[path] === 'local' ? data.editorDecisions[path] : undefined
 	}));
 	return composeChanges;
 }
@@ -94,8 +96,8 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 /**
  * @openapi
  * summary: Create a git-deployed stack (from an existing repo or new repo url/branch)
- * description: Git checkouts remain on Dockhand. On Hawser environments, deploying publishes selected Git files to the bound Hawser directory without creating a Dockhand stack-file copy. Converting an external project (adoptExternal) with existingComposePath - the project's current Compose file on Dockhand's filesystem (local/direct) or the agent's (Hawser) - deploys in that directory: Git-tracked files replace same-path files there and unrelated files stay. On a direct remote Docker host the directory must resolve to the same files on Dockhand and the host, otherwise conversion is rejected. Without existingComposePath (the project's files are gone) the repository deploys to Dockhand's managed stack directory like a new Git stack, and Compose takes over the running project by name.
- * body: {stackName:string!, environmentId:integer, repositoryId:integer, composePath:string, composePaths:array<string>, secretProviderId:integer, webhookEnabled:boolean, webhookSecret:string, adoptExternal:boolean, existingComposePath:string, deployNow:boolean}
+ * description: Git checkouts remain on Dockhand. On Hawser environments, deploying publishes selected Git files to the bound Hawser directory without creating a Dockhand stack-file copy. Converting an external project (adoptExternal) with existingComposePath - the project's current Compose file on Dockhand's filesystem (local/direct) or the agent's (Hawser) - deploys in that directory: Git-tracked files replace same-path files there and unrelated files stay. On a direct remote Docker host the directory must resolve to the same files on Dockhand and the host, otherwise conversion is rejected. Without existingComposePath (the project's files are gone) the repository deploys to Dockhand's managed stack directory like a new Git stack, and Compose takes over the running project by name; localChanges then are rejected. During in-place conversion, composeContents edits checkout files, and localChanges ({writes:[{path, content|contentBase64, expectedRevision}], deletions:[{path, expectedRevision}], folders:[path]}, paths relative to the project directory, revisions from GET /api/stacks/{name}/adoption-files) edits the project's files outside Git right before Compose runs; they are restored if the conversion fails.
+ * body: {stackName:string!, environmentId:integer, repositoryId:integer, composePath:string, composePaths:array<string>, secretProviderId:integer, webhookEnabled:boolean, webhookSecret:string, adoptExternal:boolean, existingComposePath:string, localChanges:object, deployNow:boolean}
  * resp-400: Invalid stack name, or secretProviderId is not a number/null
  * resp-403: Permission denied (needs stacks:create; binding a secret provider also needs secrets:view)
  * resp-404: The requested external stack does not exist
@@ -201,6 +203,15 @@ export const POST: RequestHandler = async (event) => {
 			if (auth.authEnabled && !await auth.can('stacks', 'edit', data.environmentId || undefined)) {
 				return json({ error: 'Permission denied: adopting a stack requires the stacks edit permission' }, { status: 403 });
 			}
+			let localChanges: ProjectFileChanges | null;
+			try {
+				localChanges = parseProjectFileChanges(data.localChanges);
+			} catch (error) {
+				return json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 });
+			}
+			if (hasEditorDraft && typeof data.repositoryId !== 'number') {
+				return json({ error: 'Git editor drafts require an existing repository' }, { status: 400 });
+			}
 			const releaseAdoptionLock = await acquireStackLock(trimmedStackName);
 			try {
 				const preflight = await validateExternalGitAdoption({ ...data, stackName: trimmedStackName, engine: model });
@@ -217,11 +228,42 @@ export const POST: RequestHandler = async (event) => {
 					releaseAdoptionLock();
 					return adoptionMigrationLock;
 				}
+				if (hasEditorDraft) {
+					// Edits to checkout files follow the same commit/keep-local choice as a new Git stack.
+					try {
+						const repository = await getGitRepository(data.repositoryId);
+						if (!repository) throw Object.assign(new Error('Repository not found'), { status: 400 });
+						if (model === 'centralized') {
+							const provision = await provisionSharedClone(repository.id);
+							if (!provision.success) throw new Error(provision.error || 'Failed to provision the shared repository checkout');
+						}
+						const checkout = model === 'centralized' ? getRepoPath(repository.name) : getPendingGitClonePath(draftToken, repository.id);
+						if (!checkout || !existsSync(checkout)) {
+							throw Object.assign(new Error(model === 'centralized' ? 'Shared repository checkout not found' : 'Pending repository checkout not found or expired'), { status: 404 });
+						}
+						const credential = repository.credentialId ? (await getGitCredentials()).find((entry) => entry.id === repository.credentialId) ?? null : null;
+						await mutateGitStackFiles({
+							repositoryId: repository.id,
+							repoPath: checkout,
+							branch: data.branch || repository.branch,
+							credential,
+							changes: draftChanges(data, checkout),
+							trackedDecision: data.trackedDecision === 'internal' ? 'internal' : 'commit',
+							untrackedDecision: data.untrackedDecision === 'local' ? 'local' : 'add',
+							commitMessage: data.commitMessage,
+							expectedClassifications: draftClassifications(data, checkout)
+						});
+					} catch (error) {
+						releaseAdoptionLock();
+						const status = typeof error === 'object' && error && 'status' in error ? Number(error.status) : 400;
+						return json({ error: error instanceof Error ? error.message : String(error) }, { status });
+					}
+				}
 
 				return createJobResponse(async (send) => {
 					try {
 						const result = await adoptExternalGitStack(
-							{ ...data, stackName: trimmedStackName, environmentId: data.environmentId || null, engine: model },
+							{ ...data, localChanges, stackName: trimmedStackName, environmentId: data.environmentId || null, engine: model },
 							(line) => send('progress', { type: 'line', line }),
 							undefined,
 							{ lockHeld: true, preflight }
@@ -461,7 +503,8 @@ export const POST: RequestHandler = async (event) => {
 			fileLocation: isHawserConnection(environment) ? 'hawser' : 'dockhand',
 			gitRepositoryId: repositoryId,
 			gitStackId: gitStack.id,
-			secretProviderId: data.secretProviderId ?? null
+			secretProviderId: data.secretProviderId ?? null,
+			workspaceEnabled: data.workspaceEnabled === true
 		});
 
 		// Audit log

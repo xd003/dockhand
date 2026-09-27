@@ -8,13 +8,15 @@
 	import StackEnvVarsPanel from '$lib/components/StackEnvVarsPanel.svelte';
 	import { type EnvVar, type ValidationResult } from '$lib/components/StackEnvVarsEditor.svelte';
 	import SecretProviderPicker from '$lib/components/SecretProviderPicker.svelte';
-	import { SELECTOR_VARS } from '$lib/utils/bulk-selector';
+	import { SELECTOR_VARS, BULK_SELECTOR_VAR, bulkSelectorValue } from '$lib/utils/bulk-selector';
 	import { classifyMarker } from '$lib/utils/invault-markers';
 	import { probeProviderKeys, providerProbeInput } from '$lib/utils/provider-probe';
 	import { applyQuickFix, findingKey } from '$lib/utils/compose-quick-fix';
 	import { Layers, Save, Play, Code, GitGraph, GitBranch, GitCommitHorizontal, Github, Loader2, AlertCircle, X, Sun, Moon, TriangleAlert, GripVertical, GripHorizontal, FolderOpen, Copy, Check, XCircle, MapPin, ArrowRight, ArrowDown, Box, FolderSync, Archive, Lock, FileText, FilePlus, ListChecks, History, ChevronDown, Settings2, Download } from 'lucide-svelte';
 	import ComposeValidatePanel, { findingLintMarkers } from './ComposeValidatePanel.svelte';
 	import StackFileEditor from './StackFileEditor.svelte';
+	import StackWorkspace, { type WorkspaceDraft } from './StackWorkspace.svelte';
+	import { STACK_VIEW_TABLIST_CLASS, stackViewTabClass } from './view-tabs';
 
 	import BackupPanel from '../containers/BackupPanel.svelte';
 	import DeploysPanel from './DeploysPanel.svelte';
@@ -42,7 +44,8 @@
 	import { isHawserConnectionType } from '$lib/shared/repo-predicates';
 	import * as Alert from '$lib/components/ui/alert';
 	import { ErrorDialog } from '$lib/components/ui/error-dialog';
-	import { readJobResponse } from '$lib/utils/sse-fetch';
+	import { readJobResponse, watchJob } from '$lib/utils/sse-fetch';
+	import { GIT_LINE_MARKER } from '$lib/utils/log-lines';
 	import { saveCloseTiming } from '$lib/utils/save-close-policy';
 	import { clampNumber } from '$lib/utils/clamp-number';
 	import LogViewer from '$lib/components/LogViewer.svelte';
@@ -87,11 +90,13 @@
 		initialCompose?: string; // Pre-fill compose content (for library deploy)
 		initialStackName?: string; // Pre-fill stack name (for library deploy)
 		readonly?: boolean; // View compose content without allowing local changes
+		inspectionReadonly?: boolean; // Name-click inspection: no tags, deploy deletion, backups, overrides, workspace setting or files
 		gitInfo?: { commit?: string; url?: string; branch?: string } | null; // Git provenance for read-only git stacks
-		stackSource?: { sourceType: string; gitStack?: { id?: number } | null } | null;
+		stackSource?: { sourceType: string; workspaceEnabled?: boolean; gitStack?: { id?: number; composePath?: string; envFilePath?: string | null } | null } | null;
 		initialTab?: 'editor' | 'graph';
 		onClose: () => void;
 		onSuccess: () => void; // Called after create or save
+		onConverted?: () => void; // Refresh the stack source after a workspace Git-to-Internal conversion
 		onAdoptFromGit?: () => void;
 		/** Untracked stack whose Compose file is gone: start a new internal stack under the same project name. */
 		onCreateInternally?: () => void;
@@ -100,7 +105,7 @@
 		onEditGitSettings?: () => void;
 	}
 
-	let { open = $bindable(), mode: propMode, stackName: propStackName = '', initialCompose, initialStackName, readonly = false, gitInfo = null, stackSource = null, initialTab = 'editor', onClose, onSuccess, onAdoptFromGit, onCreateInternally, takeoverStackName, onEditGitSettings }: Props = $props();
+	let { open = $bindable(), mode: propMode, stackName: propStackName = '', initialCompose, initialStackName, readonly = false, inspectionReadonly = false, gitInfo = null, stackSource = null, initialTab = 'editor', onClose, onSuccess, onConverted, onAdoptFromGit, onCreateInternally, takeoverStackName, onEditGitSettings }: Props = $props();
 
 	let gitCommitCopied = $state<'ok' | 'error' | null>(null);
 	// Settings opens a different modal that reloads the saved stack; confirm before dropping edits.
@@ -203,6 +208,9 @@
 	let saveRedeployDefaults = $derived<DeployOptions>({ pull: false, build: hasBuildSection, forceRecreate: envVarCount > 0 });
 	let createStartDefaults = $derived<DeployOptions>({ pull: false, build: hasBuildSection, forceRecreate: false });
 	let activeTab = $state<'editor' | 'graph' | 'backups' | 'deploys'>('editor');
+	let workspaceEnabled = $state(false);
+	let workspaceDraft = $state<WorkspaceDraft>({ files: {}, binaryFiles: {}, folders: [] });
+	let workspaceRef: StackWorkspace | undefined = $state();
 	let composeContents = $state<Record<string, string>>({});   // path → content map for multi-file
 	let activeComposePath = $state('');                           // currently viewed file path
 	let backupCount = $state(0);
@@ -219,6 +227,10 @@
 	// Whether the user has picked a provider themselves this open - "None" is null
 	// too, so the value alone cannot tell an untouched form from a deliberate none.
 	let secretProviderTouched = $state(false);
+	// Edit mode: the binding and bulk selector as last loaded/saved, so a change in the
+	// env panel can be detected and saved on its own (the panel is otherwise read-only).
+	let savedSecretProviderId = $state<number | null>(null);
+	let savedSelectorValue = $state('');
 	// Provider-injected key NAMES from the last deploy (banner)
 	let injectedSecretKeys = $state<string[]>([]);
 	// Provider type/name for the injected-secrets banner in the env panel.
@@ -331,6 +343,150 @@
 	$effect(() => {
 		if (open) activeTab = initialTab;
 	});
+
+	$effect(() => {
+		if (!open || mode !== 'edit' || !stackName) return;
+		workspaceEnabled = stackSource?.workspaceEnabled === true;
+	});
+
+	async function setWorkspaceEnabled(enabled: boolean) {
+		if (inspectionReadonly) return;
+		workspaceEnabled = enabled;
+		if (enabled && mode === 'create') {
+			const rootPath = workingComposePaths[0] || workingComposePath || 'compose.yaml';
+			const slash = rootPath.lastIndexOf('/');
+			const root = slash < 0 ? '' : rootPath.slice(0, slash);
+			const relativePath = (path: string) => root && path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path.split('/').pop()!;
+			const composePath = relativePath(rootPath);
+			const envPath = relativePath(workingEnvPath || '.env');
+			workspaceDraft = {
+				...workspaceDraft,
+				files: {
+					...workspaceDraft.files,
+					[composePath]: composeContent || defaultCompose,
+					...(rawEnvContent ? { [envPath]: rawEnvContent } : {})
+				}
+			};
+		}
+		if (mode === 'edit' && !needsFileLocation) {
+			const response = await fetch(workspaceApiUrl, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ workspaceEnabled: enabled }) });
+			if (!response.ok) { workspaceEnabled = !enabled; toast.error('Failed to update workspace setting'); }
+			else if (stackSource) stackSource.workspaceEnabled = enabled;
+		}
+	}
+
+	function applyWorkspaceDraft(draft: WorkspaceDraft) {
+		workspaceDraft = draft;
+		const repositoryPath = workingComposePaths[0] || workingComposePath || 'compose.yaml';
+		const slash = repositoryPath.lastIndexOf('/');
+		const composePath = repositoryPath.slice(slash + 1);
+		if (draft.files[composePath] !== undefined) {
+			composeContent = draft.files[composePath];
+			composeContents = { ...composeContents, [repositoryPath]: draft.files[composePath] };
+		}
+		const envPath = (workingEnvPath || '.env').split('/').pop()!;
+		if (draft.files[envPath] !== undefined) rawEnvContent = draft.files[envPath];
+		isDirty = true;
+	}
+
+	const workspaceApiUrl = $derived(appendEnvParam(`/api/stacks/${encodeURIComponent(stackName)}/workspace`, $currentEnvironment?.id ?? null));
+	const workspaceRootName = $derived((workingComposePaths[0] || workingComposePath).split('/').slice(-2, -1)[0] || newStackName || stackName || 'stack');
+	async function workspaceConverted() {
+		onConverted?.();
+		await tick();
+		await loadComposeFile();
+	}
+	function workspaceRelativePath(path: string): string {
+		const primary = workingComposePaths[0] || workingComposePath;
+		const root = primary.includes('/') ? primary.slice(0, primary.lastIndexOf('/')) : '';
+		return root && path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path;
+	}
+
+	// Edit-mode workspace saves write straight to disk (the repository checkout for Git
+	// stacks, the stack directory otherwise), so re-read the affected compose and env
+	// files and mirror them into the read-only Stack Config view. This deliberately
+	// avoids loadComposeFile(), whose loading state would unmount the workspace.
+	function workspacePathFor(absolutePath: string): string | null {
+		const root = localStackDir.replace(/\/$/, '');
+		return root && absolutePath.startsWith(`${root}/`) ? absolutePath.slice(root.length + 1) : null;
+	}
+
+	async function readWorkspaceText(path: string): Promise<string | null> {
+		const separator = workspaceApiUrl.includes('?') ? '&' : '?';
+		try {
+			const response = await fetch(`${workspaceApiUrl}${separator}path=${encodeURIComponent(path)}&content=1`);
+			if (!response.ok) return null;
+			const data = await response.json();
+			return data.binary ? null : (data.content ?? '');
+		} catch {
+			return null;
+		}
+	}
+
+	function parseEnvText(content: string): Record<string, string> {
+		const vars: Record<string, string> = {};
+		for (const line of content.split('\n')) {
+			const trimmed = line.trim();
+			const eqIndex = trimmed.indexOf('=');
+			if (!trimmed || trimmed.startsWith('#') || eqIndex === -1) continue;
+			const key = trimmed.slice(0, eqIndex).trim();
+			if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) vars[key] = trimmed.slice(eqIndex + 1).trim();
+		}
+		return vars;
+	}
+
+	async function syncStackConfigFromWorkspace(changedPaths: string[]) {
+		if (mode !== 'edit' || !stackName || !localStackDir) return;
+		const touches = (target: string | null) => !!target && changedPaths.some((path) => target === path || target.startsWith(`${path}/`));
+		const wasDirty = isDirty;
+		const selectorEdited = bulkSelectorValue(envVars) !== savedSelectorValue;
+		let changed = false;
+
+		const composeTargets = workingComposePaths.filter((path) => touches(workspacePathFor(path)));
+		if (composeTargets.length) {
+			const updates = await Promise.all(composeTargets.map(async (path) => [path, await readWorkspaceText(workspacePathFor(path)!)] as const));
+			const nextContents = { ...composeContents, ...(activeComposePath ? { [activeComposePath]: composeContent } : {}) };
+			for (const [path, content] of updates) if (content !== null) nextContents[path] = content;
+			composeContents = nextContents;
+			if (activeComposePath && nextContents[activeComposePath] !== undefined) composeContent = nextContents[activeComposePath];
+			changed = true;
+		}
+
+		if (isGitView) {
+			const envTargets = [...new Set(['.env', workspacePathFor(workingEnvPath)].filter((path): path is string => !!path))];
+			if (envTargets.some((path) => touches(path))) {
+				const fileVars: Record<string, string> = {};
+				for (const path of envTargets) {
+					const content = await readWorkspaceText(path);
+					if (content !== null) Object.assign(fileVars, parseEnvText(content));
+				}
+				const overrides = envVars.filter((variable) => isGitStackOverride(variable, gitFileEnvVars));
+				gitFileEnvVars = fileVars;
+				envVars = mergeGitStackEnvVars(fileVars, overrides);
+				changed = true;
+			}
+		} else if (touches(workspacePathFor(workingEnvPath || suggestedEnvPath || ''))) {
+			const envId = $currentEnvironment?.id ?? null;
+			const [envResponse, rawEnvResponse] = await Promise.all([
+				fetch(appendEnvParam(`/api/stacks/${encodeURIComponent(stackName)}/env`, envId)),
+				fetch(appendEnvParam(`/api/stacks/${encodeURIComponent(stackName)}/env/raw`, envId))
+			]);
+			if (envResponse.ok && rawEnvResponse.ok) {
+				const loadedVars: EnvVar[] = (await envResponse.json()).variables || [];
+				const loadedRaw: string = (await rawEnvResponse.json()).content || '';
+				if (envVarsPanelRef) envVarsPanelRef.syncAfterLoad(loadedVars, loadedRaw);
+				else { envVars = loadedVars; rawEnvContent = loadedRaw; }
+				changed = true;
+			}
+		}
+
+		if (!changed) return;
+		await tick();
+		await validateEnvVars();
+		isDirty = wasDirty;
+		// A selector the files changed (not the user) is the new saved state.
+		if (!selectorEdited) savedSelectorValue = bulkSelectorValue(envVars);
+	}
 
 	$effect(() => {
 		if (open) {
@@ -469,9 +625,9 @@
 	// Findings mapped to editor lint markers (only those with a line).
 	const validateMarkers = $derived(findingLintMarkers(validateReport?.findings ?? [], activeComposePath));
 
-	async function runComposeValidate(opts: { silent?: boolean } = {}) {
+	async function runComposeValidate(opts: { silent?: boolean } = {}): Promise<boolean> {
 		const primaryContent = primaryComposeContent();
-		if (!primaryContent.trim()) return;
+		if (!primaryContent.trim()) return false;
 		// Silent re-validate (after a quick fix) keeps the current list visible so the
 		// panel doesn't collapse to a spinner and lose the scroll position.
 		if (!opts.silent) validateLoading = true;
@@ -486,7 +642,7 @@
 		// and the provider cannot have changed in between.
 		if (!opts.silent) {
 			await runProbe();
-			if (seq !== validateSeq) return; // modal reopened, or a newer validate started
+			if (seq !== validateSeq) return false; // modal reopened, or a newer validate started
 		}
 		try {
 			const envId = $currentEnvironment?.id ?? null;
@@ -528,7 +684,7 @@
 			}
 			const fresh = await res.json();
 			// Stale response (a newer validate started meanwhile): drop it entirely.
-			if (seq !== validateSeq) return;
+			if (seq !== validateSeq) return false;
 			// On a silent re-validate, only swap the report if the finding set actually
 			// changed. When a fix succeeded the optimistic list already matches the fresh
 			// one, so keeping the same object avoids re-rendering (and the flash) of the
@@ -538,10 +694,12 @@
 			} else {
 				validateReport = fresh;
 			}
+			return fresh.counts.error === 0;
 		} catch (e) {
-			if (seq !== validateSeq) return; // superseded - don't clobber a newer report
+			if (seq !== validateSeq) return false; // superseded - don't clobber a newer report
 			validateError = e instanceof Error ? e.message : 'Validation failed';
 			validateReport = null;
+			return false;
 		} finally {
 			if (seq === validateSeq) validateLoading = false;
 		}
@@ -686,6 +844,12 @@
 		else {
 			activeComposePath = workingComposePaths[0] ?? '';
 			composeContent = activeComposePath ? composeContents[activeComposePath] ?? '' : '';
+		}
+		if (workspaceEnabled && mode === 'create') {
+			workspaceDraft = {
+				...workspaceDraft,
+				files: { ...workspaceDraft.files, ...Object.fromEntries(Object.entries(draft.composeContents).map(([path, content]) => [workspaceRelativePath(path), content])) }
+			};
 		}
 		isDirty = true;
 	}
@@ -1439,6 +1603,24 @@
 			(stackSource?.sourceType === 'git' ||
 				!!(gitInfo && (gitInfo.commit || gitInfo.url || gitInfo.branch)))
 	);
+
+	// Edit mode may add compose-referenced missing vars without the workspace: internal
+	// stacks append them to the .env file (the one sanctioned out-of-workspace file edit).
+	// Git stacks keep their variables as Dockhand overrides, never repository files, so the
+	// whole variables panel stays editable there with or without the workspace.
+	const canAddMissingEnv = $derived(mode === 'edit' && !inspectionReadonly && !needsFileLocation && (isGitView || !readonly));
+	const canEditGitEnv = $derived(isGitView && mode === 'edit' && !inspectionReadonly);
+	// Variables added through "Add missing" and not yet saved: the only variable edit an
+	// internal stack's view can save, so the footer offers Save / Save & deploy just while
+	// there are some (or, for Git stacks, while overrides are dirty).
+	const hasAddedMissingEnv = $derived.by(() => canAddMissingEnv && (envVarsPanelRef?.getAddedMissingVariables().length ?? 0) > 0);
+	// The secret provider is a Dockhand binding, not a file, so whoever may add missing
+	// variables (internal) or edit overrides (Git) may also rebind it from the env panel.
+	const canEditSecretProvider = $derived(canAddMissingEnv);
+	const secretProviderChanged = $derived(
+		canEditSecretProvider &&
+			(formSecretProviderId !== savedSecretProviderId || bulkSelectorValue(envVars) !== savedSelectorValue)
+	);
 	const gitStackId = $derived(stackSource?.gitStack?.id ?? null);
 	const activeComposeDisplayPath = $derived(activeComposePath || workingComposePaths[0] || workingComposePath || '');
 	const composePathForDisplay = $derived(mode === 'create' && !newStackName.trim() ? '' : activeComposeDisplayPath);
@@ -1741,6 +1923,7 @@
 			} catch (e) {
 				console.warn('Failed to load stack source for secret provider binding:', e);
 			}
+			savedSecretProviderId = formSecretProviderId;
 
 			// Volumes/binds for the backup picker (managed/internal stack path).
 			try {
@@ -1749,10 +1932,35 @@
 				console.error('Failed to load stack volumes:', e);
 			}
 
-			// Load both env endpoints in parallel, then process results together
-			const [envResponse, rawEnvResponse] = await Promise.all([
+			// Git stacks store only overrides in the DB; read the compose-directory
+			// .env and any configured env file from the checkout as their defaults.
+			const gitStack = stackSource?.gitStack;
+			const defaultEnvPath = `${(gitStack?.composePath || 'compose.yaml').replace(/[^/]*$/, '')}.env`;
+			const readRepoEnv = async (path: string): Promise<Record<string, string>> => {
+				try {
+					const response = await fetch(`/api/git/stacks/${gitStack!.id}/env-files`, {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({ path })
+					});
+					return response.ok ? (await response.json()).vars || {} : {};
+				} catch (error) {
+					console.error('Failed to read Git stack env file:', error);
+					return {};
+				}
+			};
+			const repoVars = isGitView && gitStack?.id
+				? (async () => {
+					const base = await readRepoEnv(defaultEnvPath);
+					const overlay = gitStack.envFilePath && gitStack.envFilePath !== defaultEnvPath
+						? await readRepoEnv(gitStack.envFilePath) : {};
+					return { ...base, ...overlay };
+				})()
+				: Promise.resolve({} as Record<string, string>);
+			const [envResponse, rawEnvResponse, fileVars] = await Promise.all([
 				fetch(appendEnvParam(`/api/stacks/${encodeURIComponent(stackName)}/env`, envId)),
-				fetch(appendEnvParam(`/api/stacks/${encodeURIComponent(stackName)}/env/raw`, envId))
+				fetch(appendEnvParam(`/api/stacks/${encodeURIComponent(stackName)}/env/raw`, envId)),
+				repoVars
 			]);
 
 			// Process env vars from DB
@@ -1770,8 +1978,8 @@
 
 			loading = false;
 			if (isGitView) {
-				envVars = loadedVars;
-				await populateGitEnvVars(loadedVars, false);
+				gitFileEnvVars = fileVars;
+				envVars = mergeGitStackEnvVars(fileVars, loadedVars);
 			} else {
 				let loadedRawContent = '';
 				if (rawEnvResponse.ok) {
@@ -1781,6 +1989,7 @@
 				await tick();
 				envVarsPanelRef?.syncAfterLoad(loadedVars, loadedRawContent);
 			}
+			savedSelectorValue = bulkSelectorValue(envVars);
 			isDirty = false;
 
 		} catch (e: any) {
@@ -1827,8 +2036,10 @@
 	}
 
 	async function populateGitEnvVars(overrides: EnvVar[] = envVars, notify = true) {
+		if (inspectionReadonly) return;
 		if (!gitStackId) return;
 		const wasDirty = isDirty;
+		const selectorEdited = bulkSelectorValue(envVars) !== savedSelectorValue;
 		populatingGitEnvVars = true;
 		try {
 			const response = await fetch(`/api/git/stacks/${gitStackId}/env-files`, {
@@ -1845,11 +2056,13 @@
 				composeContent = composeContents[selectedPath] ?? data.composeContent ?? '';
 			}
 			gitFileEnvVars = data.vars || {};
+			await workspaceRef?.reloadFromDisk();
 			envVars = mergeGitStackEnvVars(gitFileEnvVars, overrides);
 			rawEnvContent = '';
 			await tick();
 			await validateEnvVars();
 			isDirty = wasDirty;
+			if (!selectorEdited) savedSelectorValue = bulkSelectorValue(envVars);
 			if (notify) toast.success(`Loaded ${Object.keys(composeContents).length} compose files and ${Object.keys(gitFileEnvVars).length} environment variables from Git`);
 		} catch (e) {
 			if (notify) {
@@ -1864,7 +2077,8 @@
 		}
 	}
 
-	async function saveGitEnvVars() {
+	async function saveGitEnvVars(): Promise<boolean> {
+		if (inspectionReadonly) return false;
 		const envId = $currentEnvironment?.id ?? null;
 		const variables = envVars
 			.filter((variable) => isGitStackOverride(variable, gitFileEnvVars))
@@ -1879,12 +2093,162 @@
 			const data = await response.json();
 			if (!response.ok) throw new Error(data.error || 'Failed to save environment variables');
 			isDirty = false;
+			envVarsPanelRef?.clearAddedMissing();
 			toast.success('Environment variables saved');
 			onSuccess();
+			return true;
 		} catch (e) {
 			toast.error('Failed to save environment variables', {
 				description: e instanceof Error ? e.message : undefined
 			});
+			return false;
+		} finally {
+			saving = false;
+		}
+	}
+
+	// Internal stacks keep non-secrets in the .env file, so the env panel saves only what
+	// it can change there: compose-referenced missing variables (appended) and the secret
+	// provider's bulk selector (its line replaced).
+	async function saveInternalEditorEnv(): Promise<boolean> {
+		if (inspectionReadonly || isGitView) return false;
+		const added = envVarsPanelRef?.getAddedMissingVariables() ?? [];
+		const selector = bulkSelectorValue(envVars);
+		const selectorChanged = selector !== savedSelectorValue;
+		// writeSelector stores the selector as a plain row; drop a legacy secret copy from the DB.
+		const secretSelectorKeys = selectorChanged ? SELECTOR_VARS.filter((key) => existingSecretKeys.has(key)) : [];
+		const envId = $currentEnvironment?.id ?? null;
+		const envUrl = (suffix: string) => appendEnvParam(`/api/stacks/${encodeURIComponent(stackName)}/env${suffix}`, envId);
+		saving = true;
+		try {
+			const newSecrets = added.filter((v) => v.isSecret);
+			if (newSecrets.length || secretSelectorKeys.length) {
+				// PUT /env replaces all DB rows: send every current secret (masked '***' values are preserved server-side).
+				const secrets = envVars.filter((v) => v.isSecret && v.key.trim()).map((v) => ({ key: v.key.trim(), value: v.value, isSecret: true }));
+				const response = await fetch(envUrl(''), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ variables: secrets }) });
+				const data = await response.json().catch(() => ({}));
+				if (!response.ok) throw new Error(data.error || 'Failed to save secret variables');
+				existingSecretKeys = new Set(secrets.map((v) => v.key));
+			}
+			const plain = added.filter((v) => !v.isSecret && !SELECTOR_VARS.includes(v.key.trim()));
+			if (plain.length || selectorChanged) {
+				// Re-read the file so lines written elsewhere (workspace) are kept verbatim.
+				const rawResponse = await fetch(envUrl('/raw'));
+				const rawData = await rawResponse.json().catch(() => ({}));
+				if (!rawResponse.ok) throw new Error(rawData.error || 'Failed to read environment file');
+				if (rawData.noEnvFile) throw new Error('This stack is configured without an env file. Configure one from Stack Workspace.');
+				const lineKey = (line: string) => line.trim().match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=/)?.[1];
+				let current: string = rawData.content || '';
+				if (selectorChanged) {
+					current = current.split('\n').filter((line) => !SELECTOR_VARS.includes(lineKey(line) ?? '')).join('\n');
+				}
+				const fileKeys = new Set(current.split('\n').map(lineKey).filter(Boolean));
+				const clashes = plain.filter((v) => fileKeys.has(v.key.trim())).map((v) => v.key.trim());
+				if (clashes.length) throw new Error(`${clashes.join(', ')} already exist in the env file. Edit them from Stack Workspace.`);
+				const lines = plain.map((v) => `${v.key.trim()}=${v.value}`);
+				if (selectorChanged && selector.trim()) lines.push(`${BULK_SELECTOR_VAR}=${selector}`);
+				const next = lines.length ? `${current}${current && !current.endsWith('\n') ? '\n' : ''}${lines.join('\n')}\n` : current;
+				const putResponse = await fetch(envUrl('/raw'), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: next }) });
+				const putData = await putResponse.json().catch(() => ({}));
+				if (!putResponse.ok) throw new Error(putData.error || 'Failed to save environment file');
+				rawEnvContent = next;
+			}
+			envVarsPanelRef?.clearAddedMissing();
+			savedSelectorValue = selector;
+			isDirty = false;
+			await workspaceRef?.reloadFromDisk();
+			toast.success('Environment variables saved');
+			onSuccess();
+			return true;
+		} catch (e) {
+			toast.error('Failed to save environment variables', { description: e instanceof Error ? e.message : undefined });
+			return false;
+		} finally {
+			saving = false;
+		}
+	}
+
+	// The binding lives on the stack source, apart from any variable store.
+	async function saveSecretProviderBinding(): Promise<boolean> {
+		if (formSecretProviderId === savedSecretProviderId) return true;
+		const envId = $currentEnvironment?.id ?? null;
+		saving = true;
+		try {
+			const response = await fetch(appendEnvParam(`/api/stacks/${encodeURIComponent(stackName)}/secret-provider`, envId), {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ secretProviderId: formSecretProviderId })
+			});
+			const data = await response.json().catch(() => ({}));
+			if (!response.ok) throw new Error(data.error || 'Failed to save secret provider');
+			savedSecretProviderId = formSecretProviderId;
+			return true;
+		} catch (e) {
+			toast.error('Failed to save secret provider', { description: e instanceof Error ? e.message : undefined });
+			return false;
+		} finally {
+			saving = false;
+		}
+	}
+
+	// Footer action for editor variable changes: save the provider binding, then the
+	// variables the way this stack stores them (Git overrides or .env lines), then
+	// optionally deploy with them.
+	async function saveEditorEnv(deploy: boolean) {
+		savingWithRestart = deploy;
+		let saved = await saveSecretProviderBinding();
+		if (saved && isGitView) {
+			saved = await saveGitEnvVars();
+			if (saved) savedSelectorValue = bulkSelectorValue(envVars);
+		} else if (saved) {
+			saved = await saveInternalEditorEnv();
+		}
+		if (saved && deploy) await deployAfterEnvSave();
+		savingWithRestart = false;
+	}
+
+	async function deployAfterEnvSave() {
+		const envId = $currentEnvironment?.id ?? null;
+		saving = true;
+		startOutput(`Deploying ${stackName}`);
+		try {
+			let ok = false;
+			let failure = '';
+			if (isGitView) {
+				if (gitStackId === null) throw new Error('Git stack not found');
+				const response = await fetch(`/api/git/stacks/${gitStackId}/deploy-stream`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+				const data = await response.json().catch(() => ({}));
+				if (!response.ok) throw new Error(data.error || 'Failed to start deployment');
+				ok = true;
+				await watchJob(data.jobId, (line) => {
+					const event = line.data as { status?: string; message?: string; error?: string; logLine?: string };
+					if (typeof event.logLine === 'string') appendOutputLine(event.logLine);
+					else if (event.status === 'error') {
+						ok = false;
+						failure = event.error || 'Failed to deploy stack';
+						for (const l of failure.split('\n')) if (l.trim()) appendOutputLine(l);
+					} else if (typeof event.message === 'string') {
+						const isGitStage = ['connecting', 'cloning', 'fetching', 'reading'].includes(event.status ?? '');
+						appendOutputLine((isGitStage ? GIT_LINE_MARKER : '') + event.message);
+					}
+				});
+				finishOutput(undefined, ok);
+			} else {
+				const response = await fetch(appendEnvParam(`/api/stacks/${encodeURIComponent(stackName)}/deploy`, envId), {
+					method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({})
+				});
+				const data = await readJobResponse(response, (line) => appendOutputLine(line));
+				ok = response.ok && data.success !== false;
+				failure = typeof data.error === 'string' ? data.error : 'Failed to deploy stack';
+				finishOutput(typeof data.output === 'string' ? data.output : undefined, ok, typeof data.exitCode === 'number' ? data.exitCode : undefined);
+			}
+			onSuccess();
+			if (!ok) throw new Error(failure);
+			toast.success('Stack deployed');
+			setTimeout(() => handleClose(), DEPLOY_SUCCESS_CLOSE_DELAY_MS);
+		} catch (e) {
+			if (outputRunning) finishOutput(undefined, false);
+			toast.error('Failed to deploy stack', { description: e instanceof Error ? e.message : undefined });
 		} finally {
 			saving = false;
 		}
@@ -1954,6 +2318,7 @@
 
 		let response: Response | undefined;
 		try {
+			if (!(await runComposeValidate())) return;
 			// Build request body
 			const requestBody: Record<string, unknown> = {
 				name: newStackName.trim(),
@@ -1978,6 +2343,8 @@
 			}
 
 			requestBody.secretProviderId = formSecretProviderId;
+			if (workspaceEnabled) requestBody.workspace = workspaceDraft;
+			requestBody.workspaceEnabled = workspaceEnabled;
 
 			// Only meaningful when start is true -- deployOptions is undefined for the
 			// plain "Create" button, which never reaches deployStack server-side anyway.
@@ -2126,8 +2493,10 @@
 
 		// Resolve env path (use working or suggested)
 		const envPathToSave = workingEnvPath.trim() || suggestedEnvPath || '';
+		const isGitStack = stackSource?.sourceType === 'git';
 
 		try {
+			if (!isGitStack && !needsFileLocation && !(await runComposeValidate())) return;
 			if (needsFileLocation) {
 				if (envId === null) throw new Error('Select an environment before managing this stack');
 				const adoptResponse = await fetch('/api/stacks/adopt', {
@@ -2146,6 +2515,11 @@
 				}
 				stackName = adoptData.adopted[0];
 				needsFileLocation = false;
+				if (workspaceEnabled) {
+					const response = await fetch(workspaceApiUrl, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ workspaceEnabled: true }) });
+					if (!response.ok) throw new Error('Failed to enable stack workspace');
+					if (stackSource) stackSource.workspaceEnabled = true;
+				}
 			}
 
 			// Build request body - include paths if they've been set/changed
@@ -2184,8 +2558,6 @@
 				requestBody.build = deployOptions.build;
 				requestBody.forceRecreate = deployOptions.forceRecreate;
 			}
-
-			const isGitStack = stackSource?.sourceType === 'git';
 
 			// Save env files BEFORE compose to ensure deploy reads fresh values
 			// Save raw content to .env file (non-secrets only, comments preserved)
@@ -2258,6 +2630,7 @@
 			}
 
 			isDirty = false; // Reset dirty flag after successful save
+			savedSecretProviderId = formSecretProviderId;
 			toast.success(restart ? 'Stack applied' : 'Stack saved');
 			onSuccess();
 
@@ -2607,12 +2980,15 @@
 	}}
 >
 	<Dialog.Content
-		class="max-w-none w-[calc(100vw-4rem)] h-[95vh] flex flex-col p-0 gap-0 shadow-xl border-zinc-200 dark:border-zinc-700 max-md:w-[calc(100vw-1rem)]! max-md:h-[calc(100dvh-1rem)]! max-md:max-w-none! max-md:max-h-[calc(100dvh-1rem)]! max-md:rounded-2xl! max-md:border! max-md:border-border!"
+		class="max-w-none w-[calc(100vw-4rem)] h-[95vh] flex flex-col p-0 gap-0 shadow-xl border-zinc-200 dark:border-zinc-700 max-md:w-[calc(100vw-1rem)]! max-md:h-[calc(100dvh-1rem)]! max-md:max-w-none! max-md:max-h-[calc(100dvh-1rem)]! max-md:rounded-2xl! max-md:border! max-md:border-border! max-md:overflow-y-auto max-md:overscroll-contain"
 		showCloseButton={false}
 	>
-		<Dialog.Header class="px-4 py-3 text-left sm:px-8 sm:py-5 border-b border-zinc-200 dark:border-zinc-700 flex-shrink-0 max-md:pt-[max(0.75rem,env(safe-area-inset-top))]">
-			<div class="flex items-start justify-between gap-4">
-				<div class="flex items-start gap-3.5 min-w-0">
+		<Dialog.Header class="min-h-32 px-4 py-3 text-left sm:px-8 sm:py-5 border-b border-zinc-200 dark:border-zinc-700 flex-shrink-0 max-md:min-h-0 max-md:pt-[max(0.75rem,env(safe-area-inset-top))]">
+			<!-- Phones: title + close share the first row; the editor controls wrap onto a
+			     second full-width row (the right column dissolves via `contents`) instead of
+			     squeezing the title into a word-per-line column. -->
+			<div class="flex items-start justify-between gap-4 max-md:flex-wrap max-md:gap-x-3 max-md:gap-y-2.5">
+				<div class="flex items-start gap-3.5 min-w-0 max-md:basis-[calc(100%-3.75rem)] max-md:gap-3">
 					{#if !readonly}
 						<button
 							type="button"
@@ -2689,9 +3065,15 @@
 					</div>
 				</div>
 
-				<div class="flex shrink-0 flex-col items-end gap-2">
-					<div class="flex items-center gap-2">
-						{#if activeTab === 'editor'}
+				<div class="flex shrink-0 flex-col items-end gap-2 max-md:contents">
+					<div class="flex items-center gap-2 max-md:contents">
+						{#if activeTab === 'editor' && !inspectionReadonly}
+							{#if mode === 'create' || !needsFileLocation || !!composeContent}
+				<label class="flex min-h-8 cursor-pointer items-center gap-2 rounded-md border px-2.5 text-xs text-muted-foreground max-md:order-3 max-md:min-h-11 max-md:min-w-0 max-md:flex-1 max-md:basis-0 max-md:px-3" title="Show the complete stack directory">
+					<input type="checkbox" class="h-3.5 w-3.5 accent-primary" checked={workspaceEnabled} onchange={(event) => setWorkspaceEnabled(event.currentTarget.checked)} />
+									Enable Stack Workspace
+								</label>
+							{/if}
 							<button
 								type="button"
 								aria-label={editorTheme === 'light' ? 'Switch to dark editor theme' : 'Switch to light editor theme'}
@@ -2710,14 +3092,14 @@
 							type="button"
 							aria-label="Close stack editor"
 							onclick={tryClose}
-							class="flex h-8 w-8 items-center justify-center rounded-md border border-zinc-200 bg-zinc-50 text-zinc-500 transition-colors hover:border-zinc-300 hover:text-zinc-700 dark:border-zinc-700 dark:bg-zinc-800 dark:hover:text-zinc-300 max-md:h-11 max-md:w-11"
+							class="flex h-8 w-8 items-center justify-center rounded-md border border-zinc-200 bg-zinc-50 text-zinc-500 transition-colors hover:border-zinc-300 hover:text-zinc-700 dark:border-zinc-700 dark:bg-zinc-800 dark:hover:text-zinc-300 max-md:order-2 max-md:h-11 max-md:w-11 max-md:shrink-0"
 							title="Close"
 						>
 							<X class="h-4 w-4" />
 						</button>
 					</div>
-					{#if isGitView && activeTab === 'editor'}
-						<Button type="button" size="sm" variant="outline" class="mt-3" onclick={() => populateGitEnvVars()} disabled={populatingGitEnvVars}>
+					{#if isGitView && !inspectionReadonly && activeTab === 'editor'}
+						<Button type="button" size="sm" variant="outline" class="mt-3 max-md:order-4 max-md:mt-0 max-md:h-auto max-md:min-h-11 max-md:min-w-0 max-md:flex-1 max-md:basis-0 max-md:whitespace-normal max-md:text-xs" onclick={() => populateGitEnvVars()} disabled={populatingGitEnvVars}>
 							{#if populatingGitEnvVars}<Loader2 class="h-3.5 w-3.5 animate-spin" />{:else}<Download class="h-3.5 w-3.5" />{/if}
 							Populate all files
 						</Button>
@@ -2726,13 +3108,13 @@
 			</div>
 		</Dialog.Header>
 
-		<!-- View tabs — left-aligned underline bar under the header, matched to
-		     GitStackModal for a consistent look across the stack modals. -->
-		<div class="flex items-center gap-1 overflow-x-auto border-b border-zinc-200 px-5 max-md:px-4 dark:border-zinc-700 flex-shrink-0">
+		<!-- Compact view switcher under the modal header. -->
+		<div class="flex flex-shrink-0 items-center overflow-x-auto border-b border-zinc-200 px-5 py-1.5 max-md:px-3 dark:border-zinc-700">
+			<div class={STACK_VIEW_TABLIST_CLASS} role="tablist" aria-label="Stack views">
 			{#if isGitView && onEditGitSettings}
 				<button
 					type="button"
-					class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 border-transparent px-3 max-md:px-2 py-2 max-md:py-3 text-sm text-muted-foreground transition-colors hover:text-foreground"
+					class={stackViewTabClass(false)}
 					onclick={openGitSettings}
 				>
 					<Settings2 class="h-3.5 w-3.5" /> Settings
@@ -2740,14 +3122,14 @@
 			{/if}
 			<button
 				type="button"
-				class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 px-3 max-md:px-2 py-2 max-md:py-3 text-sm transition-colors {activeTab === 'editor' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
+				class={stackViewTabClass(activeTab === 'editor')}
 				onclick={() => activeTab = 'editor'}
 			>
 				<Code class="h-3.5 w-3.5" /> Editor
 			</button>
 			<button
 				type="button"
-				class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 px-3 max-md:px-2 py-2 max-md:py-3 text-sm transition-colors {activeTab === 'graph' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
+				class={stackViewTabClass(activeTab === 'graph')}
 				onclick={() => activeTab = 'graph'}
 			>
 				<GitGraph class="h-3.5 w-3.5" /> Graph
@@ -2756,16 +3138,16 @@
 			     Also hidden for UNTRACKED stacks: with no known compose file the backup
 			     would be incomplete (can't redeploy at restore), so the backend refuses
 			     it (assertStackBackupable) — don't offer it in the UI either. -->
-			{#if mode === 'edit' && $page.data.backupsEnabled && !needsFileLocation && !readonly}
+			{#if mode === 'edit' && $page.data.backupsEnabled && !needsFileLocation && !inspectionReadonly}
 				<button
 					type="button"
-					class="relative -mb-px flex max-md:min-w-0 max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 px-3 max-md:px-1 py-2 max-md:py-3 text-sm transition-colors {activeTab === 'backups' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
+					class={stackViewTabClass(activeTab === 'backups')}
 					onclick={() => activeTab = 'backups'}
 				>
 					<Archive class="h-3.5 w-3.5" /> Backups
-					{#if backupCount > 0}<span class="bg-primary/15 text-primary text-[10px] px-1.5 rounded-full font-medium max-sm:hidden">{backupCount}</span>{/if}
-					{#if backupTally.ok > 0}<span class="inline-flex items-center gap-0.5 rounded-full bg-emerald-500/15 px-1.5 text-[10px] font-medium text-emerald-500 max-sm:hidden"><Check class="w-2.5 h-2.5" />{backupTally.ok}</span>{/if}
-					{#if backupTally.failed > 0}<span class="inline-flex items-center gap-0.5 rounded-full bg-red-500/15 px-1.5 text-[10px] font-semibold text-red-500 max-sm:hidden"><X class="w-2.5 h-2.5" />{backupTally.failed}</span>{/if}
+					{#if backupCount > 0}<span class="bg-primary/15 text-primary text-[10px] px-1.5 rounded-full font-medium max-md:hidden">{backupCount}</span>{/if}
+					{#if backupTally.ok > 0}<span class="inline-flex items-center gap-0.5 rounded-full bg-emerald-500/15 px-1.5 text-[10px] font-medium text-emerald-500 max-md:hidden"><Check class="w-2.5 h-2.5" />{backupTally.ok}</span>{/if}
+					{#if backupTally.failed > 0}<span class="inline-flex items-center gap-0.5 rounded-full bg-red-500/15 px-1.5 text-[10px] font-semibold text-red-500 max-md:hidden"><X class="w-2.5 h-2.5" />{backupTally.failed}</span>{/if}
 				</button>
 			{/if}
 			<!-- Deploys tab: recorded run history (keyed by stackName+env, independent of
@@ -2776,29 +3158,33 @@
 			{#if mode === 'edit' && (!needsFileLocation || deploysHistoryExists)}
 				<button
 					type="button"
-					class="relative -mb-px flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm transition-colors {activeTab === 'deploys' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
+					class={stackViewTabClass(activeTab === 'deploys')}
 					onclick={() => activeTab = 'deploys'}
 				>
 					<History class="h-3.5 w-3.5" /> Deploys
 					{#if deploysTally.ok > 0}
-						<span class="inline-flex items-center gap-0.5 rounded-full bg-emerald-500/15 px-1.5 text-[10px] font-medium text-emerald-500"><Check class="h-2.5 w-2.5" />{deploysTally.ok}</span>
+						<span class="inline-flex items-center gap-0.5 rounded-full bg-emerald-500/15 px-1.5 text-[10px] font-medium text-emerald-500 max-md:hidden"><Check class="h-2.5 w-2.5" />{deploysTally.ok}</span>
 					{/if}
 					{#if deploysTally.failed > 0}
-						<span class="inline-flex items-center gap-0.5 rounded-full bg-red-500/15 px-1.5 text-[10px] font-semibold text-red-500"><X class="h-2.5 w-2.5" />{deploysTally.failed}</span>
+						<span class="inline-flex items-center gap-0.5 rounded-full bg-red-500/15 px-1.5 text-[10px] font-semibold text-red-500 max-md:hidden"><X class="h-2.5 w-2.5" />{deploysTally.failed}</span>
 					{/if}
 					{#if deploysTally.total > 0 && deploysTally.ok === 0 && deploysTally.failed === 0}
-						<Badge variant="secondary" class="ml-0.5 h-4 min-w-4 justify-center rounded-full px-1 text-[10px] tabular-nums">{deploysTally.total}</Badge>
+						<Badge variant="secondary" class="ml-0.5 h-4 min-w-4 justify-center rounded-full px-1 text-[10px] tabular-nums max-md:hidden">{deploysTally.total}</Badge>
 					{/if}
 				</button>
 			{/if}
+			</div>
 		</div>
 
 		<!-- Wrapper spanning the editor area + the live output panel below it, so the
 		     output panel's height can be a percentage of THIS combined space rather than
-		     of the whole dialog (which also includes the fixed header/tabs/footer). -->
+		     of the whole dialog (which also includes the fixed header/tabs/footer).
+		     Phones: it keeps (almost) a full screen of height and the dialog itself
+		     scrolls, so the header and view tabs scroll away instead of crushing the
+		     editor to a sliver. -->
 		<div
 			bind:this={outputAreaRef}
-			class="flex-1 min-h-0 flex flex-col {isDraggingOutputSplit ? 'select-none' : ''}"
+			class="flex-1 min-h-0 flex flex-col max-md:min-h-[calc(100dvh-6.5rem)] {isDraggingOutputSplit ? 'select-none' : ''}"
 		>
 		<div class="flex-1 overflow-hidden flex flex-col min-h-0">
 			{#if errors.compose}
@@ -2818,9 +3204,8 @@
 			{:else}
 				<!-- Tags (edit mode: stack has a stable name+env key) -->
 				{#if mode === 'edit' && stackName}
-					<div class="px-6 py-3 border-b border-zinc-200 dark:border-zinc-700 flex items-center gap-2 flex-wrap">
-						<Label class="text-xs text-zinc-500 dark:text-zinc-400">Tags</Label>
-						<StackTagsSection {stackName} envId={$currentEnvironment?.id ?? null} {readonly} />
+					<div class="px-6 py-3 border-b border-zinc-200 dark:border-zinc-700 flex items-center gap-2 flex-wrap max-md:px-4 max-md:py-2">
+						<StackTagsSection {stackName} envId={$currentEnvironment?.id ?? null} readonly={inspectionReadonly} />
 					</div>
 				{/if}
 
@@ -2884,20 +3269,23 @@
 					</div>
 				{/if}
 
-				<!-- Content area -->
-		<div bind:this={containerRef} class="flex-1 min-h-0 flex flex-col {isDraggingSplit ? 'select-none' : ''}">
-			{#if activeTab === 'editor' && (mode === 'create' || (mode === 'edit' && !needsFileLocation))}
+				{#snippet stackConfigEditor()}
 				<div class="flex min-h-0 flex-1 flex-col max-md:flex-col">
-					<div class="flex items-center gap-1 border-b border-zinc-200 px-4 dark:border-zinc-700 md:hidden">
-						<button type="button" class="flex-1 py-2 text-sm {mobilePane === 'compose' ? 'border-b-2 border-primary' : ''}" onclick={() => mobilePane = 'compose'}><Code class="mr-1 inline h-3.5 w-3.5" />Compose</button>
-						<button type="button" class="flex-1 py-2 text-sm {mobilePane === 'vars' ? 'border-b-2 border-primary' : ''}" onclick={() => mobilePane = 'vars'}><FileText class="mr-1 inline h-3.5 w-3.5" />Variables</button>
+					{#if mode === 'edit' && !workspaceEnabled && !readonly}
+						<p class="border-b px-4 py-2 text-xs text-muted-foreground">Preview compose and environment values here. Enable Stack Workspace to edit files.{canAddMissingEnv ? ' Missing variables and the secret provider can still be changed in the Variables panel.' : ''}</p>
+					{:else if canEditGitEnv && !workspaceEnabled}
+						<p class="border-b px-4 py-2 text-xs text-muted-foreground">Preview compose here. Enable Stack Workspace to edit repository files. Variables are editable and saved as Dockhand overrides.</p>
+					{/if}
+					<div class="flex flex-shrink-0 items-center gap-1 border-b border-zinc-200 px-4 dark:border-zinc-700 md:hidden" role="tablist" aria-label="Editor panes">
+						<button type="button" role="tab" aria-selected={mobilePane === 'compose'} class="relative -mb-px flex min-h-11 flex-1 items-center justify-center gap-1.5 border-b-2 px-2 text-sm transition-colors {mobilePane === 'compose' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}" onclick={() => mobilePane = 'compose'}><Code class="h-3.5 w-3.5" />Compose</button>
+						<button type="button" role="tab" aria-selected={mobilePane === 'vars'} class="relative -mb-px flex min-h-11 flex-1 items-center justify-center gap-1.5 border-b-2 px-2 text-sm transition-colors {mobilePane === 'vars' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}" onclick={() => mobilePane = 'vars'}><FileText class="h-3.5 w-3.5" />Variables</button>
 					</div>
 					<div class="flex min-h-0 flex-1 max-md:flex-col">
 						<div class="flex min-h-0 min-w-0 flex-shrink-0 flex-col max-md:w-full! {mobilePane === 'compose' ? 'max-md:flex-1' : 'max-md:hidden'}" style="width: {splitRatio}%">
 							<StackFileEditor
 								composePaths={workingComposePaths}
 								composeContents={{ ...composeContents, ...(activeComposePath ? { [activeComposePath]: composeContent } : {}) }}
-								readonly={readonly}
+								readonly={readonly || mode === 'edit' || workspaceEnabled}
 								initialPath={activeComposeDisplayPath}
 								displayPath={composePathForDisplay}
 								onActivePathChange={switchComposeFile}
@@ -2909,8 +3297,11 @@
 							>
 								{#snippet headerActions()}
 									<div class="flex items-center gap-1">
-										{#if mode === 'edit' && !readonly}
-											<button type="button" class="rounded border px-2 py-1 text-xs text-muted-foreground hover:text-foreground" onclick={openChangeLocationBrowser}><FolderSync class="mr-1 inline h-3.5 w-3.5" />Relocate</button>
+										{#if mode === 'edit' && !readonly && !inspectionReadonly && !needsFileLocation}
+											<Button variant="ghost" size="sm" class="h-7 px-2 text-xs text-muted-foreground" onclick={openChangeLocationBrowser} title="Move this stack's folder to another directory">
+												<FolderSync class="h-3 w-3" />
+												Relocate
+											</Button>
 										{/if}
 										<Button variant="ghost" size="sm" class="h-7 px-2 text-xs text-muted-foreground" onclick={runComposeValidate} disabled={!composeContent} title="Check this compose for problems before deploy">
 											{#if validateLoading}<Loader2 class="h-3 w-3 animate-spin" />{:else}<ListChecks class="h-3 w-3" />{/if}
@@ -2925,7 +3316,7 @@
 								{#snippet editorOverlay()}
 									{#if validatePanelOpen}
 										<div class="absolute inset-y-0 right-0 z-20 max-w-full max-md:w-full" style="width: {validatePanelWidth}px">
-											<ComposeValidatePanel bind:this={validatePanelRef} report={validateReport} loading={validateLoading} error={validateError} activeLine={validateActiveLine} onClose={closeValidatePanel} onJumpToLine={jumpToComposeLine} onRevalidate={runComposeValidate} onApplyFix={applyValidateFix} />
+											<ComposeValidatePanel bind:this={validatePanelRef} report={validateReport} loading={validateLoading} error={validateError} activeLine={validateActiveLine} onClose={closeValidatePanel} onJumpToLine={jumpToComposeLine} onRevalidate={runComposeValidate} onApplyFix={inspectionReadonly ? undefined : applyValidateFix} />
 										</div>
 									{/if}
 								{/snippet}
@@ -2933,8 +3324,8 @@
 						</div>
 						<div class="w-1 flex-shrink-0 cursor-col-resize bg-zinc-200 transition-colors hover:bg-blue-400 dark:bg-zinc-700 dark:hover:bg-blue-500 max-md:hidden" role="separator" aria-orientation="vertical" onmousedown={startSplitDrag} tabindex="0"></div>
 							<div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden {mobilePane === 'vars' ? 'max-md:flex-1' : 'max-md:hidden'}">
-							<div class="flex min-h-0 flex-1 flex-col px-4 py-4 sm:px-8 sm:py-6">
-								<div class="mb-5 flex items-center gap-3 rounded-lg border border-zinc-200 bg-zinc-50 px-3.5 py-3 dark:border-zinc-700 dark:bg-zinc-800/40">
+							<div class="flex min-h-0 flex-1 flex-col px-3 py-3 sm:px-8 sm:py-6">
+								<div class="mb-5 flex items-center gap-3 rounded-lg border border-zinc-200 bg-zinc-50 px-3.5 py-3 dark:border-zinc-700 dark:bg-zinc-800/40 max-md:mb-3 max-md:py-1.5 max-md:pr-1.5">
 									<FileText class="h-4 w-4 shrink-0 text-muted-foreground" />
 									<div class="min-w-0 flex-1">
 										<div class="text-[11px] text-muted-foreground">Env file</div>
@@ -2942,7 +3333,7 @@
 											{displayEnvPath || 'Enter a stack name to preview the path'}
 										</div>
 									</div>
-									{#if mode === 'create' && !isGitView && !hawserFiles}
+									{#if mode === 'create' && !isGitView && !workspaceEnabled && !hawserFiles}
 										<button type="button" onclick={openEnvBrowser} class="shrink-0 rounded p-1.5 text-muted-foreground hover:bg-zinc-200 dark:hover:bg-zinc-700 max-md:flex max-md:h-11 max-md:w-11 max-md:items-center max-md:justify-center" title="Browse for env file">
 											<FolderOpen class="h-3.5 w-3.5" />
 										</button>
@@ -2962,12 +3353,22 @@
 										{/if}
 									</button>
 								</div>
-								{#if !isGitView}<SecretProviderPicker bind:secretProviderId={formSecretProviderId} bind:envVars providers={secretProviders} onchange={() => { markDirty(); debouncedValidate(); }} />{/if}
-								<StackEnvVarsPanel bind:this={envVarsPanelRef} bind:variables={envVars} bind:rawContent={rawEnvContent} validation={effectiveValidation} existingSecretKeys={mode === 'edit' ? existingSecretKeys : new Set()} injectedSecretKeys={mode === 'edit' ? injectedSecretKeys : []} providerType={selectedProviderType} providerName={selectedProviderName} providerBound={selectedProviderBound} {probeError} {providerKeySet} readonly={readonly && !isGitView} onchange={() => { markDirty(); debouncedValidate(); }} theme={editorTheme} infoText={isGitView ? "Repository values are read-only defaults. Changed, new, and secret values are saved as Dockhand overrides and applied on the next deploy." : "These variables will be written to a .env file in the stack directory and passed to the compose command."} class="min-h-0 flex-1" />
+								{#if mode === 'create' ? !isGitView && !workspaceEnabled : canEditSecretProvider}<SecretProviderPicker bind:secretProviderId={formSecretProviderId} bind:envVars providers={secretProviders} onchange={() => { secretProviderTouched = true; markDirty(); debouncedValidate(); }} />{/if}
+								<StackEnvVarsPanel bind:this={envVarsPanelRef} bind:variables={envVars} bind:rawContent={rawEnvContent} validation={effectiveValidation} existingSecretKeys={mode === 'edit' ? existingSecretKeys : new Set()} injectedSecretKeys={mode === 'edit' ? injectedSecretKeys : []} providerType={selectedProviderType} providerName={selectedProviderName} providerBound={selectedProviderBound} {probeError} {providerKeySet} readonly={isGitView ? !canEditGitEnv : (inspectionReadonly || workspaceEnabled || mode === 'edit' || readonly)} allowAddMissing={canAddMissingEnv} onchange={() => { markDirty(); debouncedValidate(); }} theme={editorTheme} infoText={isGitView ? "Repository values are defaults. Changed, new, and secret values are saved as Dockhand overrides and applied on the next deploy." : "These variables will be written to a .env file in the stack directory and passed to the compose command."} class="min-h-0 flex-1" />
 							</div>
 						</div>
 					</div>
 				</div>
+				{/snippet}
+
+				<!-- Content area -->
+		<div bind:this={containerRef} class="flex-1 min-h-0 flex flex-col {isDraggingSplit ? 'select-none' : ''}">
+			{#if activeTab === 'editor' && workspaceEnabled && (mode === 'create' || !needsFileLocation)}
+				<StackWorkspace bind:this={workspaceRef} apiUrl={mode === 'edit' ? workspaceApiUrl : undefined} readonly={inspectionReadonly || (readonly && stackSource?.sourceType !== 'git')} theme={editorTheme} rootName={workspaceRootName} draft={mode === 'create' ? workspaceDraft : undefined} onDraftChange={mode === 'create' ? applyWorkspaceDraft : undefined} onFilesChanged={mode === 'edit' ? syncStackConfigFromWorkspace : undefined} onConverted={workspaceConverted} onStackConfigSelect={() => mobilePane = 'compose'}>
+					{#snippet stackConfig()}{@render stackConfigEditor()}{/snippet}
+				</StackWorkspace>
+			{:else if activeTab === 'editor' && (mode === 'create' || (mode === 'edit' && !needsFileLocation))}
+				{@render stackConfigEditor()}
 			{:else if activeTab === 'editor'}
 				{#if mode === 'edit' && needsFileLocation && !composeContent && !readonly}
 					<div class="flex min-h-0 flex-1 items-start justify-center overflow-auto px-4 py-8 sm:items-center sm:px-8 sm:py-10">
@@ -2993,7 +3394,7 @@
 								<button
 									type="button"
 									onclick={openComposeBrowser}
-									class="group flex min-h-24 items-start gap-3 rounded-lg border border-blue-500/40 bg-blue-500/10 p-3 text-left transition-colors hover:border-blue-400 hover:bg-blue-500/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 dark:border-blue-400/30 dark:bg-blue-400/10 dark:hover:bg-blue-400/15"
+									class="group flex min-h-24 items-start gap-3 rounded-lg border border-blue-500/40 bg-blue-500/10 p-3 text-left transition-colors hover:border-blue-400 hover:bg-blue-500/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
 								>
 									<span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-blue-500/15 text-blue-600 dark:text-blue-300">
 										<FolderOpen class="h-4 w-4" />
@@ -3066,7 +3467,7 @@
 						<div class="flex flex-1 min-h-0 max-md:flex-col">
 							<!-- Compose panel -->
 							<div class="flex min-h-0 min-w-0 flex-shrink-0 flex-col max-md:w-full! {mobilePane === 'compose' ? 'max-md:flex-1' : 'max-md:hidden'}" style="width: {splitRatio}%">
-								<div class="flex min-h-0 flex-1 flex-col px-4 py-4 sm:px-8 sm:py-6">
+								<div class="flex min-h-0 flex-1 flex-col px-3 py-3 sm:px-8 sm:py-6">
 									<div class="mb-3.5 flex flex-wrap items-center justify-end gap-2">
 										{#if mode === 'edit' && !readonly && !needsFileLocation}
 											<button type="button" class="flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground" onclick={openChangeLocationBrowser}>
@@ -3227,7 +3628,7 @@
 																onClose={closeValidatePanel}
 																onJumpToLine={jumpToComposeLine}
 																onRevalidate={runComposeValidate}
-																onApplyFix={readonly ? undefined : applyValidateFix}
+																onApplyFix={inspectionReadonly ? undefined : applyValidateFix}
 															/>
 														</div>
 													{/if}
@@ -3253,7 +3654,7 @@
 
 							<!-- Environment variables panel -->
 							<div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden {mobilePane === 'vars' ? 'max-md:flex-1' : 'max-md:hidden'}">
-							<div class="flex min-h-0 flex-1 flex-col px-4 py-4 sm:px-8 sm:py-6">
+							<div class="flex min-h-0 flex-1 flex-col px-3 py-3 sm:px-8 sm:py-6">
 									<div class="mb-3.5 flex items-center justify-between gap-3">
 										<div class="flex items-center gap-2 text-sm font-semibold text-zinc-800 dark:text-zinc-100">
 											<FileText class="h-4 w-4 text-muted-foreground" />
@@ -3270,7 +3671,7 @@
 										/>
 									{/if}
 
-									<div class="mb-5 flex items-center gap-3 rounded-lg border border-zinc-200 bg-zinc-50 px-3.5 py-3 dark:border-zinc-700 dark:bg-zinc-800/40">
+									<div class="mb-5 flex items-center gap-3 rounded-lg border border-zinc-200 bg-zinc-50 px-3.5 py-3 dark:border-zinc-700 dark:bg-zinc-800/40 max-md:mb-3 max-md:py-1.5 max-md:pr-1.5">
 										<FileText class="h-4 w-4 shrink-0 text-muted-foreground" />
 										<div class="min-w-0 flex-1">
 											<div class="text-[11px] text-muted-foreground">{isGitView ? 'Repository env file' : 'Env file'}</div>
@@ -3311,7 +3712,7 @@
 										providerBound={selectedProviderBound}
 										{probeError}
 										{providerKeySet}
-										readonly={readonly && !isGitView}
+										readonly={inspectionReadonly || (readonly && !isGitView)}
 										onchange={() => { markDirty(); debouncedValidate(); }}
 										theme={editorTheme}
 										infoText={isGitView ? "Repository values are read-only defaults. Changed, new, and secret values are saved as Dockhand overrides and applied on the next deploy." : "These variables will be written to a .env file in the stack directory and passed to the compose command."}
@@ -3345,7 +3746,7 @@
 						<!-- Deploys tab: shown with a synced compose, or when a read-only /
 						     not-yet-synced stack still has run history to show. -->
 						<div class="flex h-full min-h-0 flex-1 flex-col p-4">
-							<DeploysPanel {stackName} envId={$currentEnvironment?.id ?? null} theme={editorTheme} reloadKey={deploysReloadKey} onTally={(t) => (deploysTally = t)} {readonly} />
+							<DeploysPanel {stackName} envId={$currentEnvironment?.id ?? null} theme={editorTheme} reloadKey={deploysReloadKey} onTally={(t) => (deploysTally = t)} readonly={inspectionReadonly} />
 						</div>
 					{/if}
 				</div>
@@ -3405,9 +3806,11 @@
 		</div>
 
 		<!-- Footer -->
-		<div class="flex flex-shrink-0 items-center justify-between gap-2 border-t border-zinc-200 px-4 py-3 sm:px-8 dark:border-zinc-700 max-md:pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+		<div class="flex flex-shrink-0 items-center justify-between gap-2 border-t border-zinc-200 px-4 py-3 sm:px-8 dark:border-zinc-700 max-md:sticky max-md:bottom-0 max-md:z-30 max-md:bg-background max-md:pb-[max(0.75rem,env(safe-area-inset-bottom))]">
 			<div class="flex min-w-0 items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400 max-sm:hidden">
-				{#if readonly && !isGitView}
+				{#if readonly && isGitView && workspaceEnabled && !inspectionReadonly && activeTab === 'editor' && !isDirty}
+					<span>Save workspace files from the editor toolbar.</span>
+				{:else if readonly && !isGitView}
 					<Lock class="h-3.5 w-3.5 shrink-0" />
 					{#if needsFileLocation}
 						<span>Compose file location is unknown. {$canAccess('stacks', 'edit') ? 'Use Edit to browse and attach it.' : 'An editor can attach it with the edit action.'}</span>
@@ -3423,17 +3826,13 @@
 
 			<div class="flex flex-wrap items-center justify-end gap-2 max-md:grid max-md:w-full max-md:grid-cols-2 max-md:gap-2">
 				{#if readonly}
-					{#if isGitView && activeTab === 'editor'}
-						<Button variant="outline" class="max-md:min-h-11" onclick={tryClose} disabled={saving}>Close</Button>
-						<Button class="max-md:min-h-11" onclick={saveGitEnvVars} disabled={saving || !isDirty}>
-							{#if saving}<Loader2 class="h-4 w-4 animate-spin" />{/if}
-							Save variables
-						</Button>
+					{#if canEditGitEnv && activeTab === 'editor'}
+						<Button variant="outline" class="max-md:min-h-11 {isDirty ? '' : 'max-md:col-span-2'}" onclick={tryClose} disabled={saving}>{isDirty ? 'Cancel' : 'Close'}</Button>
 					{:else}
 						<Button class="max-md:order-1 max-md:col-span-2 max-md:w-full max-md:min-h-11" onclick={tryClose}>Close</Button>
 					{/if}
 				{:else}
-					<Button variant="outline" class="max-md:min-h-11" onclick={tryClose} disabled={saving}>
+					<Button variant="outline" class="max-md:min-h-11 max-md:only:col-span-2" onclick={tryClose} disabled={saving}>
 						Cancel
 					</Button>
 				{/if}
@@ -3485,7 +3884,17 @@
 							{/snippet}
 						</RedeployPopover>
 					</div>
-				{:else if !readonly}
+				{:else if (hasAddedMissingEnv || secretProviderChanged || (canEditGitEnv && isDirty)) && activeTab === 'editor'}
+					<!-- Editor variable changes; workspace files save from their own toolbar. -->
+					<Button variant="outline" class="max-md:min-h-11" onclick={() => saveEditorEnv(false)} disabled={saving}>
+						{#if saving && !savingWithRestart}<Loader2 class="h-4 w-4 animate-spin" />{:else}<Save class="h-4 w-4" />{/if}
+						Save changes
+					</Button>
+					<Button class="max-md:col-span-2 max-md:w-full max-md:min-h-11" onclick={() => saveEditorEnv(true)} disabled={saving}>
+						{#if saving && savingWithRestart}<Loader2 class="h-4 w-4 animate-spin" />{:else}<Play class="h-4 w-4" />{/if}
+						Save and deploy
+					</Button>
+				{:else if !readonly && (activeTab !== 'editor' || needsFileLocation)}
 					<!-- Edit mode buttons -->
 					<Button variant="outline" class="max-md:min-h-11 max-md:w-full w-24" onclick={() => handleSave(false)} disabled={saving || loading || (needsFileLocation && !workingComposePath.trim())}>
 						{#if saving && !savingWithRestart}

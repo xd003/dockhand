@@ -23,6 +23,8 @@
 		variables: EnvVar[];
 		validation?: ValidationResult | null;
 		readonly?: boolean;
+		// Keys whose rows stay editable (value/secret/remove) even when readonly - edit-mode "Add missing" additions
+		editableKeys?: Set<string>;
 		showSource?: boolean; // For git stacks - show where variable comes from
 		sources?: Record<string, 'file' | 'override'>; // Key -> source mapping
 		fileValues?: Record<string, string>; // Original file values for revert
@@ -35,6 +37,7 @@
 		variables = $bindable(),
 		validation = null,
 		readonly = false,
+		editableKeys = new Set<string>(),
 		showSource = false,
 		sources = {},
 		fileValues = {},
@@ -112,6 +115,7 @@
 			{@const isVarOptional = isOptional(variable.key)}
 			{@const isVarMissing = isMissing(variable.key)}
 			{@const isVarUnused = isUnused(variable.key)}
+			{@const rowReadonly = readonly && !editableKeys.has(variable.key)}
 			<div class="flex gap-2 items-center">
 				<!-- Source indicator (for git stacks) - always reserve space if showSource -->
 				{#if showSource}
@@ -197,7 +201,7 @@
 					<Input
 						bind:value={variable.value}
 						type={variable.isSecret ? 'password' : 'text'}
-						disabled={readonly}
+						disabled={rowReadonly}
 						oninput={() => onchange?.()}
 						class="h-9 max-md:h-11 font-mono text-xs"
 						aria-label="Variable value"
@@ -205,7 +209,7 @@
 				</div>
 
 				<!-- Secret Toggle Button -->
-				{#if !readonly}
+				{#if !rowReadonly}
 					{@const existingSecret = isExistingSecret(variable.key, variable.isSecret)}
 					{#if existingSecret}
 						<!-- Existing secret from DB - show locked icon, no toggle (value can still be modified) -->
@@ -231,7 +235,7 @@
 				{/if}
 
 				<!-- Remove Button -->
-				{#if !readonly}
+				{#if !rowReadonly}
 					<Button
 						type="button"
 						variant="ghost"

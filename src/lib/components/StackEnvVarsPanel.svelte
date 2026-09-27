@@ -15,6 +15,8 @@
 		rawContent?: string; // Bindable - raw .env file content (comments preserved, no secrets)
 		validation?: ValidationResult | null;
 		readonly?: boolean;
+		/** Edit mode: allow adding compose-referenced missing vars even while readonly. Only those added rows are editable. */
+		allowAddMissing?: boolean;
 		showSource?: boolean;
 		sources?: Record<string, 'file' | 'override'>;
 		fileValues?: Record<string, string>;
@@ -48,6 +50,7 @@
 		rawContent = $bindable(''),
 		validation = null,
 		readonly = false,
+		allowAddMissing = false,
 		showSource = false,
 		sources = {},
 		fileValues = {},
@@ -109,6 +112,7 @@
 	 * Merges: secrets from loadedVars (DB) + non-secrets from loadedRaw (file).
 	 */
 	export function syncAfterLoad(loadedVars: EnvVar[], loadedRaw: string) {
+		addedMissingKeys = [];
 		if (!loadedRaw.trim()) {
 			// No raw content from file - just set variables; text view renders them as text
 			variables = loadedVars;
@@ -260,8 +264,23 @@
 		}
 	}
 
+	let addedMissingKeys = $state<string[]>([]);
+	const editableKeys = $derived(new Set(addedMissingKeys));
+
+	/** Edit-mode additions not yet saved (rows still present, non-empty key). */
+	export function getAddedMissingVariables(): EnvVar[] {
+		return variables.filter(v => v.key.trim() && addedMissingKeys.includes(v.key.trim()));
+	}
+
+	/** After a successful save the added rows become ordinary read-only rows. */
+	export function clearAddedMissing() {
+		addedMissingKeys = [];
+	}
+
 	async function addMissingVariable(key: string) {
+		if (variables.some(v => v.key.trim() === key)) return;
 		variables = [...variables, { key, value: '', isSecret: false }];
+		if (!addedMissingKeys.includes(key)) addedMissingKeys = [...addedMissingKeys, key];
 		onchange?.();
 		await tick();
 		if (contentAreaRef) {
@@ -419,7 +438,7 @@
 				Couldn't check {providerName ?? 'the secret provider'}: {probeError}
 			</div>
 		{/if}
-		{#if viewMode === 'form' && effectiveValidation && effectiveValidation.missing.length > 0 && !readonly}
+		{#if viewMode === 'form' && effectiveValidation && effectiveValidation.missing.length > 0 && (!readonly || allowAddMissing)}
 			<div class="flex flex-wrap items-center gap-1">
 				<span class="mr-1 text-xs text-muted-foreground">Add missing:</span>
 				{#each effectiveValidation.missing as missing}
@@ -444,6 +463,7 @@
 				bind:variables
 				validation={effectiveValidation}
 				{readonly}
+				{editableKeys}
 				{showSource}
 				{sources}
 				{fileValues}

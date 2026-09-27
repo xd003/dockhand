@@ -15174,6 +15174,15 @@
             "description": "Path parameter \"id\" (auto-detected from the handler's source - no @openapi annotation for this parameter yet)"
           },
           {
+            "name": "directory",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Query parameter \"directory\" (auto-detected from the handler's source - no @openapi annotation for this parameter yet)"
+          },
+          {
             "name": "path",
             "in": "query",
             "required": false,
@@ -15684,7 +15693,7 @@
             "bearerAuth": []
           }
         ],
-        "description": "Git checkouts remain on Dockhand. On Hawser environments, deploying publishes selected Git files to the bound Hawser directory without creating a Dockhand stack-file copy. Converting an external project (adoptExternal) with existingComposePath - the project's current Compose file on Dockhand's filesystem (local/direct) or the agent's (Hawser) - deploys in that directory: Git-tracked files replace same-path files there and unrelated files stay. On a direct remote Docker host the directory must resolve to the same files on Dockhand and the host, otherwise conversion is rejected. Without existingComposePath (the project's files are gone) the repository deploys to Dockhand's managed stack directory like a new Git stack, and Compose takes over the running project by name.",
+        "description": "Git checkouts remain on Dockhand. On Hawser environments, deploying publishes selected Git files to the bound Hawser directory without creating a Dockhand stack-file copy. Converting an external project (adoptExternal) with existingComposePath - the project's current Compose file on Dockhand's filesystem (local/direct) or the agent's (Hawser) - deploys in that directory: Git-tracked files replace same-path files there and unrelated files stay. On a direct remote Docker host the directory must resolve to the same files on Dockhand and the host, otherwise conversion is rejected. Without existingComposePath (the project's files are gone) the repository deploys to Dockhand's managed stack directory like a new Git stack, and Compose takes over the running project by name; localChanges then are rejected. During in-place conversion, composeContents edits checkout files, and localChanges ({writes:[{path, content|contentBase64, expectedRevision}], deletions:[{path, expectedRevision}], folders:[path]}, paths relative to the project directory, revisions from GET /api/stacks/{name}/adoption-files) edits the project's files outside Git right before Compose runs; they are restored if the conversion fails.",
         "requestBody": {
           "required": true,
           "content": {
@@ -15725,6 +15734,10 @@
                   "existingComposePath": {
                     "type": "string"
                   },
+                  "localChanges": {
+                    "type": "object",
+                    "properties": {}
+                  },
                   "deployNow": {
                     "type": "boolean"
                   }
@@ -15746,6 +15759,7 @@
                 "webhookSecret": "string",
                 "adoptExternal": true,
                 "existingComposePath": "string",
+                "localChanges": {},
                 "deployNow": true
               }
             }
@@ -27226,6 +27240,13 @@
                   "secretProviderId": {
                     "type": "integer"
                   },
+                  "workspaceEnabled": {
+                    "type": "boolean"
+                  },
+                  "workspace": {
+                    "type": "object",
+                    "properties": {}
+                  },
                   "start": {
                     "type": "boolean"
                   },
@@ -27264,6 +27285,8 @@
                 ],
                 "rawEnvContent": "string",
                 "secretProviderId": 0,
+                "workspaceEnabled": true,
+                "workspace": {},
                 "start": true,
                 "envId": 0,
                 "environmentId": 0,
@@ -27363,6 +27386,87 @@
           },
           "500": {
             "description": "Unexpected error while removing the stack"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/stacks/{name}/adoption-files": {
+      "get": {
+        "operationId": "get_api_stacks_name_adoption-files",
+        "tags": [
+          "stacks"
+        ],
+        "summary": "Browse the files of an untracked stack's project directory while converting it to Git in place, so the Git stack workspace can show and edit files that are not in the repository",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Stack name (from GET /api/stacks)"
+          },
+          {
+            "name": "env",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Environment ID the stack belongs to (from GET /api/environments)"
+          },
+          {
+            "name": "existingComposePath",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The project's current Compose file, as selected for the conversion"
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Directory or file relative to the project directory (default: the project root)"
+          },
+          {
+            "name": "content",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "\"1\" returns one file's content instead of a directory listing"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A directory listing ({entries} with path, name, type and size), or with content=1 one file (binary, content or contentBase64, revision, size)"
+          },
+          "400": {
+            "description": "Invalid path or Compose file selection"
+          },
+          "403": {
+            "description": "Permission denied (requires stacks:edit) or environment access denied"
+          },
+          "404": {
+            "description": "The stack or file does not exist"
+          },
+          "409": {
+            "description": "The stack is not external, or the selected Compose file does not belong to it"
           }
         },
         "security": [
@@ -29331,6 +29435,101 @@
         ]
       }
     },
+    "/api/stacks/{name}/secret-provider": {
+      "put": {
+        "operationId": "put_api_stacks_name_secret-provider",
+        "tags": [
+          "stacks"
+        ],
+        "summary": "Bind or unbind a stack's secret provider",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Stack name"
+          },
+          {
+            "name": "env",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Environment id the stack belongs to"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "secretProviderId": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                },
+                "example": {
+                  "success": true,
+                  "secretProviderId": 0
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "secretProviderId is not a number/null, or the provider no longer exists"
+          },
+          "403": {
+            "description": "Permission denied (needs stacks:edit; binding a secret provider also needs secrets:view)"
+          },
+          "404": {
+            "description": "Stack is not managed by Dockhand"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "description": "Sets the secret provider whose secrets are resolved into the stack at its next deploy, for internal and Git stacks alike. `null` unbinds. Only the binding changes; the stack's files, variables and containers are untouched until it is redeployed.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "secretProviderId": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "secretProviderId"
+                ]
+              },
+              "example": {
+                "secretProviderId": 3
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/stacks/{name}/start": {
       "post": {
         "operationId": "post_api_stacks_name_start",
@@ -29810,6 +30009,233 @@
             }
           }
         }
+      }
+    },
+    "/api/stacks/{name}/workspace": {
+      "get": {
+        "operationId": "get_api_stacks_name_workspace",
+        "tags": [
+          "stacks"
+        ],
+        "summary": "GET /api/stacks/{name}/workspace (auto-generated — no @openapi annotation yet)",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Path parameter \"name\" (auto-detected from the handler's source - no @openapi annotation for this parameter yet)"
+          },
+          {
+            "name": "content",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Query parameter \"content\" (auto-detected from the handler's source - no @openapi annotation for this parameter yet)"
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Query parameter \"path\" (auto-detected from the handler's source - no @openapi annotation for this parameter yet)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "post": {
+        "operationId": "post_api_stacks_name_workspace",
+        "tags": [
+          "stacks"
+        ],
+        "summary": "POST /api/stacks/{name}/workspace (auto-generated — no @openapi annotation yet)",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Path parameter \"name\" (auto-detected from the handler's source - no @openapi annotation for this parameter yet)"
+          },
+          {
+            "name": "env",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Query parameter \"env\" (auto-detected from the handler's source - no @openapi annotation for this parameter yet)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "404": {
+            "description": "Error response (auto-detected status code — no @openapi annotation for this response yet)"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  },
+                  "workspaceEnabled": {
+                    "type": "string"
+                  }
+                },
+                "description": "Fields auto-detected from the handler's destructuring of the request body - generic string type, no @openapi annotation for this body yet."
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "put_api_stacks_name_workspace",
+        "tags": [
+          "stacks"
+        ],
+        "summary": "PUT /api/stacks/{name}/workspace (auto-generated — no @openapi annotation yet)",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Path parameter \"name\" (auto-detected from the handler's source - no @openapi annotation for this parameter yet)"
+          },
+          {
+            "name": "env",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Query parameter \"env\" (auto-detected from the handler's source - no @openapi annotation for this parameter yet)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "404": {
+            "description": "Error response (auto-detected status code — no @openapi annotation for this response yet)"
+          },
+          "409": {
+            "description": "Error response (auto-detected status code — no @openapi annotation for this response yet)"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "commitMessage": {
+                    "type": "string"
+                  },
+                  "content": {
+                    "type": "string"
+                  },
+                  "destination": {
+                    "type": "string"
+                  },
+                  "expectedRevision": {
+                    "type": "string"
+                  },
+                  "gitDecision": {
+                    "type": "string"
+                  },
+                  "path": {
+                    "type": "string"
+                  },
+                  "workspaceEnabled": {
+                    "type": "string"
+                  }
+                },
+                "description": "Fields auto-detected from the handler's destructuring of the request body - generic string type, no @openapi annotation for this body yet."
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "delete_api_stacks_name_workspace",
+        "tags": [
+          "stacks"
+        ],
+        "summary": "DELETE /api/stacks/{name}/workspace (auto-generated — no @openapi annotation yet)",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Path parameter \"name\" (auto-detected from the handler's source - no @openapi annotation for this parameter yet)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ]
       }
     },
     "/api/stacks/adopt": {

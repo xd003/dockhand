@@ -4,7 +4,7 @@
 	import * as Select from '$lib/components/ui/select';
 	import { getProviderIcon } from '$lib/components/provider-icons';
 	import { BULK_SELECTOR_FIELDS } from '../../routes/settings/secrets/ProviderModal.svelte';
-	import { SELECTOR_VARS, BULK_SELECTOR_VAR } from '$lib/utils/bulk-selector';
+	import { SELECTOR_VARS, BULK_SELECTOR_VAR, bulkSelectorValue as selectorValueOf } from '$lib/utils/bulk-selector';
 	import type { EnvVar } from '$lib/components/StackEnvVarsEditor.svelte';
 
 	type ProviderOption = { id: number; name: string; type: string };
@@ -32,13 +32,7 @@
 	const bulkSelectorField = $derived(selectedType ? BULK_SELECTOR_FIELDS[selectedType] ?? null : null);
 
 	// Live view of the DOCKHAND_SECRET_SELECTOR (or legacy OP_ENVIRONMENT_ID) row.
-	const bulkSelectorValue = $derived.by(() => {
-		for (const name of SELECTOR_VARS) {
-			const hit = envVars.find((v) => v.key.trim() === name);
-			if (hit) return hit.value;
-		}
-		return '';
-	});
+	const bulkSelectorValue = $derived(selectorValueOf(envVars));
 	function writeSelector(value: string) {
 		const others = envVars.filter((v) => !SELECTOR_VARS.includes(v.key.trim()));
 		envVars = value.trim()

@@ -32,6 +32,8 @@ beforeEach(() => {
 		updates.push({ id, patch });
 	});
 	registerDbFake('upsertStackSource', async () => {});
+	registerDbFake('getNonSecretEnvVarsAsRecord', async () => ({}));
+	registerDbFake('getSecretEnvVarsAsRecord', async () => ({}));
 	registerStacksFake('getStackDir', async () => '/tmp/stack');
 	registerStacksFake('isHawserConnection', () => false);
 	registerStacksFake('deployStack', async (opts: { forceRecreate?: boolean }) => {

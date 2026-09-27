@@ -3307,7 +3307,7 @@ export async function upsertStackSource(data: {
 				// Preserve existing binding when caller (like git) omits it
 				...(data.secretProviderId !== undefined && { secretProviderId: data.secretProviderId }),
 				// Same preserve-on-omit for the icon, so a git sync doesn't wipe a user's choice
-				...(data.icon !== undefined && { icon: data.icon })
+				...(data.icon !== undefined && { icon: data.icon }),
 			})
 			.where(eq(stackSources.id, existing.id));
 		return getStackSource(data.stackName, data.environmentId) as Promise<StackSourceData>;

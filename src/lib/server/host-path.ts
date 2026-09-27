@@ -471,6 +471,29 @@ export function pathOverriddenBySubMount(
 }
 
 /**
+ * Locate a Docker host path inside Dockhand's container: the most specific mount whose
+ * host source covers `hostPath`, and the equivalent path under its destination. Null
+ * when no mount exposes the path. Pure over the passed-in mount list for unit testing.
+ */
+export function hostPathInContainerMount(
+	hostPath: string,
+	mounts: Array<{ source: string; destination: string }>
+): { mount: string; path: string } | null {
+	const norm = (p: string) => p.replace(/\/+$/, '') || '/';
+	const target = norm(hostPath);
+	if (!target.startsWith('/')) return null;
+	for (const m of [...mounts].sort((a, b) => b.source.length - a.source.length)) {
+		const source = norm(m.source);
+		if (!source.startsWith('/')) continue;
+		if (source !== '/' && target !== source && !target.startsWith(source + '/')) continue;
+		const mount = norm(m.destination);
+		const rest = source === '/' ? target : target.slice(source.length);
+		return { mount, path: mount === '/' ? rest || '/' : mount + (rest === '/' ? '' : rest) };
+	}
+	return null;
+}
+
+/**
  * Warn when a custom stack compose path won't survive a Dockhand recreate (#1524).
  * A path Dockhand writes to that is NOT under any of its container mounts lands on the
  * container's throwaway layer - it looks saved, then vanishes when the container is

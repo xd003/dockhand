@@ -9,6 +9,7 @@
  */
 
 import { resolve, sep, join, dirname } from 'node:path';
+import { existsSync, lstatSync, realpathSync } from 'node:fs';
 import { isForbiddenStackPath } from './fs-guard';
 
 export function assertSafeRepoUrl(url: string): void {
@@ -60,6 +61,21 @@ function assertNotForbidden(abs: string, label: string, shown: string): void {
 	if (isForbiddenStackPath(abs)) {
 		throw new Error(`${label} "${shown}" leads to a location that is not allowed`);
 	}
+}
+
+export function resolveSafeGitFileTarget(repoPath: string, relativePath: string): string {
+	const target = repoFilePath(repoPath, relativePath, 'Git file path');
+	let parent = dirname(target);
+	while (!existsSync(parent)) parent = dirname(parent);
+	const realRoot = realpathSync(repoPath);
+	const realParent = realpathSync(parent);
+	if (realParent !== realRoot && !realParent.startsWith(realRoot + sep)) {
+		throw new Error(`Git file path escapes the repository through a symlink: ${relativePath}`);
+	}
+	if (existsSync(target) && lstatSync(target).isSymbolicLink()) {
+		throw new Error(`Git file path cannot be a symbolic link: ${relativePath}`);
+	}
+	return target;
 }
 
 /**

@@ -4,6 +4,7 @@ import { authorize } from '$lib/server/authorize';
 import {
 	createGitRepository,
 	createGitStack,
+	deleteGitStack,
 	getGitCredentials,
 	getGitRepository,
 	getStackEnvVars,
@@ -16,7 +17,12 @@ import { registerSchedule } from '$lib/server/scheduler';
 import { auditGitStack, auditStack } from '$lib/server/audit';
 import { createJobResponse } from '$lib/server/sse';
 import { deployGitStack } from '$lib/server/git';
-import { getStackComposeFile } from '$lib/server/stacks';
+import { adoptPendingGitClone } from '$lib/server/git-stack';
+import { getDesiredGitMode } from '$lib/server/git-mode';
+import { assertNotMigrating } from '$lib/server/git-migration-guard';
+import { validateComposePathsInput } from '$lib/server/compose-files';
+import { getStackComposeFile, hawserRelativeFilePath } from '$lib/server/stacks';
+import { hawserStackFiles } from '$lib/server/hawser-stack-files';
 import { parseEnvVars } from '$lib/server/env-parser';
 import { buildAttachEnvVars } from '$lib/server/stack-attach-core';
 import { isValidStackName } from '$lib/server/stack-name-guard';
@@ -24,11 +30,34 @@ import { allowSecretlessWebhook, webhookConfigRequiresSecret } from '$lib/server
 import { existsSync, readFileSync } from 'node:fs';
 
 /**
+ * The stack's current .env as key/value pairs, or null when it has none. A Hawser stack's
+ * files are owned by the agent, so its .env is read through the bound agent root.
+ */
+async function readStackEnvFileVars(
+	stackName: string,
+	envId: number | undefined,
+	envFilePath: string | null,
+	hawser: boolean
+): Promise<Record<string, string> | null> {
+	if (!envFilePath) return null;
+	if (!hawser) return existsSync(envFilePath) ? parseEnvVars(readFileSync(envFilePath, 'utf-8')) : null;
+	const files = await hawserStackFiles(envId!, stackName);
+	const { root } = await files.binding();
+	try {
+		return parseEnvVars(new TextDecoder().decode((await files.read(hawserRelativeFilePath(root, envFilePath))).content));
+	} catch (error) {
+		if (error && typeof error === 'object' && 'status' in error && error.status === 404) return null;
+		throw error;
+	}
+}
+
+/**
  * @openapi
  * summary: Convert an internal stack to Git management
  * path: name:string! Stack name (from GET /api/stacks)
  * query: env:integer Environment ID the stack belongs to (from GET /api/environments)
- * body: {stackName:string,repositoryId:integer,url:string,repoName:string,branch:string,credentialId:integer,composePath:string,envFilePath:string,autoUpdate:boolean,autoUpdateSchedule:string,autoUpdateCron:string,webhookEnabled:boolean,webhookSecret:string,contextDir:string,buildOnDeploy:boolean,noBuildCache:boolean,repullImages:boolean,forceRedeploy:boolean,secretProviderId:integer,envVars:array<{key:string!,value:string,isSecret:boolean}>,deployNow:boolean}
+ * description: The stack keeps its file location: a Dockhand-managed stack deploys Git files into its stack directory, an in-place project publishes tracked files into its project directory, and a Hawser stack publishes into the agent's bound root. The Git engine is the global default (per-stack or centralized).
+ * body: {stackName:string,repositoryId:integer,url:string,repoName:string,branch:string,credentialId:integer,composePath:string,composePaths:array<string>,envFilePath:string,autoUpdate:boolean,autoUpdateSchedule:string,autoUpdateCron:string,webhookEnabled:boolean,webhookSecret:string,contextDir:string,buildOnDeploy:boolean,noBuildCache:boolean,repullImages:boolean,forceRedeploy:boolean,secretProviderId:integer,envVars:array<{key:string!,value:string,isSecret:boolean}>,temporaryCloneToken:string,deployNow:boolean}
  * resp-200: Git stack created; returns the git stack record, or a job response when deployNow starts deployment
  * resp-400: Invalid conversion request or repository configuration
  * resp-403: Caller lacks stacks:edit or required secrets:view permission, or access denied to this environment (enterprise)
@@ -101,6 +130,24 @@ export const POST: RequestHandler = async (event) => {
 			return json({ error: 'A webhook secret is required when the webhook is enabled' }, { status: 400 });
 		}
 
+		const composePathsError = validateComposePathsInput(data.composePaths);
+		if (composePathsError) {
+			return json({ error: composePathsError }, { status: 400 });
+		}
+		// A default single-file stack leaves composePaths unset, so standard adjacent
+		// override files retain Docker Compose's automatic discovery.
+		const composePaths = Array.isArray(data.composePaths) && data.composePaths.length > 0
+			? data.composePaths
+			: null;
+		const composePath = composePaths?.[0] ?? (data.composePath || 'compose.yaml');
+
+		// Block only when the target repository is being provisioned by a migration.
+		const locked = await assertNotMigrating([], typeof data.repositoryId === 'number' ? [data.repositoryId] : []);
+		if (locked) return locked;
+
+		// The stack inherits the GLOBAL DEFAULT engine, like a newly created Git stack.
+		const model = await getDesiredGitMode();
+
 		let repositoryId = data.repositoryId;
 
 		if (!repositoryId) {
@@ -117,13 +164,27 @@ export const POST: RequestHandler = async (event) => {
 			}
 
 			try {
+				// Centralized: schedule and webhook live on the repository. Stack mode:
+				// repositories are thin records and syncs/webhooks are configured per stack.
 				const repo = await createGitRepository({
 					name: data.repoName || stackName,
 					url: data.url,
 					branch: data.branch || 'main',
-					credentialId: data.credentialId || null
+					credentialId: data.credentialId || null,
+					...(model === 'centralized'
+						? {
+							autoUpdate: data.autoUpdate || false,
+							autoUpdateSchedule: data.autoUpdateSchedule || undefined,
+							autoUpdateCron: data.autoUpdate ? (data.autoUpdateCron || '0 3 * * *') : undefined,
+							webhookEnabled: data.webhookEnabled || false,
+							webhookSecret: data.webhookEnabled ? (data.webhookSecret || null) : null
+						}
+						: {})
 				});
 				repositoryId = repo.id;
+				if (model === 'centralized' && repo.autoUpdate) {
+					await registerSchedule(repo.id, 'git_repository_sync', null);
+				}
 			} catch (error: any) {
 				if (error.message?.includes('UNIQUE constraint failed')) {
 					return json({ error: 'A repository with this name already exists' }, { status: 400 });
@@ -144,20 +205,42 @@ export const POST: RequestHandler = async (event) => {
 			...(data.repositoryId && typeof data.branch === 'string' && data.branch.trim()
 				? { branch: data.branch.trim() }
 				: {}),
-			composePath: data.composePath || 'compose.yaml',
+			composePath,
+			composePaths,
 			envFilePath: data.envFilePath || null,
-			autoUpdate: data.autoUpdate || false,
-			autoUpdateSchedule: data.autoUpdateSchedule || 'daily',
-			autoUpdateCron: data.autoUpdateCron || '0 3 * * *',
-			webhookEnabled: data.webhookEnabled || false,
-			webhookSecret: data.webhookSecret || null,
 			contextDir: data.contextDir || null,
 			buildOnDeploy: data.buildOnDeploy ?? false,
 			noBuildCache: data.noBuildCache ?? false,
 			repullImages: data.repullImages ?? false,
-			forceRedeploy: data.forceRedeploy ?? false
+			forceRedeploy: data.forceRedeploy ?? false,
+			engine: model,
+			...(model === 'centralized'
+				? {
+					// Centralized: a stack webhook exists only under force redeploy;
+					// scheduled sync lives on the repository.
+					webhookEnabled: data.forceRedeploy ? (data.webhookEnabled || false) : false,
+					webhookSecret: (data.forceRedeploy && data.webhookEnabled) ? (data.webhookSecret || null) : null
+				}
+				: {
+					webhookEnabled: data.webhookEnabled || false,
+					webhookSecret: data.webhookEnabled ? (data.webhookSecret || null) : null,
+					autoUpdate: data.autoUpdate || false,
+					autoUpdateSchedule: data.autoUpdate ? (data.autoUpdateSchedule || 'daily') : undefined,
+					autoUpdateCron: data.autoUpdate ? (data.autoUpdateCron || '0 3 * * *') : undefined
+				})
 		});
 
+		// Stack mode: attach the checkout the modal already cloned for browsing.
+		if (model === 'stack' && typeof data.temporaryCloneToken === 'string' && data.temporaryCloneToken.trim()) {
+			const adoption = await adoptPendingGitClone(gitStack.id, data.temporaryCloneToken.trim());
+			if (!adoption.success) {
+				await deleteGitStack(gitStack.id);
+				return json({ error: adoption.error || 'Failed to attach the pre-cloned repository' }, { status: 400 });
+			}
+		}
+
+		// The stack keeps its file location (fileLocation and projectDir are preserved when
+		// omitted), so the Git deploy publishes into the directory the stack already uses.
 		await upsertStackSource({
 			stackName,
 			environmentId: envIdNum ?? null,
@@ -169,7 +252,7 @@ export const POST: RequestHandler = async (event) => {
 			...(providerChanged ? { secretProviderId: data.secretProviderId ?? null } : {})
 		});
 
-		if (gitStack.autoUpdate && gitStack.autoUpdateCron) {
+		if (model === 'stack' && gitStack.autoUpdate && gitStack.autoUpdateCron) {
 			await registerSchedule(gitStack.id, 'git_stack_sync', gitStack.environmentId);
 		}
 
@@ -180,9 +263,7 @@ export const POST: RequestHandler = async (event) => {
 		const envFilePath = source.envPath === ''
 			? null
 			: source.envPath ?? composeResult.envPath ?? composeResult.suggestedEnvPath ?? null;
-		const fileVars = envFilePath && existsSync(envFilePath)
-			? parseEnvVars(readFileSync(envFilePath, 'utf-8'))
-			: null;
+		const fileVars = await readStackEnvFileVars(stackName, envIdNum, envFilePath, source.fileLocation === 'hawser');
 		const dbVars = Array.isArray(data.envVars) ? data.envVars : null;
 
 		if (fileVars || dbVars) {

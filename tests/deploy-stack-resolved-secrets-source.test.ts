@@ -60,9 +60,11 @@ function stripComments(src: string): string {
 		.replace(/(^|[^:])\/\/[^\n]*/g, '$1'); // avoid eating "http://" etc. (rare here)
 }
 
-// Extract the brace-balanced body of `export async function deployStack(...) { ... }`.
+// Extract the brace-balanced body of the unlocked deployment implementation.
+// deployStack() is now a lock-taking wrapper; the real body lives in
+// deployStackUnlocked() so adoption can hold the same lock without deadlocking.
 function deployStackBody(src: string): string {
-	const sig = src.indexOf('export async function deployStack(');
+	const sig = src.indexOf('export async function deployStackUnlocked(');
 	if (sig === -1) return '';
 	const open = src.indexOf('{', sig);
 	if (open === -1) return '';

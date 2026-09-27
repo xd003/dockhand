@@ -53,7 +53,7 @@ import {
 	type GitEngine
 } from './git';
 import { deployStackFromSync } from './git-deploy-shared';
-import { notifyStackDeploy } from './stacks';
+import { notifyStackDeploy, withStackLock } from './stacks';
 
 // Generous per-clone bound: a frozen network/SSH connection must not wedge the
 // transition drain or hold a worker slot forever (SIGKILLed on timeout).
@@ -640,7 +640,7 @@ export async function syncGitStack(stackId: number, onProgress?: ProgressCallbac
 			composeDir,
 			composeFileName,
 			rawManifest: gitStack.syncedFiles,
-			trackedOnly: await publishesTrackedGitFilesOnly(gitStack.environmentId),
+			trackedOnly: await publishesTrackedGitFilesOnly(gitStack.stackName, gitStack.environmentId),
 			envFileName
 		});
 
@@ -694,6 +694,19 @@ async function deployGitStackCore(
 	opts: DeployGitStackOpts,
 	onProgress?: ProgressCallback
 ): Promise<DeployGitStackResult> {
+	const gitStack = await getGitStack(stackId);
+	if (!gitStack) {
+		onProgress?.({ status: 'error', error: 'Git stack not found' });
+		return { success: false, error: 'Git stack not found' };
+	}
+	return withStackLock(gitStack.stackName, () => deployGitStackCoreUnlocked(stackId, opts, onProgress));
+}
+
+async function deployGitStackCoreUnlocked(
+	stackId: number,
+	opts: DeployGitStackOpts,
+	onProgress?: ProgressCallback
+): Promise<DeployGitStackResult> {
 	const { force, ignoreForceRedeploy } = opts;
 
 	const gitStack = await getGitStack(stackId);
@@ -738,7 +751,7 @@ async function deployGitStackCore(
 		}
 
 		// Deploy using the shared post-sync body (git-deploy-shared.ts).
-		return deployStackFromSync({ stackId, gitStack, opts: { force, ignoreForceRedeploy }, syncResult, onProgress, logPrefix });
+		return deployStackFromSync({ stackId, gitStack, opts, syncResult, onLine: opts.onLine, onProgress, logPrefix, lockHeld: true });
 	} finally {
 		stackDeployReentrancy.delete(stackId);
 	}
@@ -746,13 +759,16 @@ async function deployGitStackCore(
 
 export async function deployGitStack(
 	stackId: number,
-	options?: { force?: boolean; ignoreForceRedeploy?: boolean }
+	options?: Partial<DeployGitStackOpts>
 ): Promise<DeployGitStackResult> {
 	// Coalesce concurrent stack deploys (stack webhook ↔ repo fan-out ↔ manual).
 	// Stronger intent wins: force ORs; ignoreForceRedeploy only if all agree.
 	const opts: DeployGitStackOpts = {
 		force: options?.force ?? true, // Default to force for backward compatibility
-		ignoreForceRedeploy: options?.ignoreForceRedeploy ?? false
+		ignoreForceRedeploy: options?.ignoreForceRedeploy ?? false,
+		triggeredBy: options?.triggeredBy,
+		userId: options?.userId,
+		onLine: options?.onLine
 	};
 
 	return runCoalesced(

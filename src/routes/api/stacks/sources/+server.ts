@@ -1,8 +1,9 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getStackSources } from '$lib/server/db';
-import { countStackEnvVars, resolveStackSourceDisplayPaths } from '$lib/server/stacks';
+import { countStackEnvVars } from '$lib/server/stacks';
 import { authorize } from '$lib/server/authorize';
+import { resolveStackSourceDisplayPaths } from '$lib/server/stacks';
 
 /**
  * @openapi
@@ -25,19 +26,6 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 	try {
 		const sources = await getStackSources(envIdNum);
 
-		// Convert to a map for easier lookup in the frontend
-		const sourceMap: Record<
-			string,
-			{
-				sourceType: string;
-				composePath?: string | null;
-				composePaths?: string[];
-				repository?: any;
-				secretProviderId?: number | null;
-				icon?: string | null;
-				envVarCount?: number;
-			}
-		> = {};
 		// Count env vars server-side (one local read per stack) so the list badge does
 		// not need a /env fetch per stack. GET /env resolves its env param as
 		// `envId ? parseInt : null`, so pass the SAME null-when-absent value (not
@@ -51,19 +39,34 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 					: Promise.resolve(0)
 			)
 		);
-		sources.forEach((source, i) => {
-			// Git stacks store repo-relative compose paths; report on-disk paths.
+		// Convert to a map for easier lookup in the frontend.
+		// Resolve compose paths to absolute on-disk paths (git stacks store repo-relative paths).
+		const sourceMap: Record<
+			string,
+			{
+				sourceType: string;
+				composePath?: string | null;
+				composePaths?: string[];
+				envPath?: string | null;
+				repository?: any;
+				secretProviderId?: number | null;
+				icon?: string | null;
+				envVarCount?: number;
+			}
+		> = {};
+		for (const [i, source] of sources.entries()) {
 			const resolved = resolveStackSourceDisplayPaths(source);
 			sourceMap[source.stackName] = {
 				sourceType: source.sourceType,
 				composePath: resolved.composePath,
 				composePaths: resolved.composePaths,
+				envPath: source.envPath,
 				repository: source.repository,
 				secretProviderId: source.secretProviderId,
 				icon: source.icon ?? null,
-				envVarCount: counts[i],
+				envVarCount: counts[i]
 			};
-		});
+		}
 
 		return json(sourceMap);
 	} catch (error) {

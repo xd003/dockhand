@@ -169,7 +169,7 @@ export async function findRepoNameSanitizationCollision(
 	return null;
 }
 
-interface GitEnv {
+export interface GitEnv {
 	[key: string]: string;
 }
 

@@ -26,6 +26,7 @@ export function buildComposeOperationArgs(
 	options: ComposeOperationArgOptions = {}
 ): string[] {
 	const { forceRecreate, removeVolumes, build, noBuildCache, pullBase, noBuild, pullPolicy, serviceName } = options;
+	const targets = serviceName ? [serviceName] : [];
 	const args: string[] = [];
 
 	switch (operation) {
@@ -36,7 +37,7 @@ export function buildComposeOperationArgs(
 			if (build && !noBuild) args.push('--build');
 			if (noBuild) args.push('--no-build');
 			if (pullPolicy) args.push('--pull', pullPolicy);
-			if (serviceName) args.push(serviceName);
+			args.push(...targets);
 			break;
 		case 'down':
 			args.push('down', '--remove-orphans');
@@ -50,6 +51,7 @@ export function buildComposeOperationArgs(
 			break;
 		case 'restart':
 			args.push('restart');
+			args.push(...targets);
 			break;
 		case 'pull':
 			args.push('pull');
@@ -57,13 +59,13 @@ export function buildComposeOperationArgs(
 			// Before a separate build: the build replaces those images, and a service whose
 			// tag is in no registry would fail the pull.
 			if (pullBase || noBuildCache) args.push('--ignore-buildable');
-			if (serviceName) args.push(serviceName);
+			args.push(...targets);
 			break;
 		case 'build':
 			args.push('build');
 			if (pullBase) args.push('--pull');
 			if (noBuildCache) args.push('--no-cache');
-			if (serviceName) args.push(serviceName);
+			args.push(...targets);
 			break;
 	}
 

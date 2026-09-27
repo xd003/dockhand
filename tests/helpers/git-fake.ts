@@ -15,7 +15,7 @@ import { mock } from 'bun:test';
 type AnyFn = (...args: any[]) => any;
 
 /** Every git.ts export any test file fakes, across the whole suite. */
-const KNOWN_EXPORTS = ['finalizeDeletionSync', 'notifyGitSync'] as const;
+const KNOWN_EXPORTS = ['finalizeDeletionSync', 'notifyGitSync', 'buildGitEnv', 'cleanupSshKey', 'execGit'] as const;
 
 const impls: Record<string, AnyFn> = {};
 

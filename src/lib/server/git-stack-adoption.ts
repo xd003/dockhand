@@ -22,9 +22,10 @@ import { getStackDir, isHawserConnection, listComposeStacks, validateStackPath, 
 import { resolveGitStackPaths, isPathUnderRoot } from './stack-path-utils';
 import { parseComposePathsColumn, validateComposePathsInput } from './compose-files';
 import { registerSchedule, unregisterSchedule } from './scheduler';
-import { hawserComposeProjectLabels } from './hawser-stack-files';
+import { hawserComposeProjectLabels, hawserStackFiles } from './hawser-stack-files';
 import { resolveExistingComposeFile } from './in-place-project';
 import { checkDockerHostSharesProjectDir } from './in-place-host-check';
+import { applyProjectFileChanges, hawserProjectFiles, localProjectFiles, type AppliedProjectFileChanges, type ProjectFileChanges, type ProjectFileStore } from './adoption-project-files';
 
 export interface GitStackAdoptionInput {
 	stackName: string;
@@ -55,6 +56,9 @@ export interface GitStackAdoptionInput {
 	 * filesystem. Omitted when the project's files are gone: the repository deploys to Dockhand's managed stack directory.
 	 */
 	existingComposePath?: string;
+	/** Workspace edits to project files outside Git, applied in the project directory before Compose runs. */
+	localChanges?: ProjectFileChanges | null;
+	workspaceEnabled?: boolean;
 }
 
 export type GitStackAdoptionPreflight = {
@@ -92,6 +96,52 @@ async function getExternalAdoptionSource(
 	if (source) return { sourceType: source.sourceType, envPath: source.envPath ?? null };
 	if (!(await listComposeStacks(environmentId)).some((stack) => stack.name === stackName)) return null;
 	return { sourceType: 'external', envPath: null };
+}
+
+type AdoptionProject =
+	| { ok: true; hawser: false; projectDir: string }
+	| { ok: true; hawser: true; root: string; composeFileNames: string[] }
+	| { ok: false; status: number; error: string };
+
+/** Resolve the selected existing Compose file to the project directory converted in place. */
+async function resolveAdoptionProject(stackName: string, environmentId: number | null, existingComposePath: unknown): Promise<AdoptionProject> {
+	if (typeof existingComposePath !== 'string' || !existingComposePath.trim()) {
+		return { ok: false, status: 400, error: 'Select the existing Compose file of this stack' };
+	}
+	if (typeof environmentId === 'number' && isHawserConnection(await getEnvironment(environmentId))) {
+		// The agent verifies the selection against the running project's Compose labels,
+		// exactly like managing the stack internally.
+		try {
+			const labels = await hawserComposeProjectLabels(environmentId, stackName, existingComposePath.trim());
+			return { ok: true, hawser: true, root: labels.root, composeFileNames: labels.composeFileNames };
+		} catch (error) {
+			return { ok: false, status: 409, error: error instanceof Error ? error.message : String(error) };
+		}
+	}
+	const selected = resolveExistingComposeFile(existingComposePath);
+	if (!selected.ok) return { ok: false, status: 400, error: selected.error };
+	const reposDir = getGitReposDir();
+	if (isPathUnderRoot(selected.projectDir, reposDir) || isPathUnderRoot(reposDir, selected.projectDir)) {
+		return { ok: false, status: 409, error: 'The selected project directory overlaps Dockhand\'s Git checkouts; choose the stack\'s own Compose directory' };
+	}
+	return { ok: true, hawser: false, projectDir: selected.projectDir };
+}
+
+async function projectFileStore(stackName: string, environmentId: number | null, project: AdoptionProject & { ok: true }): Promise<ProjectFileStore> {
+	if (!project.hawser) return localProjectFiles(project.projectDir);
+	const remote = await hawserStackFiles(environmentId!, stackName);
+	await remote.enroll(project.root, project.composeFileNames);
+	return hawserProjectFiles(remote);
+}
+
+/** Files of the external project directory that a Git conversion would deploy in place. */
+export async function openAdoptionProjectFiles(stackName: string, environmentId: number | null, existingComposePath: unknown): Promise<ProjectFileStore> {
+	const source = await getExternalAdoptionSource(stackName, environmentId);
+	if (!source) throw Object.assign(new Error(`Stack "${stackName}" was not found`), { status: 404 });
+	if (source.sourceType !== 'external') throw Object.assign(new Error('Only an external stack can be adopted from Git'), { status: 409 });
+	const project = await resolveAdoptionProject(stackName, environmentId, existingComposePath);
+	if (!project.ok) throw Object.assign(new Error(project.error), { status: project.status });
+	return projectFileStore(stackName, environmentId, project);
 }
 
 /** Validate adoption without creating a repository, stack row, or files. */
@@ -142,40 +192,29 @@ export async function validateExternalGitAdoption(
 	}
 	if (typeof input.existingComposePath !== 'string' || !input.existingComposePath.trim()) {
 		// The project's files are gone: deploy like a new Git stack under the running project's name.
+		if (input.localChanges) return invalid('Editing project files requires selecting the existing Compose file');
 		return { ok: true, stackName, environmentId, destinationDir: null, sourceEnvPath: null };
 	}
-	const hawser = typeof environmentId === 'number' && isHawserConnection(await getEnvironment(environmentId));
-	if (hawser) {
-		// The agent verifies the selection against the running project's Compose labels,
-		// exactly like managing the stack internally.
-		try {
-			const labels = await hawserComposeProjectLabels(environmentId!, stackName, input.existingComposePath.trim());
-			return {
-				ok: true,
-				stackName,
-				environmentId,
-				destinationDir: labels.root,
-				sourceEnvPath: source.envPath,
-				remoteGitRoot: labels.root,
-				remoteGitSourceComposePaths: labels.composeFileNames
-			};
-		} catch (error) {
-			return invalid(error instanceof Error ? error.message : String(error), 409);
-		}
+	const project = await resolveAdoptionProject(stackName, environmentId, input.existingComposePath);
+	if (!project.ok) return invalid(project.error, project.status);
+	if (project.hawser) {
+		return {
+			ok: true,
+			stackName,
+			environmentId,
+			destinationDir: project.root,
+			sourceEnvPath: source.envPath,
+			remoteGitRoot: project.root,
+			remoteGitSourceComposePaths: project.composeFileNames
+		};
 	}
-	const selected = resolveExistingComposeFile(input.existingComposePath);
-	if (!selected.ok) return invalid(selected.error);
-	const reposDir = getGitReposDir();
-	if (isPathUnderRoot(selected.projectDir, reposDir) || isPathUnderRoot(reposDir, selected.projectDir)) {
-		return invalid('The selected project directory overlaps Dockhand\'s Git checkouts; choose the stack\'s own Compose directory', 409);
-	}
-	const hostError = await checkDockerHostSharesProjectDir(selected.projectDir, environmentId);
+	const hostError = await checkDockerHostSharesProjectDir(project.projectDir, environmentId);
 	if (hostError) return invalid(hostError, 409);
 	return {
 		ok: true,
 		stackName,
 		environmentId,
-		destinationDir: selected.projectDir,
+		destinationDir: project.projectDir,
 		sourceEnvPath: source.envPath
 	};
 }
@@ -236,6 +275,12 @@ export async function adoptExternalGitStack(
 			? input.temporaryCloneToken.trim()
 			: '';
 		let originalEnvVars: Awaited<ReturnType<typeof getStackEnvVars>> | undefined;
+		let localApplied: AppliedProjectFileChanges | undefined;
+		const rollbackLocalChanges = async () => {
+			await localApplied?.rollback().catch((restoreError) => {
+				console.error('[Git adoption] Failed to restore project files:', restoreError);
+			});
+		};
 		try {
 			onProgress?.({ status: 'connecting', message: 'Preparing Git adoption...', step: 1, totalSteps: 5 });
 			if (!repositoryId) {
@@ -313,6 +358,14 @@ export async function adoptExternalGitStack(
 				throw new Error(`Git sync failed before Compose ran: ${syncResult.error || 'The repository did not contain a usable compose file'}`);
 			}
 
+			if (input.localChanges) {
+				const store = await projectFileStore(stackName, environmentId, preflight.remoteGitRoot
+					? { ok: true, hawser: true, root: preflight.remoteGitRoot, composeFileNames: preflight.remoteGitSourceComposePaths ?? [] }
+					: { ok: true, hawser: false, projectDir: preflight.destinationDir! });
+				localApplied = await applyProjectFileChanges(store, input.localChanges);
+				onLine?.(`Applied workspace changes to ${input.localChanges.writes.length + input.localChanges.deletions.length + input.localChanges.folders.length} project file(s)`);
+			}
+
 			const result = await deployStackFromSync({
 				stackId: gitStack.id,
 				gitStack,
@@ -348,7 +401,8 @@ export async function adoptExternalGitStack(
 						),
 						envPath: input.envFilePath && syncResult.envFileName
 							? join(destinationDir, syncResult.envFileName)
-							: preflight.sourceEnvPath
+							: preflight.sourceEnvPath,
+						workspaceEnabled: input.workspaceEnabled === true
 					});
 					sourceCommitted = true;
 				}
@@ -364,6 +418,7 @@ export async function adoptExternalGitStack(
 						console.error('[Git adoption] Failed to restore environment variables:', restoreError);
 					});
 				}
+				await rollbackLocalChanges();
 				await cleanupProvisionalGitState(gitStack.id, repositoryId, repositoryCreated, stackName, environmentId);
 				return {
 					success: false,
@@ -378,6 +433,7 @@ export async function adoptExternalGitStack(
 			} else if (gitStack.autoUpdate && gitStack.autoUpdateCron) {
 				await registerSchedule(gitStack.id, 'git_stack_sync', gitStack.environmentId);
 			}
+			await localApplied?.commit().catch((error) => console.warn('[Git adoption] Failed to remove replaced project files:', error));
 			onProgress?.({ status: 'complete', message: `Successfully adopted ${stackName}` });
 			return { success: true, output: result.output };
 		} catch (error) {
@@ -393,6 +449,7 @@ export async function adoptExternalGitStack(
 						console.error('[Git adoption] Failed to restore environment variables:', restoreError);
 					});
 				}
+				await rollbackLocalChanges();
 				if (gitStackId || repositoryCreated) {
 					await cleanupProvisionalGitState(gitStackId, repositoryId!, repositoryCreated, stackName, environmentId);
 				}
@@ -404,6 +461,7 @@ export async function adoptExternalGitStack(
 						: `Git adoption failed before docker compose ran: ${message}`
 				};
 			}
+			await localApplied?.commit().catch((commitError) => console.warn('[Git adoption] Failed to remove replaced project files:', commitError));
 			throw error;
 		}
 	};

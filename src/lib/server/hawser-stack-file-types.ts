@@ -17,7 +17,8 @@ export interface HawserStackFileClient {
 	write(path: string, content: Uint8Array, revision?: string): Promise<HawserFileEntry>;
 	mkdir(path: string): Promise<HawserFileEntry>;
 	move(path: string, targetPath: string, revision?: string): Promise<HawserFileEntry>;
-	delete(path: string, revision?: string): Promise<void>;
+	/** `recursive` also removes what `list` never shows (.git, symlinks); older agents ignore it and need an empty directory. */
+	delete(path: string, revision?: string, recursive?: boolean): Promise<void>;
 	apply(files: HawserFileChange[], deletions?: HawserFileDeletion[]): Promise<HawserApplyResult>;
 }
 export type HawserApplyResult = { deletedFiles: string[]; skippedFiles: { path: string; reason: string }[] };

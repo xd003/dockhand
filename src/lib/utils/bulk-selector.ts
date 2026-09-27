@@ -10,3 +10,12 @@ export const SELECTOR_VARS = ['OP_ENVIRONMENT_ID', 'DOCKHAND_SECRET_SELECTOR'];
 
 /** The canonical name the field writes to (a legacy OP_ENVIRONMENT_ID is normalized to this). */
 export const BULK_SELECTOR_VAR = 'DOCKHAND_SECRET_SELECTOR';
+
+/** The selector value carried by `vars` (the first SELECTOR_VARS row present), or ''. */
+export function bulkSelectorValue(vars: { key: string; value: string }[]): string {
+	for (const name of SELECTOR_VARS) {
+		const hit = vars.find((v) => v.key.trim() === name);
+		if (hit) return hit.value;
+	}
+	return '';
+}

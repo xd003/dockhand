@@ -89,7 +89,7 @@
 	// rate-limited), with the error text for the tooltip — session-only (#1255).
 	let failedUpdateCheckIds = $state<Set<string>>(new Set());
 	let failedUpdateCheckErrors = $state<Map<string, string>>(new Map());
-	let stackSources = $state<Record<string, { sourceType: string; composePath?: string | null; composePaths?: string[]; envPath?: string | null; repository?: any; gitStack?: any; icon?: string | null }>>({});
+	let stackSources = $state<Record<string, { sourceType: string; composePath?: string | null; composePaths?: string[]; envPath?: string | null; repository?: any; gitStack?: any; icon?: string | null; workspaceEnabled?: boolean }>>({});
 	let stackEnvVarCounts = $state<Record<string, number>>({});
 	let gitStacks = $state<any[]>([]);
 	let copiedWebhookStackId = $state<number | null>(null);
@@ -122,8 +122,10 @@
 	let showImportModal = $state(false);
 	let editingStackName = $state('');
 	let stackModalReadonly = $state(false);
+	let stackModalInspection = $state(false);
+	let gitSettingsReadonly = $state(false);
 	let stackModalGitInfo = $state<{ commit?: string; url?: string; branch?: string } | null>(null);
-	let stackModalSource = $state<{ sourceType: string; repository?: { url?: string; branch?: string } | null; gitStack?: { id?: number; lastCommit?: string | null } | null } | null>(null);
+	let stackModalSource = $state<{ sourceType: string; workspaceEnabled?: boolean; repository?: { url?: string; branch?: string } | null; gitStack?: { id?: number; lastCommit?: string | null } | null } | null>(null);
 	let stackModalInitialTab = $state<'editor' | 'graph'>('editor');
 	let editingGitStack = $state<any>(null);
 	let adoptionTarget = $state<{ stackName: string; environmentId: number | null; displayName?: string; envPath?: string | null } | null>(null);
@@ -1274,6 +1276,7 @@ let gitMigratingStackId = $state<number | null>(null);
 	}
 
 	async function openGitModal(gitStack?: any, target?: { stackName: string; environmentId: number | null; displayName?: string; envPath?: string | null }) {
+		gitSettingsReadonly = false;
 		editingGitStack = target ? null : (gitStack || null);
 		adoptionTarget = target ?? null;
 		// Fetch repositories and credentials before opening a new modal.
@@ -1489,6 +1492,7 @@ let gitMigratingStackId = $state<number | null>(null);
 	function editStack(name: string) {
 		editingStackName = name;
 		stackModalReadonly = false;
+		stackModalInspection = false;
 		stackModalSource = getStackSource(name);
 		stackModalGitInfo = null;
 		showEditModal = true;
@@ -1497,13 +1501,15 @@ let gitMigratingStackId = $state<number | null>(null);
 	function viewStack(name: string) {
 		editingStackName = name;
 		stackModalReadonly = true;
+		stackModalInspection = true;
 		stackModalSource = getStackSource(name);
 		stackModalGitInfo = null;
 		showEditModal = true;
 	}
 
-	function viewGitStack(name: string, initialTab: 'editor' | 'graph' = 'editor') {
+	function viewGitStack(name: string, initialTab: 'editor' | 'graph' = 'editor', inspect = false) {
 		editingStackName = name;
+		stackModalInspection = inspect;
 		stackModalInitialTab = initialTab;
 		stackModalReadonly = true;
 		const src = getStackSource(name);
@@ -1521,7 +1527,7 @@ let gitMigratingStackId = $state<number | null>(null);
 
 	function openGitStackView(tab: 'editor' | 'graph') {
 		if (!editingGitStack) return;
-		viewGitStack(editingGitStack.stackName, tab);
+		viewGitStack(editingGitStack.stackName, tab, gitSettingsReadonly);
 		showGitModal = false;
 	}
 
@@ -1529,6 +1535,7 @@ let gitMigratingStackId = $state<number | null>(null);
 		const gitStack = stackModalSource?.gitStack;
 		if (!gitStack) return;
 		editingGitStack = gitStack;
+		gitSettingsReadonly = stackModalInspection;
 		adoptionTarget = null;
 		showGitModal = true;
 		showEditModal = false;
@@ -2409,7 +2416,7 @@ let gitMigratingStackId = $state<number | null>(null);
 							class="font-medium text-xs hover:text-primary hover:underline cursor-pointer text-left truncate min-w-0"
 							onclick={(e) => {
 								e.stopPropagation();
-								if (source.sourceType === 'git') viewGitStack(stack.name);
+								if (source.sourceType === 'git') viewGitStack(stack.name, 'editor', true);
 								else if (source.sourceType === 'external' && $canAccess('stacks', 'edit')) editStack(stack.name);
 								else viewStack(stack.name);
 							}}
@@ -2805,7 +2812,7 @@ let gitMigratingStackId = $state<number | null>(null);
 								<button
 									type="button"
 									onclick={() => openGitModal(source.gitStack)}
-									title={m.stacks_list_edit_git_stack()}
+									title="Edit"
 									class="p-1 rounded hover:bg-muted transition-colors opacity-70 hover:opacity-100 cursor-pointer"
 								>
 									<Pencil class="grid-action-icon grid-action-edit text-muted-foreground hover:text-purple-500" />
@@ -2853,7 +2860,7 @@ let gitMigratingStackId = $state<number | null>(null);
 											<button
 												type="button"
 												onclick={(e) => { e.stopPropagation(); openGitModal(source.gitStack); }}
-										title={m.stacks_list_edit_git_stack()}
+											title="Edit"
 										class="p-1 rounded hover:bg-muted transition-colors opacity-70 hover:opacity-100 cursor-pointer"
 									>
 												<Pencil class="grid-action-icon grid-action-edit text-muted-foreground hover:text-purple-500" />
@@ -3590,10 +3597,11 @@ let gitMigratingStackId = $state<number | null>(null);
 	mode="edit"
 	stackName={editingStackName}
 	readonly={stackModalReadonly}
+	inspectionReadonly={stackModalInspection}
 	gitInfo={stackModalGitInfo}
 	stackSource={stackModalSource}
 	initialTab={stackModalInitialTab}
-	onEditGitSettings={$canAccess('stacks', 'edit') ? openCurrentGitSettings : undefined}
+	onEditGitSettings={openCurrentGitSettings}
 	onAdoptFromGit={$canAccess('stacks', 'create') && $canAccess('stacks', 'edit') ? () => {
 		const source = getStackSource(editingStackName);
 		showEditModal = false;
@@ -3613,15 +3621,23 @@ let gitMigratingStackId = $state<number | null>(null);
 		showEditModal = false;
 		editingStackName = '';
 		stackModalReadonly = false;
+		stackModalInspection = false;
 		stackModalGitInfo = null;
 		stackModalSource = null;
 		loadTags(envId);
 	}}
 	onSuccess={fetchStacks}
+	onConverted={() => {
+		stackModalSource = { ...stackModalSource, sourceType: 'internal', gitStack: null, workspaceEnabled: true };
+		stackModalReadonly = false;
+		stackModalGitInfo = null;
+		void fetchStacks();
+	}}
 />
 
 <GitStackModal
 	bind:open={showGitModal}
+	readonly={gitSettingsReadonly}
 	gitStack={editingGitStack}
 	adoptionTarget={adoptionTarget}
 	environmentId={envId}
@@ -3631,6 +3647,7 @@ let gitMigratingStackId = $state<number | null>(null);
 	onClose={() => {
 		showGitModal = false;
 		editingGitStack = null;
+		gitSettingsReadonly = false;
 		adoptionTarget = null;
 		loadTags(envId);
 	}}

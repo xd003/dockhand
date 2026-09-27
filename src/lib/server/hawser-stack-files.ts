@@ -28,6 +28,7 @@ type Request = {
 	root?: string;
 	existingOnly?: boolean;
 	removeEmptyRoot?: boolean;
+	recursive?: boolean;
 	composeFileNames?: string[];
 	contentBase64?: string;
 	revision?: string;
@@ -105,7 +106,7 @@ export async function hawserStackFiles(environmentId: number, projectName: strin
 		async move(path: string, targetPath: string, revision?: string): Promise<HawserFileEntry> {
 			return (await request({ action: 'move', path, targetPath, revision })).entry!;
 		},
-		async delete(path: string, revision?: string): Promise<void> { await request({ action: 'delete', path, revision }); },
+		async delete(path: string, revision?: string, recursive?: boolean): Promise<void> { await request({ action: 'delete', path, revision, recursive }); },
 		async apply(files: HawserFileChange[], deletions: HawserFileDeletion[] = []): Promise<HawserApplyResult> {
 			const reply = await request({ action: 'apply', files, deletions });
 			return { deletedFiles: reply.deletedFiles ?? [], skippedFiles: reply.skippedFiles ?? [] };

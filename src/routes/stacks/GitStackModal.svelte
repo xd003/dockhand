@@ -8,7 +8,7 @@
 	import { Label } from '$lib/components/ui/label';
 	import { Input } from '$lib/components/ui/input';
 	import { TogglePill } from '$lib/components/ui/toggle-pill';
-	import { Loader2, GitBranch, RefreshCw, Webhook, Rocket, RefreshCcw, Check, XCircle, FolderGit2, Github, Key, KeyRound, Lock, FileText, HelpCircle, GripVertical, X, Download, Hammer, ArrowDownToLine, Zap, FolderOpen, Ban, TriangleAlert, Settings2, Archive, History, GitFork, ArrowUp, ArrowDown } from 'lucide-svelte';
+	import { Loader2, GitBranch, RefreshCw, Webhook, Rocket, RefreshCcw, Check, XCircle, FolderGit2, Github, Key, KeyRound, Lock, FileText, HelpCircle, GripVertical, X, Download, Hammer, ArrowDownToLine, Zap, FolderOpen, Ban, TriangleAlert, Settings2, Archive, History, GitFork, ArrowUp, ArrowDown, Code, GitGraph } from 'lucide-svelte';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import { page } from '$app/stores'; // BETA GATE: backups feature flag
 	import BackupPanel from '../containers/BackupPanel.svelte';
@@ -96,11 +96,37 @@
 		credentials: GitCredential[];
 		onClose: () => void;
 		onSaved: () => void;
+		onOpenStackView?: (tab: 'editor' | 'graph') => void;
 		/** Called when a new repository is created inline (via Browse) so the parent can refresh the repos list */
 		onRepositoryCreated?: () => void;
 	}
 
-	let { open = $bindable(), gitStack = null, environmentId = null, icon = null, repositories, credentials, onClose, onSaved, onRepositoryCreated }: Props = $props();
+	let { open = $bindable(), gitStack = null, environmentId = null, icon = null, repositories, credentials, onClose, onSaved, onOpenStackView, onRepositoryCreated }: Props = $props();
+	// Settings as last loaded. Editor/Graph open a different modal that reloads the
+	// saved stack, so switching with unsaved edits would silently drop them.
+	let savedSettings = $state<string | null>(null);
+	let pendingStackView = $state<'editor' | 'graph' | null>(null);
+	function settingsSnapshot(): string {
+		return JSON.stringify([
+			formStackName, formBranch, formComposePaths.map((path) => path.trim()).filter(Boolean),
+			formEnvFilePath || null, formContextDir || null, formBuildOnDeploy, formNoBuildCache,
+			formRepullImages, formForceRedeploy, formStackWebhookEnabled, formStackWebhookSecret,
+			formStackAutoUpdate, formStackAutoUpdateCron, formSecretProviderId,
+			envVars.filter((v) => v.key.trim()).map((v) => [v.key.trim(), v.value, !!v.isSecret])
+		]);
+	}
+	function openStackView(tab: 'editor' | 'graph') {
+		if (savedSettings !== null && settingsSnapshot() !== savedSettings) {
+			pendingStackView = tab;
+			return;
+		}
+		onOpenStackView?.(tab);
+	}
+	function discardAndOpenStackView() {
+		const tab = pendingStackView;
+		pendingStackView = null;
+		if (tab) onOpenStackView?.(tab);
+	}
 
 	// Per-stack icon override (same name-based /icon endpoint as internal stacks, #1473).
 	let formIcon = $state<string | null>(icon);
@@ -871,6 +897,8 @@
 	});
 
 	async function resetForm() {
+		savedSettings = null;
+		pendingStackView = null;
 		// Clear state BEFORE async loads to avoid race conditions
 		activeTab = 'settings';
 		// Reset the deploy-output overlay so a previous run's window (bound to
@@ -928,25 +956,25 @@
 			formDeployNow = false;
 			formSecretProviderId = null;
 
-			// Load secret provider binding
-			loadSecretProviderBindingForStack(gitStack.stackName);
 			// Per-stack branch override; null means "use the repository default"
 			formBranch = gitStack.branch ?? null;
 
-			// Load env files and overrides SYNCHRONOUSLY to avoid race conditions
+			// Load env files, overrides and the secret binding SYNCHRONOUSLY to avoid race conditions
 			// Wait for all loads to complete before allowing any other effect to run.
 			// Always read the repo .env (default compose-dir .env + explicit envFilePath)
 			// so the editor can show the full effective set, not just DB overrides.
 			await Promise.all([
 				loadEnvFiles(),
 				loadEnvVarsOverrides(),
-				loadEnvFileContents(gitStack.envFilePath)
+				loadEnvFileContents(gitStack.envFilePath),
+				loadSecretProviderBindingForStack(gitStack.stackName)
 			]);
 
 			// Merge repo .env (base) with DB overrides/secrets so untouched populated
 			// vars stay visible on reopen. The save filter still drops file-equal
 			// non-secrets, keeping the DB override-only (git-sync pickup intact).
 			envVars = mergeGitStackEnvVars(fileEnvVars, envVars);
+			savedSettings = settingsSnapshot();
 		} else {
 			formRepoMode = repositories.length > 0 ? 'existing' : 'new';
 			formRepositoryId = null;
@@ -1202,6 +1230,9 @@
 				return;
 			}
 
+			// Saved: the modal may stay open (failed deploy), so these become the clean baseline.
+			if (gitStack) savedSettings = settingsSnapshot();
+
 			// Check if deployment failed
 			const deployResult = data.deployResult as { success?: boolean; error?: string } | undefined;
 			if (deployAfterSave) {
@@ -1431,11 +1462,9 @@
 			</div>
 		</Dialog.Header>
 
-		<!-- Tabs (edit mode only - a git stack must exist first): Settings (deploy form),
-		     Deploys (recorded run history), and Backups. Backups is additionally gated on
-		     the backups feature flag (BETA GATE). -->
+		<!-- Stack views (edit mode only). Backups remains gated on its feature flag. -->
 		{#if gitStack}
-			<div class="flex items-center gap-1 border-b border-zinc-200 px-5 dark:border-zinc-700 flex-shrink-0">
+			<div class="flex items-center gap-1 overflow-x-auto border-b border-zinc-200 px-5 dark:border-zinc-700 flex-shrink-0">
 				<button
 					type="button"
 					class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 px-3 max-md:px-2 py-2 text-sm transition-colors {activeTab === 'settings' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
@@ -1445,8 +1474,22 @@
 				</button>
 				<button
 					type="button"
-					class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 px-3 max-md:px-2 py-2 text-sm transition-colors {activeTab === 'backups' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
-					onclick={() => (activeTab = 'backups')}
+					class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 border-transparent px-3 max-md:px-2 py-2 text-sm text-muted-foreground transition-colors hover:text-foreground"
+					onclick={() => openStackView('editor')}
+				>
+					<Code class="h-3.5 w-3.5" /> Editor
+				</button>
+				<button
+					type="button"
+					class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 border-transparent px-3 max-md:px-2 py-2 text-sm text-muted-foreground transition-colors hover:text-foreground"
+					onclick={() => openStackView('graph')}
+				>
+					<GitGraph class="h-3.5 w-3.5" /> Graph
+				</button>
+				<button
+					type="button"
+					class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 px-3 max-md:px-2 py-2 text-sm transition-colors {activeTab === 'deploys' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
+					onclick={() => (activeTab = 'deploys')}
 				>
 					<History class="h-3.5 w-3.5" /> Deploys
 					{#if deploysTally.ok > 0}
@@ -2169,6 +2212,26 @@
 		<div class="flex justify-end mt-4">
 			<Button size="sm" onclick={() => showExistsWarning = false}>
 				OK
+			</Button>
+		</div>
+	</Dialog.Content>
+</Dialog.Root>
+
+<!-- Unsaved settings confirmation when switching to the Editor/Graph view -->
+<Dialog.Root open={pendingStackView !== null} onOpenChange={(isOpen) => { if (!isOpen) pendingStackView = null; }}>
+	<Dialog.Content class="max-w-sm">
+		<Dialog.Header>
+			<Dialog.Title>Unsaved changes</Dialog.Title>
+			<Dialog.Description>
+				You have unsaved settings changes. Discard them and open the {pendingStackView === 'graph' ? 'graph' : 'editor'}?
+			</Dialog.Description>
+		</Dialog.Header>
+		<div class="flex justify-end gap-1.5 mt-4">
+			<Button variant="outline" size="sm" onclick={() => pendingStackView = null}>
+				Continue editing
+			</Button>
+			<Button variant="destructive" size="sm" onclick={discardAndOpenStackView}>
+				Discard changes
 			</Button>
 		</div>
 	</Dialog.Content>

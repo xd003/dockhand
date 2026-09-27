@@ -120,6 +120,7 @@ let stackSources = $state<Record<string, { sourceType: string; composePath?: str
 	let stackModalReadonly = $state(false);
 	let stackModalGitInfo = $state<{ commit?: string; url?: string; branch?: string } | null>(null);
 	let stackModalSource = $state<{ sourceType: string; repository?: { url?: string; branch?: string } | null; gitStack?: { lastCommit?: string | null } | null } | null>(null);
+	let stackModalInitialTab = $state<'editor' | 'graph'>('editor');
 	let editingGitStack = $state<any>(null);
 	let envId = $state<number | null>(null);
 
@@ -1221,9 +1222,7 @@ let gitMigratingStackId = $state<number | null>(null);
 		}
 	}
 
-	async function openGitModal(gitStack?: any) {
-		editingGitStack = gitStack || null;
-		// Fetch repositories and credentials before opening modal
+	async function loadGitModalData() {
 		try {
 			const [reposRes, credsRes] = await Promise.all([
 				fetch('/api/git/repositories'),
@@ -1236,6 +1235,12 @@ let gitMigratingStackId = $state<number | null>(null);
 			gitRepositories = [];
 			gitCredentials = [];
 		}
+	}
+
+	async function openGitModal(gitStack?: any) {
+		editingGitStack = gitStack || null;
+		// Fetch repositories and credentials before opening a new modal.
+		await loadGitModalData();
 		showGitModal = true;
 	}
 
@@ -1458,8 +1463,9 @@ let gitMigratingStackId = $state<number | null>(null);
 		showEditModal = true;
 	}
 
-	function viewGitStack(name: string) {
+	function viewGitStack(name: string, initialTab: 'editor' | 'graph' = 'editor') {
 		editingStackName = name;
+		stackModalInitialTab = initialTab;
 		stackModalReadonly = true;
 		const src = getStackSource(name);
 		stackModalSource = src;
@@ -1472,6 +1478,21 @@ let gitMigratingStackId = $state<number | null>(null);
 			branch: eff.branch
 		};
 		showEditModal = true;
+	}
+
+	function openGitStackView(tab: 'editor' | 'graph') {
+		if (!editingGitStack) return;
+		viewGitStack(editingGitStack.stackName, tab);
+		showGitModal = false;
+	}
+
+	function openCurrentGitSettings() {
+		const gitStack = stackModalSource?.gitStack;
+		if (!gitStack) return;
+		editingGitStack = gitStack;
+		showGitModal = true;
+		showEditModal = false;
+		void loadGitModalData();
 	}
 
 	function getStatusClasses(status: string): string {
@@ -3423,6 +3444,8 @@ let gitMigratingStackId = $state<number | null>(null);
 	readonly={stackModalReadonly}
 	gitInfo={stackModalGitInfo}
 	stackSource={stackModalSource}
+	initialTab={stackModalInitialTab}
+	onEditGitSettings={$canAccess('stacks', 'edit') ? openCurrentGitSettings : undefined}
 	onCreateInternally={$canAccess('stacks', 'create') && !stackSources[editingStackName] ? () => {
 		showEditModal = false;
 		createTakeoverName = editingStackName;
@@ -3452,6 +3475,7 @@ let gitMigratingStackId = $state<number | null>(null);
 		loadTags(envId);
 	}}
 	onSaved={fetchStacks}
+	onOpenStackView={openGitStackView}
 	onRepositoryCreated={async () => {
 		try {
 			const reposRes = await fetch('/api/git/repositories');

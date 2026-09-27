@@ -11,7 +11,7 @@
 	import { SELECTOR_VARS } from '$lib/utils/bulk-selector';
 	import { classifyMarker, isInlineProviderRef, resolvedRefVarNames } from '$lib/utils/invault-markers';
 	import { applyQuickFix, findingKey } from '$lib/utils/compose-quick-fix';
-	import { Layers, Save, Play, Code, GitGraph, GitBranch, GitCommitHorizontal, Github, Loader2, AlertCircle, X, Sun, Moon, TriangleAlert, GripVertical, GripHorizontal, FolderOpen, Copy, Check, XCircle, MapPin, ArrowRight, ArrowUp, ArrowDown, Info, Box, FolderSync, Archive, Lock, FileText, FilePlus, ListChecks, History, ChevronDown } from 'lucide-svelte';
+	import { Layers, Save, Play, Code, GitGraph, GitBranch, GitCommitHorizontal, Github, Loader2, AlertCircle, X, Sun, Moon, TriangleAlert, GripVertical, GripHorizontal, FolderOpen, Copy, Check, XCircle, MapPin, ArrowRight, ArrowUp, ArrowDown, Info, Box, FolderSync, Archive, Lock, FileText, FilePlus, ListChecks, History, ChevronDown, Settings2 } from 'lucide-svelte';
 	import ComposeValidatePanel from './ComposeValidatePanel.svelte';
 
 	import BackupPanel from '../containers/BackupPanel.svelte';
@@ -86,17 +86,29 @@
 		readonly?: boolean; // View compose content without allowing local changes
 		gitInfo?: { commit?: string; url?: string; branch?: string } | null; // Git provenance for read-only git stacks
 		stackSource?: { sourceType: string } | null;
+		initialTab?: 'editor' | 'graph';
 		onClose: () => void;
 		onSuccess: () => void; // Called after create or save
+		onEditGitSettings?: () => void;
 		/** Untracked stack whose Compose file is gone: start a new internal stack under the same project name. */
 		onCreateInternally?: () => void;
 		/** Create mode: register a new internal stack for this untracked Compose project, reusing its name. */
 		takeoverStackName?: string;
 	}
 
-	let { open = $bindable(), mode: propMode, stackName: propStackName = '', initialCompose, initialStackName, readonly = false, gitInfo = null, stackSource = null, onClose, onSuccess, onCreateInternally, takeoverStackName }: Props = $props();
+	let { open = $bindable(), mode: propMode, stackName: propStackName = '', initialCompose, initialStackName, readonly = false, gitInfo = null, stackSource = null, initialTab = 'editor', onClose, onSuccess, onEditGitSettings, onCreateInternally, takeoverStackName }: Props = $props();
 
 	let gitCommitCopied = $state<'ok' | 'error' | null>(null);
+	// Settings opens a different modal that reloads the saved stack; confirm before dropping edits.
+	let confirmOpensGitSettings = $state(false);
+	function openGitSettings() {
+		if (isDirty || backupPanelRef?.isDirty()) {
+			confirmOpensGitSettings = true;
+			showConfirmClose = true;
+			return;
+		}
+		onEditGitSettings?.();
+	}
 
 	// Local effective state - can transition from create → edit after failed deploy
 	let mode = $state(propMode);
@@ -310,6 +322,10 @@
 	}
 
 	// Refresh the badge count when the modal opens (and after a deploy bumps the key).
+	$effect(() => {
+		if (open) activeTab = initialTab;
+	});
+
 	$effect(() => {
 		if (open) {
 			void deploysReloadKey; // re-count after a deploy finishes
@@ -2422,6 +2438,12 @@
 
 	function discardAndClose() {
 		showConfirmClose = false;
+		if (confirmOpensGitSettings) {
+			confirmOpensGitSettings = false;
+			isDirty = false;
+			onEditGitSettings?.();
+			return;
+		}
 		handleClose();
 	}
 
@@ -2756,7 +2778,16 @@
 
 		<!-- View tabs — left-aligned underline bar under the header, matched to
 		     GitStackModal for a consistent look across the stack modals. -->
-		<div class="flex items-center gap-1 border-b border-zinc-200 px-5 max-md:px-4 dark:border-zinc-700 flex-shrink-0">
+		<div class="flex items-center gap-1 overflow-x-auto border-b border-zinc-200 px-5 max-md:px-4 dark:border-zinc-700 flex-shrink-0">
+			{#if isGitView && onEditGitSettings}
+				<button
+					type="button"
+					class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 border-transparent px-3 max-md:px-2 py-2 max-md:py-3 text-sm text-muted-foreground transition-colors hover:text-foreground"
+					onclick={openGitSettings}
+				>
+					<Settings2 class="h-3.5 w-3.5" /> Settings
+				</button>
+			{/if}
 			<button
 				type="button"
 				class="relative -mb-px flex max-md:flex-1 items-center max-md:justify-center gap-1.5 border-b-2 px-3 max-md:px-2 py-2 max-md:py-3 text-sm transition-colors {activeTab === 'editor' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}"
@@ -3512,16 +3543,16 @@
 <IconPickerModal bind:open={showIconPicker} value={formIcon} onselect={onIconSelect} title="Choose a stack icon" />
 
 <!-- Unsaved changes confirmation dialog -->
-<Dialog.Root bind:open={showConfirmClose}>
+<Dialog.Root bind:open={showConfirmClose} onOpenChange={(isOpen) => { if (!isOpen) confirmOpensGitSettings = false; }}>
 	<Dialog.Content class="max-w-sm">
 		<Dialog.Header>
 			<Dialog.Title>Unsaved changes</Dialog.Title>
 			<Dialog.Description>
-				You have unsaved changes. Are you sure you want to close without saving?
+				You have unsaved changes. {confirmOpensGitSettings ? 'Discard them and open the stack settings?' : 'Are you sure you want to close without saving?'}
 			</Dialog.Description>
 		</Dialog.Header>
 		<div class="flex justify-end gap-1.5 mt-4">
-			<Button variant="outline" size="sm" onclick={() => showConfirmClose = false}>
+			<Button variant="outline" size="sm" onclick={() => { showConfirmClose = false; confirmOpensGitSettings = false; }}>
 				Continue editing
 			</Button>
 			<Button variant="destructive" size="sm" onclick={discardAndClose}>

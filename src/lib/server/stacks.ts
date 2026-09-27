@@ -72,7 +72,7 @@ import { sendEventNotification } from './notifications';
 import { deleteGitStackFiles, parseEnvFileContent } from './git';
 import { isDeletableStackDir } from './stack-delete-guard';
 import { cleanPem } from '$lib/utils/pem';
-import { rewriteComposeVolumePaths, getHostDataDir } from './host-path';
+import { rewriteComposeVolumePaths, getHostDataDir, getCachedContainerMounts, hostPathInContainerMount } from './host-path';
 import { getOrderValue } from './container-labels';
 import { stackLabelTags, type LabelTagSpec } from '$lib/utils/tags-core';
 import { pendingRowsToClear } from './pending-updates-core';
@@ -1257,8 +1257,15 @@ export async function saveStackComposeFile(
 	const exists = existsSync(stackDir);
 
 	if (create) {
-		// Creating new stack - if directory exists, it's orphaned (clean it up)
+		// Creating new stack - if directory exists, it's orphaned (clean it up) unless an
+		// existing Compose project of this name still runs from it (taking over an untracked stack).
 		if (exists) {
+			const { workingDir } = await getStackPathHints(name, envId);
+			const mounts = getCachedContainerMounts();
+			const liveDir = workingDir && (mounts.length ? hostPathInContainerMount(workingDir, mounts)?.path : workingDir);
+			if (liveDir && resolve(liveDir) === resolve(stackDir)) {
+				return { success: false, error: `Stack directory ${stackDir} belongs to the existing Compose project "${name}"; select its Compose file with Manage internally instead of creating a new one` };
+			}
 			try {
 				console.log(`Cleaning up orphaned stack directory: ${stackDir}`);
 				rmSync(stackDir, { recursive: true, force: true });

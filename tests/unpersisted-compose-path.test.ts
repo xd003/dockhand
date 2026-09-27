@@ -4,7 +4,7 @@
  */
 
 import { describe, test, expect } from 'bun:test';
-import { unpersistedComposePathWarning, pathOverriddenBySubMount, translateContainerPathViaMount, __setCachedMountsForTest } from '../src/lib/server/host-path';
+import { unpersistedComposePathWarning, pathOverriddenBySubMount, translateContainerPathViaMount, hostPathInContainerMount, __setCachedMountsForTest } from '../src/lib/server/host-path';
 
 const MOUNTS = [
 	{ source: 'dockhand_data', destination: '/app/data' },
@@ -109,5 +109,38 @@ describe('pathOverriddenBySubMount (#1533)', () => {
 		} finally {
 			__setCachedMountsForTest(null);
 		}
+	});
+});
+
+describe('hostPathInContainerMount', () => {
+	const BINDS = [
+		{ source: '/srv/docker', destination: '/stacks' },
+		{ source: '/srv/docker/special', destination: '/special' },
+		{ source: '/var/run/docker.sock', destination: '/var/run/docker.sock' },
+	];
+
+	test('maps a host project directory under a differently named bind', () => {
+		expect(hostPathInContainerMount('/srv/docker/web', BINDS)).toEqual({ mount: '/stacks', path: '/stacks/web' });
+	});
+
+	test('the most specific bind wins', () => {
+		expect(hostPathInContainerMount('/srv/docker/special/app', BINDS)).toEqual({ mount: '/special', path: '/special/app' });
+	});
+
+	test('the bind source itself maps to its destination', () => {
+		expect(hostPathInContainerMount('/srv/docker/', BINDS)).toEqual({ mount: '/stacks', path: '/stacks' });
+	});
+
+	test('a prefix that is not a path boundary is not exposed', () => {
+		expect(hostPathInContainerMount('/srv/docker-old/web', BINDS)).toBeNull();
+	});
+
+	test('a host root bind nests the whole path under its destination', () => {
+		expect(hostPathInContainerMount('/opt/web', [{ source: '/', destination: '/host' }])).toEqual({ mount: '/host', path: '/host/opt/web' });
+	});
+
+	test('named volumes (non-absolute source) and relative paths never match', () => {
+		expect(hostPathInContainerMount('/app/data', [{ source: 'dockhand_data', destination: '/app/data' }])).toBeNull();
+		expect(hostPathInContainerMount('web', BINDS)).toBeNull();
 	});
 });

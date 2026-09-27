@@ -32,6 +32,12 @@ Dockhand is a modern, efficient Docker management application providing real-tim
 
 This fork's user-facing changes relative to [upstream Dockhand](https://github.com/Finsys/dockhand) are tracked in [FORK_CHANGES.md](FORK_CHANGES.md).
 
+### Adopting untracked stacks in place
+
+**Manage internally** requires selecting the untracked project's existing Compose file and keeps its directory where it is; no managed deployment copy is created. Saving registers the stack; until then it stays untracked. For a direct remote Docker host, Dockhand must be able to access the selected directory and the host must resolve the same path to the same files (for example, an identical shared mount); Dockhand checks this with a short-lived helper container and blocks adoption otherwise.
+
+The **Manage internally** file picker opens in the project's directory and stays inside the host-attached directory that holds it: the Hawser agent's `STACKS_DIR` (or the project's own directory when it is mounted into the agent elsewhere), or the Dockhand bind mount exposing the project. Selecting the Compose file also loads the `.env` beside it unless an env file is already set.
+
 ### Hawser stack files
 
 On Hawser-standard and Hawser-edge environments, stack configuration and host-only workspace files live in the agent-accessible Compose directory (`STACKS_DIR/<stack>` for newly created projects). Dockhand keeps Git checkouts under `GIT_REPOS_DIR` for tracked edits and publishes them to Hawser; it does not keep a writable stack mirror. An adopted project's existing directory stays in place. Docker host bind paths may differ from the directory mounted into the Hawser container; mount that directory for in-place management.

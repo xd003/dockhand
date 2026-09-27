@@ -35,6 +35,8 @@
 		scanning?: boolean;
 		/** Directory-listing endpoint. Defaults to the host filesystem API. */
 		apiUrl?: string;
+		/** Keep browsing inside this directory; also hides Dockhand's recent locations and folder creation. */
+		rootPath?: string;
 		onSelect: (path: string, name: string) => void;
 		onClose: () => void;
 	}
@@ -52,6 +54,7 @@
 		onScanDirectory,
 		scanning = false,
 		apiUrl = '/api/system/files',
+		rootPath,
 		onSelect,
 		onClose
 	}: Props = $props();
@@ -87,13 +90,18 @@
 		return recentLocationsPanel?.addLocation(path) ?? Promise.resolve();
 	}
 
+	// Recent locations and folder creation apply only to unconfined browsing of Dockhand's filesystem.
+	const hostBrowser = $derived(apiUrl === '/api/system/files' && !rootPath);
+
 	// Load directory when dialog opens
 	$effect(() => {
 		if (open && currentPath === null) {
 			// Wait a tick for the panel to load, then use first location or initialPath
-			setTimeout(() => {
-				const firstLocation = apiUrl === '/api/system/files' ? recentLocationsPanel?.getFirstLocation() : null;
-				loadDirectory(firstLocation || initialPath);
+			setTimeout(async () => {
+				const firstLocation = hostBrowser ? recentLocationsPanel?.getFirstLocation() : null;
+				await loadDirectory(firstLocation || initialPath);
+				// A stale start directory (e.g. a moved project) falls back to the root.
+				if (error && rootPath && currentPath === null && initialPath !== rootPath) await loadDirectory(rootPath);
 			}, 50);
 		}
 	});
@@ -157,7 +165,7 @@
 	}
 
 	function handleGoUp() {
-		if (!currentPath || currentPath === '/') return;
+		if (!canGoUp) return;
 
 		selectedPath = null;
 		selectedName = null;
@@ -282,7 +290,7 @@
 		return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 	}
 
-	const canGoUp = $derived(currentPath && currentPath !== '/');
+	const canGoUp = $derived(!!currentPath && currentPath !== (rootPath || '/'));
 
 	// In directory mode, only show directories; otherwise show all.
 	// Also apply the user's filter query (case-insensitive name match).
@@ -313,7 +321,7 @@
 
 		<div class="flex-1 overflow-hidden flex flex-col sm:flex-row {isAdoptMode ? 'min-h-0' : ''}">
 			<!-- Recent locations sidebar -->
-			{#if apiUrl === '/api/system/files'}
+			{#if hostBrowser}
 				<RecentLocationsPanel
 					bind:this={recentLocationsPanel}
 					{currentPath}
@@ -345,7 +353,7 @@
 							class="w-full pl-7 pr-2 py-1 text-xs rounded border bg-background focus:outline-none focus:ring-1 focus:ring-ring"
 						/>
 					</div>
-					{#if apiUrl === '/api/system/files' && creatingFolder}
+					{#if hostBrowser && creatingFolder}
 						<div class="flex items-center gap-1">
 							<Input
 								bind:ref={folderInputEl}
@@ -375,7 +383,7 @@
 								<span class="text-xs text-red-500 truncate max-w-48" title={createError}>{createError}</span>
 							{/if}
 						</div>
-					{:else if apiUrl === '/api/system/files'}
+					{:else if hostBrowser}
 						<button
 							type="button"
 							class="p-1 rounded hover:bg-muted text-muted-foreground"

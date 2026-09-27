@@ -108,6 +108,8 @@ let stackSources = $state<Record<string, { sourceType: string; composePath?: str
 	const MAX_HISTORY = 20;
 	let loading = $state(true);
 	let showCreateModal = $state(false);
+	/** Untracked project the create modal takes over (its Compose file is gone). */
+	let createTakeoverName = $state<string | undefined>(undefined);
 	let showEditModal = $state(false);
 	let showGitModal = $state(false);
 	let showImportModal = $state(false);
@@ -3404,7 +3406,8 @@ let gitMigratingStackId = $state<number | null>(null);
 <StackModal
 	bind:open={showCreateModal}
 	mode="create"
-	onClose={() => showCreateModal = false}
+	takeoverStackName={createTakeoverName}
+	onClose={() => { showCreateModal = false; createTakeoverName = undefined; }}
 	onSuccess={fetchStacks}
 />
 
@@ -3416,6 +3419,11 @@ let gitMigratingStackId = $state<number | null>(null);
 	readonly={stackModalReadonly}
 	gitInfo={stackModalGitInfo}
 	stackSource={stackModalSource}
+	onCreateInternally={$canAccess('stacks', 'create') && !stackSources[editingStackName] ? () => {
+		showEditModal = false;
+		createTakeoverName = editingStackName;
+		showCreateModal = true;
+	} : undefined}
 	onClose={() => {
 		showEditModal = false;
 		editingStackName = '';

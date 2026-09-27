@@ -23,7 +23,8 @@ import { auditGitStack } from '$lib/server/audit';
 import { createJobResponse } from '$lib/server/sse';
 import { allowSecretlessWebhook, webhookConfigRequiresSecret } from '$lib/server/webhook-secret-policy';
 import { registerSchedule } from '$lib/server/scheduler';
-import { isHawserConnection } from '$lib/server/stacks';
+import { adoptExternalGitStack, validateExternalGitAdoption } from '$lib/server/git-stack-adoption';
+import { acquireStackLock, isHawserConnection } from '$lib/server/stacks';
 
 // Stack name validation: Docker Compose requires lowercase; must start with a
 // letter or number, and contain only lowercase letters, numbers, hyphens, underscores
@@ -60,11 +61,12 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 /**
  * @openapi
  * summary: Create a git-deployed stack (from an existing repo or new repo url/branch)
- * description: Git checkouts remain on Dockhand. On Hawser environments, deploying publishes selected Git files to the bound Hawser directory without creating a Dockhand stack-file copy.
- * body: {stackName:string!, environmentId:integer, repositoryId:integer, composePath:string, composePaths:array<string>, secretProviderId:integer, webhookEnabled:boolean, webhookSecret:string}
+ * description: Git checkouts remain on Dockhand. On Hawser environments, deploying publishes selected Git files to the bound Hawser directory without creating a Dockhand stack-file copy. Converting an external project (adoptExternal) with existingComposePath - the project's current Compose file on Dockhand's filesystem (local/direct) or the agent's (Hawser) - deploys in that directory: Git-tracked files replace same-path files there and unrelated files stay. On a direct remote Docker host the directory must resolve to the same files on Dockhand and the host, otherwise conversion is rejected. Without existingComposePath (the project's files are gone) the repository deploys to Dockhand's managed stack directory like a new Git stack, and Compose takes over the running project by name.
+ * body: {stackName:string!, environmentId:integer, repositoryId:integer, composePath:string, composePaths:array<string>, secretProviderId:integer, webhookEnabled:boolean, webhookSecret:string, adoptExternal:boolean, existingComposePath:string, deployNow:boolean}
  * resp-400: Invalid stack name, or secretProviderId is not a number/null
  * resp-403: Permission denied (needs stacks:create; binding a secret provider also needs secrets:view)
- * resp-409: A git stack with this name already exists in the environment
+ * resp-404: The requested external stack does not exist
+ * resp-409: A git stack with this name already exists, the external stack is already managed/migrating, or the selected directory cannot be used in place
  * resp-500: Failed to create the git stack
  */
 export const POST: RequestHandler = async (event) => {
@@ -73,6 +75,12 @@ export const POST: RequestHandler = async (event) => {
 
 	try {
 		const data = await request.json();
+		if (data.environmentId != null) {
+			data.environmentId = Number(data.environmentId);
+			if (!Number.isInteger(data.environmentId) || data.environmentId <= 0) {
+				return json({ error: 'environmentId must be a positive integer or null' }, { status: 400 });
+			}
+		}
 
 		// Block only when the target repository is being provisioned by a migration.
 		// New stacks themselves are never in an active job's scope (narrow lock).
@@ -123,10 +131,15 @@ export const POST: RequestHandler = async (event) => {
 			return json({ error: 'The selected secret provider no longer exists. Reopen the stack and pick a current provider.' }, { status: 400 });
 		}
 
-		// Check for name conflicts with existing stacks (regular/external/git)
+		// Check for name conflicts with existing stacks (regular/external/git).
+		// Adoption is the only explicit exception, and only for an external source.
+		const adoptingExternal = data.adoptExternal === true;
 		const existing = await getStackSource(trimmedStackName, data.environmentId || null);
-		if (existing) {
+		if (existing && !adoptingExternal) {
 			return json({ error: 'A stack with this name already exists on this environment' }, { status: 409 });
+		}
+		if (adoptingExternal && existing && existing.sourceType !== 'external') {
+			return json({ error: 'Only an external stack can be adopted from Git' }, { status: 409 });
 		}
 
 		// A secret is mandatory when the webhook is enabled.
@@ -143,6 +156,56 @@ export const POST: RequestHandler = async (event) => {
 			? data.composePaths
 			: null;
 		const composePath = composePaths?.[0] ?? (data.composePath || 'compose.yaml');
+
+		if (adoptingExternal) {
+			if (data.deployNow !== true) {
+				return json({ error: 'External Git adoption requires deployNow=true' }, { status: 400 });
+			}
+			if (auth.authEnabled && !await auth.can('stacks', 'edit', data.environmentId || undefined)) {
+				return json({ error: 'Permission denied: adopting a stack requires the stacks edit permission' }, { status: 403 });
+			}
+			const releaseAdoptionLock = await acquireStackLock(trimmedStackName);
+			try {
+				const preflight = await validateExternalGitAdoption({ ...data, stackName: trimmedStackName, engine: model });
+				if (!preflight.ok) {
+					releaseAdoptionLock();
+					if (preflight.status === 404) return json({ error: preflight.error }, { status: 404 });
+					return json({ error: preflight.error }, { status: preflight.status });
+				}
+				const adoptionMigrationLock = await assertNotMigrating(
+					[],
+					typeof data.repositoryId === 'number' ? [data.repositoryId] : []
+				);
+				if (adoptionMigrationLock) {
+					releaseAdoptionLock();
+					return adoptionMigrationLock;
+				}
+
+				return createJobResponse(async (send) => {
+					try {
+						const result = await adoptExternalGitStack(
+							{ ...data, stackName: trimmedStackName, environmentId: data.environmentId || null, engine: model },
+							(line) => send('progress', { type: 'line', line }),
+							undefined,
+							{ lockHeld: true, preflight }
+						);
+						if (result.success) {
+							const adopted = await getStackSource(trimmedStackName, data.environmentId || null);
+							if (adopted?.gitStack) {
+								await auditGitStack(event, 'create', adopted.gitStack.id, trimmedStackName, data.environmentId || null, { adoptedFrom: 'external' });
+								await auditGitStack(event, 'deploy', adopted.gitStack.id, trimmedStackName, data.environmentId || null);
+							}
+						}
+						send('result', { deployResult: result, adoptExternal: true });
+					} finally {
+						releaseAdoptionLock();
+					}
+				}, request);
+			} catch (error) {
+				releaseAdoptionLock();
+				throw error;
+			}
+		}
 
 		// Either repositoryId or new repo details (url, branch) must be provided
 		let repositoryId = data.repositoryId;

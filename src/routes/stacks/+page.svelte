@@ -89,7 +89,7 @@
 	// rate-limited), with the error text for the tooltip — session-only (#1255).
 	let failedUpdateCheckIds = $state<Set<string>>(new Set());
 	let failedUpdateCheckErrors = $state<Map<string, string>>(new Map());
-let stackSources = $state<Record<string, { sourceType: string; composePath?: string | null; composePaths?: string[]; repository?: any; gitStack?: any; icon?: string | null }>>({});
+	let stackSources = $state<Record<string, { sourceType: string; composePath?: string | null; composePaths?: string[]; envPath?: string | null; repository?: any; gitStack?: any; icon?: string | null }>>({});
 	let stackEnvVarCounts = $state<Record<string, number>>({});
 	let gitStacks = $state<any[]>([]);
 	let copiedWebhookStackId = $state<number | null>(null);
@@ -126,6 +126,7 @@ let stackSources = $state<Record<string, { sourceType: string; composePath?: str
 	let stackModalSource = $state<{ sourceType: string; repository?: { url?: string; branch?: string } | null; gitStack?: { lastCommit?: string | null } | null } | null>(null);
 	let stackModalInitialTab = $state<'editor' | 'graph'>('editor');
 	let editingGitStack = $state<any>(null);
+	let adoptionTarget = $state<{ stackName: string; environmentId: number | null; displayName?: string; envPath?: string | null } | null>(null);
 	let envId = $state<number | null>(null);
 
 	// User-defined tags: assignments (name -> tagId[]) + catalog + filter.
@@ -1272,8 +1273,9 @@ let gitMigratingStackId = $state<number | null>(null);
 		}
 	}
 
-	async function openGitModal(gitStack?: any) {
-		editingGitStack = gitStack || null;
+	async function openGitModal(gitStack?: any, target?: { stackName: string; environmentId: number | null; displayName?: string; envPath?: string | null }) {
+		editingGitStack = target ? null : (gitStack || null);
+		adoptionTarget = target ?? null;
 		// Fetch repositories and credentials before opening a new modal.
 		await loadGitModalData();
 		showGitModal = true;
@@ -1527,6 +1529,7 @@ let gitMigratingStackId = $state<number | null>(null);
 		const gitStack = stackModalSource?.gitStack;
 		if (!gitStack) return;
 		editingGitStack = gitStack;
+		adoptionTarget = null;
 		showGitModal = true;
 		showEditModal = false;
 		void loadGitModalData();
@@ -3589,6 +3592,16 @@ let gitMigratingStackId = $state<number | null>(null);
 	stackSource={stackModalSource}
 	initialTab={stackModalInitialTab}
 	onEditGitSettings={$canAccess('stacks', 'edit') ? openCurrentGitSettings : undefined}
+	onAdoptFromGit={$canAccess('stacks', 'create') && $canAccess('stacks', 'edit') ? () => {
+		const source = getStackSource(editingStackName);
+		showEditModal = false;
+		openGitModal(undefined, {
+			stackName: editingStackName,
+			environmentId: envId,
+			displayName: editingStackName,
+			envPath: source.envPath
+		});
+	} : undefined}
 	onCreateInternally={$canAccess('stacks', 'create') && !stackSources[editingStackName] ? () => {
 		showEditModal = false;
 		createTakeoverName = editingStackName;
@@ -3608,6 +3621,7 @@ let gitMigratingStackId = $state<number | null>(null);
 <GitStackModal
 	bind:open={showGitModal}
 	gitStack={editingGitStack}
+	adoptionTarget={adoptionTarget}
 	environmentId={envId}
 	icon={editingGitStack ? (stackSources[editingGitStack.stackName]?.icon ?? null) : null}
 	repositories={gitRepositories}
@@ -3615,6 +3629,7 @@ let gitMigratingStackId = $state<number | null>(null);
 	onClose={() => {
 		showGitModal = false;
 		editingGitStack = null;
+		adoptionTarget = null;
 		loadTags(envId);
 	}}
 	onSaved={fetchStacks}

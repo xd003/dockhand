@@ -2,7 +2,7 @@ import { json } from '@sveltejs/kit';
 import { parseEnvFileForForm } from '$lib/utils/env-file-values';
 import type { RequestHandler } from './$types';
 import { authorize } from '$lib/server/authorize';
-import { getStackSource, updateStackSource } from '$lib/server/db';
+import { getStackSource, getStackComposePaths, getEnvironment, updateStackSource } from '$lib/server/db';
 import { findStackDir } from '$lib/server/stacks';
 import { isForbiddenStackPath, holdsForbiddenStackPath } from '$lib/server/fs-guard';
 import { moveDirEntries } from '$lib/server/stack-relocate-move';
@@ -10,6 +10,9 @@ import { existsSync, readdirSync, readFileSync, mkdirSync, rmSync } from 'node:f
 import { join, dirname, resolve, relative, isAbsolute } from 'node:path';
 import { parseComposePathsColumn } from '$lib/server/compose-files';
 
+import { hawserStackFiles } from '$lib/server/hawser-stack-files';
+import { ensureHawserStackFilesReady } from '$lib/server/hawser-stack-file-migration';
+import { isHawserConnection } from '$lib/server/stacks';
 /**
  * POST /api/stacks/[name]/relocate
  *
@@ -24,6 +27,7 @@ import { parseComposePathsColumn } from '$lib/server/compose-files';
  * resp-400: oldDir and newComposePath are required, or the source directory does not exist
  * resp-403: Permission denied (requires stacks:edit), a supplied path is not allowed, or oldDir is not the stack's current directory
  * resp-404: No stack source row for this name and environment
+ * resp-409: On Hawser, the old directory is not the agent-bound stack root (the agent moves only its own STACKS_DIR leaves; relative bind paths may change)
  * resp-500: Failed to relocate stack
  */
 export const POST: RequestHandler = async ({ params, request, url, cookies }) => {
@@ -43,6 +47,44 @@ export const POST: RequestHandler = async ({ params, request, url, cookies }) =>
 
 		if (!oldDir || !newComposePath) {
 			return json({ error: 'oldDir and newComposePath are required' }, { status: 400 });
+		}
+		const environment = envIdNum ? await getEnvironment(envIdNum) : null;
+		if (isHawserConnection(environment)) {
+			const source = await getStackSource(name, envIdNum);
+			if (!source) return json({ error: 'Stack not found' }, { status: 404 });
+			await ensureHawserStackFilesReady(name, envIdNum!);
+			const files = await hawserStackFiles(envIdNum!, name);
+			const { root } = await files.binding();
+			if (oldDir !== root) return json({ error: 'Source is not the bound Hawser stack directory' }, { status: 409 });
+			const nextRoot = dirname(newComposePath);
+			const oldCompose = source.composePath || join(root, 'compose.yaml');
+			const relCompose = relative(root, oldCompose);
+			if (join(nextRoot, relCompose) !== newComposePath) return json({ error: 'Relocation must preserve Compose file names and relative layout' }, { status: 400 });
+			const oldPaths = getStackComposePaths(source);
+			const nextPaths = oldPaths.map((path) => join(nextRoot, relative(root, path)));
+			const nextEnv = source.envPath === '' ? '' : newEnvPath || (source.envPath ? join(nextRoot, relative(root, source.envPath)) : null);
+			if (nextEnv && !nextEnv.startsWith(`${nextRoot}/`)) return json({ error: 'Environment file must remain inside the bound stack directory' }, { status: 400 });
+			const entries = await files.list();
+			await files.relocate(nextRoot);
+			try {
+				if (!await updateStackSource(name, envIdNum ?? null, {
+					composePath: newComposePath, composePaths: nextPaths.length ? nextPaths : null,
+					envPath: nextEnv, fileLocation: 'hawser'
+				})) throw new Error('Stack source no longer exists');
+			} catch (error) {
+				await files.relocate(root).catch(() => {});
+				throw error;
+			}
+			const composeContent = new TextDecoder().decode((await files.read(relative(nextRoot, newComposePath))).content);
+			let rawEnvContent = '';
+			if (nextEnv) {
+				try { rawEnvContent = new TextDecoder().decode((await files.read(relative(nextRoot, nextEnv))).content); }
+				catch (error) {
+					if (!(error && typeof error === 'object' && 'status' in error && error.status === 404)) throw error;
+				}
+			}
+			const envVars = parseEnvFileForForm(rawEnvContent).map(({ key, value }) => ({ key, value, isSecret: false }));
+			return json({ success: true, movedFiles: entries.map((entry) => entry.path), composeContent, rawEnvContent, envVars, relativeBindWarning: 'Verify relative bind paths on the Hawser host after moving this stack.' });
 		}
 
 		const newDir = dirname(newComposePath);
@@ -111,7 +153,8 @@ export const POST: RequestHandler = async ({ params, request, url, cookies }) =>
 		await updateStackSource(name, envIdNum ?? null, {
 			composePath: newComposePath,
 			...(nextPaths ? { composePaths: nextPaths } : {}),
-			envPath: newEnvPath || null
+			envPath: newEnvPath || null,
+			...(source.projectDir ? { projectDir: newDir } : {})
 		});
 
 		// Read content from new location

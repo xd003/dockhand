@@ -20,6 +20,8 @@ import { demuxDockerStream } from './docker-demux-core';
 import { isExpectedConnectionError, isQuietDockerFailure, transportTimeoutError } from './docker-probe-core';
 import {
 	computeRequestTimeoutMs,
+	HAWSER_STACK_FILES_PATH,
+	HAWSER_STACK_FILES_TIMEOUT_MS,
 	isPrunePath,
 	isStopPath,
 	stopTimeoutMs
@@ -68,6 +70,7 @@ import { isOwnedBackupHelper } from './backups/reap-core';
 import type { EnvironmentConnectionInput } from '$lib/utils/docker-environment-uniqueness';
 import { normalizeSocketPath as normalizeSocketPathPure } from '$lib/utils/docker-environment-uniqueness';
 import { cleanPem } from '$lib/utils/pem';
+import { scheduleHawserStackFileMigrations } from './hawser-stack-file-migration.js';
 
 /**
  * Custom error for when an environment is not found.
@@ -994,7 +997,8 @@ export async function dockerFetch(
 			const isComposeOperation = path === '/_hawser/compose';
 			const composeTimeoutMs = parseInt(process.env.COMPOSE_TIMEOUT || '900') * 1000;
 			const isPrune = isPrunePath(path);
-			finalOptions.signal = AbortSignal.timeout(isComposeOperation ? composeTimeoutMs : isPrune ? 300000 : 30000);
+			finalOptions.signal = AbortSignal.timeout(isComposeOperation ? composeTimeoutMs
+				: path === HAWSER_STACK_FILES_PATH ? HAWSER_STACK_FILES_TIMEOUT_MS : isPrune ? 300000 : 30000);
 		}
 
 		// A ReadableStream request body (e.g. a large tar for /images/load) requires
@@ -1292,6 +1296,7 @@ function stopTimeoutEnvSecs(): number | null {
  */
 function edgeTimeoutMs(path: string, streaming: boolean): number {
 	if (streaming || path === '/_hawser/compose' || isPrunePath(path)) return 300000;
+	if (path === HAWSER_STACK_FILES_PATH) return HAWSER_STACK_FILES_TIMEOUT_MS;
 	if (isStopPath(path)) return stopTimeoutMs(stopTimeoutFromPath(path), stopTimeoutEnvSecs());
 	return 30000;
 }
@@ -4595,12 +4600,21 @@ export async function getHawserInfo(envId: number): Promise<{
 	hawserVersion: string;
 	mode: string;
 	uptime: number;
+	stacksDir?: string;
+	capabilities?: string[];
 } | null> {
 	for (let attempt = 0; attempt < 2; attempt++) {
 		try {
 			const response = await dockerFetch('/_hawser/info', {}, envId);
 			if (response.ok) {
-				return await response.json();
+				const info = await response.json() as {
+					agentId: string; agentName: string; dockerVersion: string; hawserVersion: string;
+					mode: string; uptime: number; stacksDir?: string; capabilities?: string[];
+				};
+				if (info.mode === 'standard' && info.capabilities?.includes('stack-files-v1')) {
+					scheduleHawserStackFileMigrations(envId);
+				}
+				return info;
 			}
 			await drainResponse(response);
 			console.warn(`[Hawser] Info endpoint returned ${response.status} for env ${envId}`);

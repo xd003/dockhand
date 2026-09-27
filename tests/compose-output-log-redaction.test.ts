@@ -17,20 +17,18 @@ describe('compose output in the server log is redacted', () => {
 		expect(src).not.toMatch(/console\.log\((stdout|stderr)\);/);
 	});
 
-	it('the Hawser response', () => {
-		expect(src).toContain('console.log(`${logPrefix} Output:`, redactSecretVars(result.output, secretVars));');
-		expect(src).toContain('console.log(`${logPrefix} Error:`, redactSecretVars(result.error, secretVars));');
+	it('the Hawser result', () => {
+		expect(src).toContain("output: redactSecretVars(result.output || '', allEnvVars),");
+		expect(src).toContain('error: result.success ? undefined : redactSecretVars(result.error || `Hawser compose ${operation} failed`, allEnvVars),');
 	});
 
-	it('the exception messages of both executors', () => {
+	it('the exception message of the local executor', () => {
 		expect(src).toContain('EXCEPTION in executeLocalCompose:`, redactSecretVars(err.message, secretVars));');
-		expect(src).toContain('EXCEPTION in executeComposeViaHawser:`, redactSecretVars(err.message, secretVars));');
 	});
 
-	it('the results the executors return, on success and on a timeout', () => {
+	it('the results the local executor returns, on success and on a timeout', () => {
 		expect(src).toContain('output: redactSecretVars(stdout, secretVars),');
 		expect(src).toContain('output: redactSecretVars(stdout || stderr, secretVars) || `Stack "${stackName}" ${operation} completed successfully`,');
-		expect(src).toContain("output: redactSecretVars(result.output || '', secretVars) || `Stack \"${stackName}\" ${operation} completed via Hawser`,");
 		expect(src).not.toMatch(/output: (stdout|result\.output)[ ,|]/);
 	});
 });

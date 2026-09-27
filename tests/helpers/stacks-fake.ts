@@ -29,7 +29,8 @@ const KNOWN_EXPORTS = [
 	'deployStack',
 	'getStackPathHints',
 	'getStackDir',
-	'notifyStackDeploy'
+	'notifyStackDeploy',
+	'isHawserConnection'
 ] as const;
 
 const impls: Record<string, AnyFn> = {};

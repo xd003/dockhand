@@ -169,6 +169,20 @@
       "when": 1792600060000,
       "tag": "0023_centralized_git",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "6",
+      "when": 1792600180000,
+      "tag": "0025_hawser_file_location",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "6",
+      "when": 1792600240000,
+      "tag": "0026_stack_project_dir",
+      "breakpoints": true
     }
   ]
 }

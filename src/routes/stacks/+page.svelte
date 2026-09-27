@@ -89,7 +89,7 @@
 	// rate-limited), with the error text for the tooltip — session-only (#1255).
 	let failedUpdateCheckIds = $state<Set<string>>(new Set());
 	let failedUpdateCheckErrors = $state<Map<string, string>>(new Map());
-let stackSources = $state<Record<string, { sourceType: string; composePath?: string | null; composePaths?: string[]; repository?: any; gitStack?: any; icon?: string | null }>>({});
+	let stackSources = $state<Record<string, { sourceType: string; composePath?: string | null; composePaths?: string[]; envPath?: string | null; repository?: any; gitStack?: any; icon?: string | null }>>({});
 	let stackEnvVarCounts = $state<Record<string, number>>({});
 	let gitStacks = $state<any[]>([]);
 	let copiedWebhookStackId = $state<number | null>(null);
@@ -127,18 +127,16 @@ let stackSources = $state<Record<string, { sourceType: string; composePath?: str
 	let stackModalInitialTab = $state<'editor' | 'graph'>('editor');
 	let editingGitStack = $state<any>(null);
 	let convertingStackName = $state<string | null>(null);
-	let untrackedStackName = $state<string | null>(null);
+	let adoptionTarget = $state<{ stackName: string; environmentId: number | null; displayName?: string; envPath?: string | null } | null>(null);
 	let envId = $state<number | null>(null);
 
-	// Whether the open edit modal may offer "Convert to Git". Kept as a stable $derived so
-	// the modal's button does not flicker out during a render pass where the inline guard
-	// transiently reads an empty editingStackName.
+	// Whether the open edit modal may offer "Convert to Git" for an internal stack. Kept as a
+	// stable $derived so the modal's button does not flicker out during a render pass where
+	// the inline guard transiently reads an empty editingStackName. Untracked stacks convert
+	// in place through onAdoptFromGit instead.
 	let editStackConvertHandler = $derived.by<(() => void) | null>(() => {
 		if (!editingStackName) return null;
-		const sourceType = getStackSource(editingStackName).sourceType;
-		const allowed =
-			(sourceType === 'internal' && $canAccess('stacks', 'edit')) ||
-			(sourceType === 'external' && $canAccess('stacks', 'create'));
+		const allowed = getStackSource(editingStackName).sourceType === 'internal' && $canAccess('stacks', 'edit');
 		return allowed ? () => convertLocalStackToGit(editingStackName) : null;
 	});
 
@@ -1286,10 +1284,10 @@ let gitMigratingStackId = $state<number | null>(null);
 		}
 	}
 
-	async function openGitModal(gitStack?: any, stackName?: string | null, isUntracked = false) {
-		editingGitStack = gitStack || null;
-		convertingStackName = isUntracked ? null : stackName || null;
-		untrackedStackName = isUntracked ? stackName || null : null;
+	async function openGitModal(gitStack?: any, target?: { stackName: string; environmentId: number | null; displayName?: string; envPath?: string | null }, convertStackName?: string | null) {
+		editingGitStack = target || convertStackName ? null : (gitStack || null);
+		adoptionTarget = target ?? null;
+		convertingStackName = target ? null : convertStackName ?? null;
 		// Fetch repositories and credentials before opening a new modal.
 		await loadGitModalData();
 		showGitModal = true;
@@ -1326,14 +1324,13 @@ let gitMigratingStackId = $state<number | null>(null);
 	}
 
 	async function convertLocalStackToGit(stackName: string) {
-		const isUntracked = getStackSource(stackName).sourceType === 'external';
 		operationError = null;
 		showEditModal = false;
 		editingStackName = '';
 		// Let the edit dialog finish closing (its focus/escape layer) before opening the
 		// git dialog, so a dropdown-item selection inside it does not dismiss the new one.
 		await tick();
-		await openGitModal(null, stackName, isUntracked);
+		await openGitModal(null, undefined, stackName);
 	}
 
 	async function startStack(name: string) {
@@ -1584,6 +1581,7 @@ let gitMigratingStackId = $state<number | null>(null);
 		const gitStack = stackModalSource?.gitStack;
 		if (!gitStack) return;
 		editingGitStack = gitStack;
+		adoptionTarget = null;
 		showGitModal = true;
 		showEditModal = false;
 		void loadGitModalData();
@@ -3645,6 +3643,16 @@ let gitMigratingStackId = $state<number | null>(null);
 	stackSource={stackModalSource}
 	initialTab={stackModalInitialTab}
 	onEditGitSettings={$canAccess('stacks', 'edit') ? openCurrentGitSettings : undefined}
+	onAdoptFromGit={$canAccess('stacks', 'create') && $canAccess('stacks', 'edit') ? () => {
+		const source = getStackSource(editingStackName);
+		showEditModal = false;
+		openGitModal(undefined, {
+			stackName: editingStackName,
+			environmentId: envId,
+			displayName: editingStackName,
+			envPath: source.envPath
+		});
+	} : undefined}
 	onCreateInternally={$canAccess('stacks', 'create') && !stackSources[editingStackName] ? () => {
 		showEditModal = false;
 		createTakeoverName = editingStackName;
@@ -3666,7 +3674,7 @@ let gitMigratingStackId = $state<number | null>(null);
 	bind:open={showGitModal}
 	gitStack={editingGitStack}
 	convertStackName={convertingStackName}
-	{untrackedStackName}
+	adoptionTarget={adoptionTarget}
 	environmentId={envId}
 	icon={editingGitStack ? (stackSources[editingGitStack.stackName]?.icon ?? null) : null}
 	repositories={gitRepositories}
@@ -3674,9 +3682,9 @@ let gitMigratingStackId = $state<number | null>(null);
 	onClose={() => {
 		showGitModal = false;
 		editingGitStack = null;
+		adoptionTarget = null;
 		loadTags(envId);
 		convertingStackName = null;
-		untrackedStackName = null;
 	}}
 	onConvertToLocal={editingGitStack ? () => convertGitStackToLocal(editingGitStack.stackName, editingGitStack.id) : null}
 	onSaved={fetchStacks}

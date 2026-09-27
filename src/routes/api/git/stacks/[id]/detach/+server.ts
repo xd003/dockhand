@@ -4,18 +4,41 @@ import { authorize } from '$lib/server/authorize';
 import {
 	getGitStack,
 	deleteGitStack,
+	getStackSource,
 	upsertStackSource,
 	getStackEnvVars
 } from '$lib/server/db';
 import { deleteGitStackFiles } from '$lib/server/git';
 import { unregisterSchedule } from '$lib/server/scheduler';
 import { auditGitStack } from '$lib/server/audit';
-import { getStackComposeFile, getStackDir, writeStackEnvFile } from '$lib/server/stacks';
+import { getStackComposeFile, getStackDir, hawserRelativeFilePath, writeStackEnvFile } from '$lib/server/stacks';
+import { hawserStackFiles } from '$lib/server/hawser-stack-files';
 import { parseEnvVars } from '$lib/server/env-parser';
 import { mergeGitStackEnvVars } from '$lib/env-merge';
 import { repoFilePath } from '$lib/server/git-url-safety';
+import { assertNotMigrating } from '$lib/server/git-migration-guard';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
+
+/**
+ * Reads env files of the deployed stack. A Hawser stack's files are owned by the agent,
+ * so they are read through the bound agent root; everything else is on Dockhand's disk.
+ */
+async function deployedEnvReader(stackName: string, environmentId: number | null, hawser: boolean) {
+	if (!hawser) {
+		return async (path: string) => existsSync(path) ? parseEnvVars(readFileSync(path, 'utf-8')) : null;
+	}
+	const files = await hawserStackFiles(environmentId!, stackName);
+	const { root } = await files.binding();
+	return async (path: string) => {
+		try {
+			return parseEnvVars(new TextDecoder().decode((await files.read(hawserRelativeFilePath(root, path))).content));
+		} catch (error) {
+			if (error && typeof error === 'object' && 'status' in error && error.status === 404) return null;
+			throw error;
+		}
+	};
+}
 
 /**
  * @openapi
@@ -26,7 +49,7 @@ import { dirname, join, relative, resolve, sep } from 'node:path';
  * resp-400: Invalid git stack ID
  * resp-403: Caller lacks the stacks:edit permission for the stack environment
  * resp-404: Git stack not found
- * resp-409: No deployed compose file is available; deploy the Git stack before conversion
+ * resp-409: No deployed compose file is available (deploy the Git stack before conversion), or a Git migration is in progress for this stack
  * resp-500: Failed to convert the stack to a local source
  */
 export const POST: RequestHandler = async (event) => {
@@ -56,6 +79,9 @@ export const POST: RequestHandler = async (event) => {
 			return json({ error: 'Access denied to this environment' }, { status: 403 });
 		}
 
+		const locked = await assertNotMigrating([id]);
+		if (locked) return locked;
+
 		const composeResult = await getStackComposeFile(
 			gitStack.stackName,
 			gitStack.environmentId ?? null
@@ -66,14 +92,15 @@ export const POST: RequestHandler = async (event) => {
 		}
 
 		const envVars = await getStackEnvVars(gitStack.stackName, gitStack.environmentId ?? null, false);
+		const source = await getStackSource(gitStack.stackName, gitStack.environmentId ?? null);
+		const readEnv = await deployedEnvReader(gitStack.stackName, gitStack.environmentId ?? null, source?.fileLocation === 'hawser');
 
 		// Internal stacks use the on-disk env file as their non-secret source of truth.
 		// Materialize the last-deployed repo env plus DB overrides before switching.
 		const targetEnvPath = join(dirname(composeResult.composePath), '.env');
-		const baseExists = existsSync(targetEnvPath);
-		const baseVars = baseExists
-			? parseEnvVars(readFileSync(targetEnvPath, 'utf-8'))
-			: {};
+		const baseFileVars = await readEnv(targetEnvPath);
+		const baseExists = baseFileVars !== null;
+		const baseVars = baseFileVars ?? {};
 		let overlayExists = false;
 		let overlayVars: Record<string, string> = {};
 
@@ -88,13 +115,12 @@ export const POST: RequestHandler = async (event) => {
 			const deployedStackDir = resolve(await getStackDir(gitStack.stackName, gitStack.environmentId));
 			const isInsideDeployedStack =
 				deployedEnvPath === deployedStackDir || deployedEnvPath.startsWith(deployedStackDir + sep);
-			if (
-				isInsideDeployedStack &&
-				deployedEnvPath !== targetEnvPath &&
-				existsSync(deployedEnvPath)
-			) {
-				overlayExists = true;
-				overlayVars = parseEnvVars(readFileSync(deployedEnvPath, 'utf-8'));
+			if (isInsideDeployedStack && deployedEnvPath !== targetEnvPath) {
+				const deployedVars = await readEnv(deployedEnvPath);
+				if (deployedVars) {
+					overlayExists = true;
+					overlayVars = deployedVars;
+				}
 			}
 		}
 
@@ -111,6 +137,8 @@ export const POST: RequestHandler = async (event) => {
 			);
 		}
 
+		// The stack keeps its file location (fileLocation and projectDir are preserved when
+		// omitted) and its Compose file set, so it continues from the deployed files.
 		await upsertStackSource({
 			stackName: gitStack.stackName,
 			environmentId: gitStack.environmentId ?? null,
@@ -118,6 +146,7 @@ export const POST: RequestHandler = async (event) => {
 			gitRepositoryId: null,
 			gitStackId: null,
 			composePath: composeResult.composePath,
+			composePaths: composeResult.composePathsExplicit ? composeResult.composePaths : null,
 			envPath: shouldWriteEnv ? targetEnvPath : null
 		});
 

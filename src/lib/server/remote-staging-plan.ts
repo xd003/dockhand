@@ -20,6 +20,7 @@ export interface RemoteStagingPlan {
  *
  * Copying happens when ALL hold:
  *   - operation is 'up' (down/stop/start/restart don't re-copy),
+ *   - the stack is not adopted in place (its selected directory is already shared with the host),
  *   - the env has a non-empty remote_stacks_dir configured,
  *   - there are stack files to copy.
  * Any miss => stage:false => nothing is copied (stack-file backup is skipped for the env).
@@ -30,8 +31,10 @@ export function planRemoteStaging(input: {
 	stackName: string;
 	composeContent: string;
 	hasStackFiles: boolean;
+	inPlace?: boolean;
 }): RemoteStagingPlan {
 	if (input.operation !== 'up') return { stage: false, reason: `operation ${input.operation} does not stage` };
+	if (input.inPlace) return { stage: false, reason: 'stack deploys in place from its selected project directory' };
 	if (!input.hasStackFiles) return { stage: false, reason: 'no stack files to stage' };
 	const base = typeof input.remoteStacksDir === 'string' ? normalizeBaseDir(input.remoteStacksDir) : '';
 	if (!base) return { stage: false, reason: 'no remote_stacks_dir configured on the env' };

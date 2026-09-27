@@ -63,9 +63,9 @@ export function buildComposeOperationArgs(
 
 /**
  * A no-cache rebuild needs a separate `docker compose build --no-cache` before `up`.
- * Hawser's remote agent has no `build` operation (#880/#1020), so the separate step only
- * runs for local/direct deployments; on Hawser a no-cache request is silently a no-op
- * rather than a hard error.
+ * Hawser's remote agent has no `build` operation (#880/#1020); it receives build +
+ * noBuildCache on `up` and runs its own `build --no-cache` before `up`, so the separate
+ * step only runs for local/direct deployments.
  */
 export function shouldRunSeparateBuildStep(
 	build: boolean | undefined,

@@ -105,6 +105,8 @@ registerDbFake('updateScheduleExecution', async (id: number, data: Record<string
 	updates.push({ id, ...data });
 	return { id, ...data };
 });
+// A local stack source: the compose route only skips the path update for Hawser-owned rows.
+registerDbFake('getStackSource', async () => null);
 
 /** The update() call that CLOSED the row (status !== 'running'), i.e. the one written
  *  by DeployRunRecorder.end() -- as opposed to createRunRecorder's own startedAt
@@ -139,8 +141,9 @@ const { hashComposeContent, hashEnvFingerprint } = await import('../src/lib/serv
 
 // -- $lib/server/stacks: mocked WHOLESALE ------------------------------------
 
-let saveCalls: Array<{ name: string; content: string; envId: number | null | undefined }>;
+let saveCalls: Array<{ name: string; content: string; envId: number | null | undefined; options?: Record<string, unknown> }>;
 let requireComposeResult: Record<string, unknown>;
+let getComposeResult: Record<string, unknown>;
 let deployStackCalls: Array<{ onLine?: (line: string) => void; build?: boolean; pullPolicy?: string; forceRecreate?: boolean }>;
 let deployStackResult: { success: boolean; output?: string; error?: string; resolvedSecrets?: string[] };
 let deployStackOnLines: string[];
@@ -160,14 +163,13 @@ function resetStacksState() {
 		envPath: '/tmp/demo-stack/.env',
 		sourceType: 'internal'
 	};
+	getComposeResult = { ...requireComposeResult };
 }
 resetStacksState();
 
-registerStacksFake('getStackComposeFile', async () => {
-	throw new Error('getStackComposeFile: not exercised here -- only the GET handler uses it, this suite only calls PUT');
-});
-registerStacksFake('saveStackComposeFile', async (name: string, content: string, _create: boolean, envId?: number | null) => {
-	saveCalls.push({ name, content, envId });
+registerStacksFake('getStackComposeFile', async () => getComposeResult);
+registerStacksFake('saveStackComposeFile', async (name: string, content: string, _create: boolean, envId?: number | null, options?: Record<string, unknown>) => {
+	saveCalls.push({ name, content, envId, options });
 	return { success: true };
 });
 registerStacksFake('requireComposeFile', async (_name: string, _envId?: number | null) => requireComposeResult);
@@ -204,6 +206,14 @@ function makeComposeEvent(body: Record<string, unknown>) {
 	} as any;
 }
 
+function makeGetEvent(envId = 1) {
+	return {
+		params: { name: STACK },
+		url: new URL(`http://x/?env=${envId}`),
+		cookies: { get: () => undefined } as any
+	} as any;
+}
+
 beforeEach(async () => {
 	resetDbState();
 	resetStacksState();
@@ -211,6 +221,58 @@ beforeEach(async () => {
 	// runId '1' -- clear its log file so tests don't leak content into each other via
 	// the shared DATA_DIR (same precaution tests/deploy-endpoints.test.ts documents).
 	await deleteRunLog(null, '1');
+});
+
+describe('GET /api/stacks/[name]/compose -- local adopted stack', () => {
+	test('preserves the selected local compose and env paths', async () => {
+		getComposeResult = {
+			...getComposeResult,
+			composePath: '/opt/docker/stacks/test/compose.yaml',
+			composePaths: ['/opt/docker/stacks/test/compose.yaml'],
+			envPath: '/opt/docker/stacks/test/.env'
+		};
+
+		const body = await (await composeRoute.GET(makeGetEvent())).json();
+
+		expect(body.composePath).toBe('/opt/docker/stacks/test/compose.yaml');
+		expect(body.composePaths).toEqual(['/opt/docker/stacks/test/compose.yaml']);
+		expect(body.envPath).toBe('/opt/docker/stacks/test/.env');
+	});
+
+	test('preserves compose-content keys for local files', async () => {
+		getComposeResult = {
+			...getComposeResult,
+			composePath: '/opt/docker/stacks/test/compose.yaml',
+			composePaths: ['/opt/docker/stacks/test/compose.yaml'],
+			composeContents: { '/opt/docker/stacks/test/compose.yaml': 'services: {}\n' }
+		};
+
+		const body = await (await composeRoute.GET(makeGetEvent())).json();
+
+		expect(body.composeContents).toEqual({
+			'/opt/docker/stacks/test/compose.yaml': 'services: {}\n'
+		});
+	});
+});
+
+describe('GET /api/stacks/[name]/compose -- Hawser stack', () => {
+	test('returns the agent-owned Hawser paths as the only file identity', async () => {
+		getComposeResult = {
+			...getComposeResult,
+			stackDir: '/opt/hawser/stacks/demo-stack',
+			composePath: '/opt/hawser/stacks/demo-stack/compose.yaml',
+			composePaths: ['/opt/hawser/stacks/demo-stack/compose.yaml'],
+			composeContents: { '/opt/hawser/stacks/demo-stack/compose.yaml': 'services: {}\n' },
+			envPath: '/opt/hawser/stacks/demo-stack/.env'
+		};
+
+		const body = await (await composeRoute.GET(makeGetEvent(2))).json();
+
+		expect(body.stackDir).toBe('/opt/hawser/stacks/demo-stack');
+		expect(body.composePath).toBe('/opt/hawser/stacks/demo-stack/compose.yaml');
+		expect(body.composePaths).toEqual(['/opt/hawser/stacks/demo-stack/compose.yaml']);
+		expect(body.envPath).toBe('/opt/hawser/stacks/demo-stack/.env');
+	});
 });
 
 describe('PUT /api/stacks/[name]/compose -- restart:true (Save & redeploy)', () => {
@@ -364,6 +426,27 @@ describe('PUT /api/stacks/[name]/compose -- restart:true build/pull/forceRecreat
 });
 
 describe('PUT /api/stacks/[name]/compose -- restart:false (save only, no deploy)', () => {
+	test('saves submitted Dockhand staging paths without a Hawser round-trip', async () => {
+		const composePath = '/data/stacks/nexz447/demo-stack/compose.yaml';
+		const envPath = '/data/stacks/nexz447/demo-stack/.env';
+		await (await composeRoute.PUT(makeComposeEvent({
+			content: 'services: {}\n',
+			composePath,
+			envPath
+		}))).json();
+
+		expect(saveCalls[0].options).toEqual({
+			composePath,
+			composePaths: undefined,
+			composeContents: undefined,
+			envPath,
+			moveFromDir: undefined,
+			oldComposePath: undefined,
+			oldEnvPath: undefined,
+			secretProviderId: undefined
+		});
+	});
+
 	test('creates NO schedule_executions row -- a save without a deploy must not become a run', async () => {
 		const res = await composeRoute.PUT(makeComposeEvent({ content: 'x', restart: false }));
 		expect(res.status).toBe(200);

@@ -15579,8 +15579,11 @@
           "403": {
             "description": "Permission denied (needs stacks:create; binding a secret provider also needs secrets:view)"
           },
+          "404": {
+            "description": "The requested external stack does not exist"
+          },
           "409": {
-            "description": "A git stack with this name already exists in the environment"
+            "description": "A git stack with this name already exists, the external stack is already managed/migrating, or the selected directory cannot be used in place"
           },
           "500": {
             "description": "Failed to create the git stack"
@@ -15594,7 +15597,7 @@
             "bearerAuth": []
           }
         ],
-        "description": "Git checkouts remain on Dockhand. On Hawser environments, deploying publishes selected Git files to the bound Hawser directory without creating a Dockhand stack-file copy.",
+        "description": "Git checkouts remain on Dockhand. On Hawser environments, deploying publishes selected Git files to the bound Hawser directory without creating a Dockhand stack-file copy. Converting an external project (adoptExternal) with existingComposePath - the project's current Compose file on Dockhand's filesystem (local/direct) or the agent's (Hawser) - deploys in that directory: Git-tracked files replace same-path files there and unrelated files stay. On a direct remote Docker host the directory must resolve to the same files on Dockhand and the host, otherwise conversion is rejected. Without existingComposePath (the project's files are gone) the repository deploys to Dockhand's managed stack directory like a new Git stack, and Compose takes over the running project by name.",
         "requestBody": {
           "required": true,
           "content": {
@@ -15628,6 +15631,15 @@
                   },
                   "webhookSecret": {
                     "type": "string"
+                  },
+                  "adoptExternal": {
+                    "type": "boolean"
+                  },
+                  "existingComposePath": {
+                    "type": "string"
+                  },
+                  "deployNow": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -15644,7 +15656,10 @@
                 ],
                 "secretProviderId": 0,
                 "webhookEnabled": true,
-                "webhookSecret": "string"
+                "webhookSecret": "string",
+                "adoptExternal": true,
+                "existingComposePath": "string",
+                "deployNow": true
               }
             }
           }

@@ -28,6 +28,7 @@ const KNOWN_EXPORTS = [
 	'requireComposeFile',
 	'deployStack',
 	'getStackPathHints',
+	'deployStackUnlocked',
 	'getStackDir',
 	'isHawserConnection'
 ] as const;

@@ -26,12 +26,10 @@ import {
 	getEnvironment,
 	getGitCredential,
 	getGitStack,
+	getStackSource,
 	getEnvironments,
 	type GitCredentialData
 } from './db';
-import { deployStack, getStackDir } from './stacks';
-import { createRunRecorder } from './deploy-run-record';
-import { hashComposeContent, hashEnvFingerprint } from './deploy-run-record-core';
 import { parseComposePathsColumn } from './compose-files';
 import { collectProcess } from './process-output-core';
 import { redactEnvVarsForLog } from './log-utils';
@@ -473,11 +471,14 @@ export async function getChangedFilesInDir(
 }
 
 /**
- * Git stacks publishing into a directory Dockhand does not exclusively own (a Hawser root)
- * receive only Git-tracked checkout files.
+ * Git stacks publishing into a directory Dockhand does not exclusively own (a Hawser root
+ * or an adopted in-place project directory) receive only Git-tracked checkout files. A Git
+ * stack whose stack source is not Git yet is being converted in place.
  */
-export async function publishesTrackedGitFilesOnly(environmentId: number | null): Promise<boolean> {
-	return environmentId != null && isHawserConnectionType((await getEnvironment(environmentId))?.connectionType);
+export async function publishesTrackedGitFilesOnly(stackName: string, environmentId: number | null): Promise<boolean> {
+	if (environmentId != null && isHawserConnectionType((await getEnvironment(environmentId))?.connectionType)) return true;
+	const source = await getStackSource(stackName, environmentId);
+	return source?.sourceType !== 'git' || !!source.projectDir;
 }
 /**
  * Compute the deletion plan for a sync: hash the new clone's compose dir and
@@ -619,6 +620,7 @@ export type DeployGitStackResult = {
 	output?: string;
 	error?: string;
 	skipped?: boolean;
+	composeStarted?: boolean;
 };
 
 export type FanOutResult = {
@@ -1336,7 +1338,7 @@ export async function previewRepoEnvFiles(options: PreviewEnvOptions): Promise<P
  */
 export interface GitEngine {
 	syncGitStack(stackId: number, onProgress?: ProgressCallback): Promise<SyncResult>;
-	deployGitStack(stackId: number, options?: { force?: boolean; ignoreForceRedeploy?: boolean }): Promise<DeployGitStackResult>;
+	deployGitStack(stackId: number, options?: Partial<DeployGitStackOpts>): Promise<DeployGitStackResult>;
 	deployGitStackWithProgress(stackId: number, onProgress: ProgressCallback): Promise<DeployGitStackResult>;
 	deleteGitStackFiles(stackId: number, stackName?: string, environmentId?: number | null): Promise<void>;
 	listGitStackEnvFiles(stackId: number): Promise<{ files: string[]; error?: string }>;
@@ -1468,7 +1470,7 @@ export async function previewGitStackEnvFiles(stackId: number): Promise<PreviewE
 
 export async function deployGitStack(
 	stackId: number,
-	options?: { force?: boolean; ignoreForceRedeploy?: boolean }
+	options?: Partial<DeployGitStackOpts>
 ): Promise<DeployGitStackResult> {
 	return (await getEngineForStack(stackId)).deployGitStack(stackId, options);
 }

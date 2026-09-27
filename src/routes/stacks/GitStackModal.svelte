@@ -24,7 +24,8 @@
 	import ComposeOutputModal from './ComposeOutputModal.svelte';
 	import StackIcon from '$lib/components/StackIcon.svelte';
 	import StackTagsSection from '$lib/components/StackTagsSection.svelte';
-	import { appendEnvParam } from '$lib/stores/environment';
+	import { appendEnvParam, environments } from '$lib/stores/environment';
+	import { isHawserConnectionType } from '$lib/shared/repo-predicates';
 	import { persistStackIcon } from '$lib/utils/stack-icon';
 	import { type EnvVar, type ValidationResult } from '$lib/components/StackEnvVarsEditor.svelte';
 	import { mergeGitStackEnvVars, isGitStackOverride } from '$lib/env-merge';
@@ -37,10 +38,12 @@
 	import { ensureWebhookSecret, webhookSecretValidationError } from '$lib/utils/webhook-secret';
 	import { startJobPolling, type JobPollingHandle } from '$lib/utils/job-polling';
 	import { detectedComposeOverridePaths } from '$lib/compose-overrides';
+	import { saveCloseTiming } from '$lib/utils/save-close-policy';
 
 
 	// localStorage key for persisted split ratio
 	const STORAGE_KEY_SPLIT = 'dockhand-git-stack-modal-split';
+	const DEPLOY_SUCCESS_CLOSE_DELAY_MS = 1500;
 
 	interface GitCredential {
 		id: number;
@@ -97,11 +100,14 @@
 		onClose: () => void;
 		onSaved: () => void;
 		onOpenStackView?: (tab: 'editor' | 'graph') => void;
+		/** Existing external stack being intentionally converted to Git. */
+		adoptionTarget?: { stackName: string; environmentId: number | null; displayName?: string; envPath?: string | null } | null;
 		/** Called when a new repository is created inline (via Browse) so the parent can refresh the repos list */
 		onRepositoryCreated?: () => void;
 	}
 
-	let { open = $bindable(), gitStack = null, environmentId = null, icon = null, repositories, credentials, onClose, onSaved, onOpenStackView, onRepositoryCreated }: Props = $props();
+	let { open = $bindable(), gitStack = null, adoptionTarget = null, environmentId = null, icon = null, repositories, credentials, onClose, onSaved, onOpenStackView, onRepositoryCreated }: Props = $props();
+	const isAdopting = $derived(adoptionTarget !== null && gitStack === null);
 	// Settings as last loaded. Editor/Graph open a different modal that reloads the
 	// saved stack, so switching with unsaved edits would silently drop them.
 	let savedSettings = $state<string | null>(null);
@@ -185,7 +191,10 @@
 	// Ok/fail run tally shown on the Backups tab (edit mode only).
 	let backupTally = $state<{ ok: number; failed: number }>({ ok: 0, failed: 0 });
 	let backupTallyLoaded = $state(false);
-	const effectiveEnvId = $derived(gitStack?.environmentId ?? environmentId ?? null);
+	const effectiveEnvId = $derived(gitStack?.environmentId ?? adoptionTarget?.environmentId ?? environmentId ?? null);
+	const isHawserAdoption = $derived(isAdopting && $environments.some((env) =>
+		env.id === effectiveEnvId && isHawserConnectionType(env.connectionType)
+	));
 
 	async function loadBackupTally() {
 		if (backupTallyLoaded || !gitStack) return;
@@ -510,6 +519,24 @@
 
 	// Git repository browse state
 	let showGitRepoBrowser = $state(false);
+	// Convert to Git: the project's existing Compose file, chosen on Dockhand's or the agent's filesystem.
+	let showExistingComposeBrowser = $state(false);
+	let existingComposeBrowseRoot = $state<{ root?: string; path?: string }>({});
+	let existingComposePath = $state('');
+	const existingProjectDir = $derived(existingComposePath ? existingComposePath.replace(/\/[^/]*$/, '') || '/' : '');
+
+	async function openExistingComposeBrowser() {
+		if (!adoptionTarget) return;
+		// Start in the project's working_dir (falling back to STACKS_DIR), confined to its host-attached root.
+		const response = await fetch(appendEnvParam(`/api/stacks/${encodeURIComponent(adoptionTarget.stackName)}/browse-root`, effectiveEnvId));
+		const data = await response.json().catch(() => ({}));
+		if (!response.ok) {
+			toast.error(data.error || 'Failed to locate stack files');
+			return;
+		}
+		existingComposeBrowseRoot = data;
+		showExistingComposeBrowser = true;
+	}
 	let gitBrowserApiUrl = $state('');
 	let gitBrowserError = $state<string | null>(null);
 	let temporaryCloneToken = $state<string | null>(null);
@@ -897,6 +924,7 @@
 	});
 
 	async function resetForm() {
+		existingComposePath = '';
 		savedSettings = null;
 		pendingStackView = null;
 		// Clear state BEFORE async loads to avoid race conditions
@@ -975,6 +1003,34 @@
 			// non-secrets, keeping the DB override-only (git-sync pickup intact).
 			envVars = mergeGitStackEnvVars(fileEnvVars, envVars);
 			savedSettings = settingsSnapshot();
+		} else if (adoptionTarget) {
+			formRepoMode = repositories.length > 0 ? 'existing' : 'new';
+			formRepositoryId = null;
+			formNewRepoName = '';
+			formNewRepoUrl = '';
+			formNewRepoBranch = 'main';
+			formNewRepoCredentialId = null;
+			formNewRepoAutoUpdate = false;
+			formNewRepoAutoUpdateCron = '0 3 * * *';
+			formNewRepoWebhookEnabled = false;
+			formNewRepoWebhookSecret = '';
+			formStackName = adoptionTarget.stackName;
+			formStackNameUserModified = true;
+			formComposePath = 'compose.yaml';
+			formComposePaths = ['compose.yaml'];
+			formComposePathBrowsed = false;
+			formEnvFilePath = null;
+			formContextDir = null;
+			formBuildOnDeploy = false;
+			formNoBuildCache = false;
+			formRepullImages = false;
+			formForceRedeploy = false;
+			formStackWebhookEnabled = false;
+			formStackWebhookSecret = '';
+			formStackAutoUpdate = false;
+			formStackAutoUpdateCron = '0 3 * * *';
+			formDeployNow = true;
+			formSecretProviderId = null;
 		} else {
 			formRepoMode = repositories.length > 0 ? 'existing' : 'new';
 			formRepositoryId = null;
@@ -1008,7 +1064,7 @@
 
 	async function loadSecretProviderBindingForStack(stackName: string) {
 		try {
-			const url = environmentId ? `/api/stacks/sources?env=${environmentId}` : '/api/stacks/sources';
+			const url = effectiveEnvId ? `/api/stacks/sources?env=${effectiveEnvId}` : '/api/stacks/sources';
 			const response = await fetch(url);
 			if (!response.ok) return;
 			const sourceMap = await response.json();
@@ -1055,6 +1111,7 @@
 	}
 
 	async function saveGitStack(deployAfterSave: boolean = false) {
+		const deploying = deployAfterSave || isAdopting;
 		errors = {};
 		let hasErrors = false;
 
@@ -1108,8 +1165,9 @@
 
 		if (hasErrors) return;
 
-		// Check if stack already exists (only for new stacks)
-		if (!gitStack) {
+		// Adoption has already selected the authoritative external row; ordinary
+		// creation keeps the client-side warning as a convenience only.
+		if (!gitStack && !isAdopting) {
 			try {
 				const stacksResponse = await fetch(`/api/stacks?env=${environmentId}`);
 				if (stacksResponse.ok) {
@@ -1141,13 +1199,15 @@
 				composePath: formComposePath || 'compose.yaml',
 				composePaths: explicitComposePaths(),
 				envFilePath: formEnvFilePath,
-				environmentId: environmentId,
+				environmentId: effectiveEnvId,
 				contextDir: formContextDir || null,
 				buildOnDeploy: formBuildOnDeploy,
 				noBuildCache: formNoBuildCache,
 				repullImages: formRepullImages,
 				forceRedeploy: formForceRedeploy,
-				deployNow: deployAfterSave,
+				deployNow: isAdopting ? true : deployAfterSave,
+				adoptExternal: isAdopting,
+				...(isAdopting && existingComposePath ? { existingComposePath } : {}),
 				secretProviderId: formSecretProviderId,
 				envVars: overrideVars.map(v => ({
 					key: v.key.trim(),
@@ -1196,7 +1256,7 @@
 			// Live-stream the compose output into the shared window when deploying, so
 			// "Save and deploy" shows progress like StackModal's "Save & redeploy".
 			// (A plain save with no deploy has no output to show.)
-			if (deployAfterSave) {
+			if (deploying) {
 				outputTitle = `Deploying ${formStackName.trim()}`;
 				outputLines = [];
 				outputRunning = true;
@@ -1213,12 +1273,12 @@
 				body: JSON.stringify(body)
 			});
 
-			const data = deployAfterSave
+			const data = deploying
 				? await readJobResponse(response, (line) => (outputLines = [...outputLines, line]))
 				: await readJobResponse(response);
 
 			if (!response.ok) {
-				if (deployAfterSave) {
+				if (deploying) {
 					// A pre-deploy failure (e.g. git sync) streams no lines, so surface
 					// the error text in the window instead of "No logs available".
 					if (outputLines.length === 0 && data.error) outputLines = String(data.error).split('\n');
@@ -1235,7 +1295,7 @@
 
 			// Check if deployment failed
 			const deployResult = data.deployResult as { success?: boolean; error?: string } | undefined;
-			if (deployAfterSave) {
+			if (deploying) {
 				const ok = !(deployResult && !deployResult.success);
 				// The sync phase (clone/pull) fails before any compose line streams, so
 				// on a failure with no streamed output, show the error text.
@@ -1258,9 +1318,19 @@
 
 			deploysReloadKey++; // a new run was recorded; refresh the Deploys tab
 			onSaved();
-			// With a deploy, leave the modal open behind the output window so the user
-			// can review the log; a plain save closes as before.
-			if (!deployAfterSave) onClose();
+			switch (saveCloseTiming(deploying, true)) {
+				case 'close':
+					onClose();
+					break;
+				case 'close-delayed':
+					setTimeout(() => {
+						outputOpen = false;
+						onClose();
+					}, DEPLOY_SUCCESS_CLOSE_DELAY_MS);
+					break;
+				case 'stay-open':
+					break;
+			}
 		} catch (error) {
 			formError = 'Failed to save git stack';
 		} finally {
@@ -1286,7 +1356,7 @@
 	// Auto-populate stack name from selected repo and compose path (only if user hasn't manually edited
 	// AND the path wasn't set via the Browse button — Browse already sets the optimal name from parent dir).
 	$effect(() => {
-		if (formRepoMode === 'existing' && formRepositoryId && !gitStack && !formStackNameUserModified && !formComposePathBrowsed) {
+		if (formRepoMode === 'existing' && formRepositoryId && !gitStack && !isAdopting && !formStackNameUserModified && !formComposePathBrowsed) {
 			const repo = repositories.find(r => r.id === formRepositoryId);
 			if (repo) {
 				// Normalize repo name: lowercase, spaces/underscores to hyphens, strip invalid chars
@@ -1429,10 +1499,10 @@
 					{/if}
 					<div>
 						<Dialog.Title class="text-sm font-semibold text-zinc-800 dark:text-zinc-100">
-							{gitStack ? 'Edit git stack' : 'Deploy from Git'}
+							{isAdopting ? 'Convert to Git' : gitStack ? 'Edit git stack' : 'Deploy from Git'}
 						</Dialog.Title>
 						<Dialog.Description class="text-xs text-zinc-500 dark:text-zinc-400">
-							{gitStack ? 'Update git stack settings' : 'Deploy a compose stack from a Git repository'}
+							{isAdopting ? (existingComposePath ? 'Reuse the running Compose project without moving its original files' : 'Take over the running Compose project from a Git repository') : gitStack ? 'Update git stack settings' : 'Deploy a compose stack from a Git repository'}
 						</Dialog.Description>
 						<div class="flex items-center gap-2 mt-1">
 							<Badge variant="outline" class="text-2xs py-0 px-1.5">
@@ -1796,15 +1866,50 @@
 					id="stack-name"
 					bind:value={formStackName}
 					placeholder="e.g., my-app"
+					disabled={isAdopting}
 					class="max-md:h-11 {errors.stackName ? 'border-destructive focus-visible:ring-destructive' : ''}"
 					oninput={() => { errors.stackName = undefined; formStackNameUserModified = true; }}
 				/>
 				{#if errors.stackName}
 					<p class="text-xs text-destructive">{errors.stackName}</p>
 				{:else}
-					<p class="text-xs text-muted-foreground">This will be the name of the deployed stack</p>
+					<p class="text-xs text-muted-foreground">{isAdopting ? 'The existing stack name and Compose project are preserved.' : 'This will be the name of the deployed stack'}</p>
 				{/if}
 			</div>
+			{#if isAdopting}
+				<div class="space-y-2">
+					<Label for="existing-compose-path">Existing Compose file <span class="font-normal text-muted-foreground">(optional)</span></Label>
+					<div class="flex items-center gap-1">
+						<Input
+							id="existing-compose-path"
+							value={existingComposePath}
+							readonly
+							placeholder={isHawserAdoption ? 'Select the Compose file on the Hawser host' : 'Select the Compose file on Dockhand\'s filesystem'}
+							class="flex-1 max-md:h-11 font-mono text-xs"
+						/>
+						{#if existingComposePath}
+							<Button variant="outline" size="sm" type="button" title="Clear selection" class="shrink-0" onclick={() => { existingComposePath = ''; }}>
+								<X class="w-4 h-4" />
+							</Button>
+						{/if}
+						<Button variant="outline" size="sm" type="button" title="Browse files" class="shrink-0" onclick={openExistingComposeBrowser}>
+							<FolderOpen class="w-4 h-4" />
+						</Button>
+					</div>
+					<p class="text-xs text-muted-foreground">{existingComposePath
+						? 'Its directory stays in place: Dockhand keeps the Git checkout separate, publishes tracked files into it, and runs Compose there.'
+						: 'Leave empty when the project\'s files are gone: the repository deploys to Dockhand\'s stack directory, like a new Git stack.'}</p>
+				</div>
+				<div class="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-muted-foreground">
+					<p class="font-medium text-foreground">{existingComposePath ? 'Existing services stay running.' : 'Existing services are taken over by the Git deployment.'}</p>
+					<p class="mt-1">Compose <code class="rounded bg-muted px-1">up</code> reuses project "{adoptionTarget?.stackName}"{isHawserAdoption ? ' on Hawser' : ''}.</p>
+					{#if existingComposePath}
+						<p class="mt-1 text-amber-700 dark:text-amber-300">Git-tracked files replace files with matching paths in {existingProjectDir}. Unrelated files and bind-mount data are kept.</p>
+					{:else}
+						<p class="mt-1 text-amber-700 dark:text-amber-300">Relative bind mounts resolve against Dockhand's stack directory, not the project's old directory.</p>
+					{/if}
+				</div>
+			{/if}
 
 			{#if gitStack?.stackName}
 				<div class="space-y-2">
@@ -1876,7 +1981,7 @@
 							class="flex-1 max-md:h-11"
 							oninput={() => { clearPreviewState(); if (i === 0) formComposePath = formComposePaths[i]; }}
 						/>
-						{#if formRepoMode === 'existing' ? !!formRepositoryId : !!formNewRepoUrl.trim()}
+						{#if isAdopting || (formRepoMode === 'existing' ? !!formRepositoryId : !!formNewRepoUrl.trim())}
 						<Button
 							variant="outline" size="sm"
 							onclick={() => gitBrowseForRow(i)}
@@ -1929,7 +2034,7 @@
 							class="max-md:h-11"
 							oninput={clearPreviewState}
 					/>
-				<p class="text-xs text-muted-foreground">Additional env file to pass to Docker Compose</p>
+				<p class="text-xs text-muted-foreground">{isAdopting && !formEnvFilePath ? 'Leave empty to preserve the current environment file.' : 'Additional env file to pass to Docker Compose'}</p>
 			</div>
 
 			<!-- Context directory -->
@@ -2182,6 +2287,16 @@
 							Save changes
 						{/if}
 					</Button>
+				{:else if isAdopting}
+					<Button class="max-md:order-1 max-md:col-span-2 max-md:min-h-11 max-md:w-full" onclick={() => saveGitStack(true)} disabled={formSaving}>
+						{#if formSaving}
+							<Loader2 class="w-4 h-4 mr-1 animate-spin" />
+							Adopting...
+						{:else}
+							<Rocket class="w-4 h-4" />
+							Deploy from Git
+						{/if}
+					</Button>
 				{:else}
 					<Button class="max-md:order-1 max-md:col-span-2 max-md:min-h-11 max-md:w-full" onclick={() => saveGitStack(formDeployNow)} disabled={formSaving}>
 						{#if formSaving}
@@ -2273,6 +2388,19 @@
 	/>
 {/snippet}
 
+<FilesystemBrowser
+	bind:open={showExistingComposeBrowser}
+	title="Select the existing Compose file"
+	icon={FolderOpen}
+	description={isHawserAdoption ? 'Browse files the Hawser agent can access' : 'Browse files Dockhand can access'}
+	selectFilter={/\.ya?ml$/i}
+	selectMode="file"
+	apiUrl={appendEnvParam('/api/stacks/host-files', effectiveEnvId)}
+	rootPath={existingComposeBrowseRoot.root}
+	initialPath={existingComposeBrowseRoot.path}
+	onSelect={(path) => { existingComposePath = path; }}
+	onClose={() => showExistingComposeBrowser = false}
+/>
 <!-- Git repository filesystem browser -->
 <!-- Opens when user clicks Browse next to the compose file path field -->
 <FilesystemBrowser

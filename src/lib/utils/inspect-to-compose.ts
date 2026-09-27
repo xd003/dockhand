@@ -14,6 +14,7 @@ import { portableImageReference, UPDATE_SOURCE_LABEL } from './tracked-image';
 
 /** The slice of a Docker inspect object this mapper reads (loosely typed on purpose). */
 export interface DockerInspect {
+	Id?: string;
 	Name?: string;
 	Config?: {
 		Image?: string;

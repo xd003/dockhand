@@ -52,6 +52,7 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 				secretProviderId?: number | null;
 				icon?: string | null;
 				envVarCount?: number;
+				workspaceEnabled?: boolean;
 			}
 		> = {};
 		for (const [i, source] of sources.entries()) {
@@ -64,7 +65,8 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 				repository: source.repository,
 				secretProviderId: source.secretProviderId,
 				icon: source.icon ?? null,
-				envVarCount: counts[i]
+				envVarCount: counts[i],
+				workspaceEnabled: source.workspaceEnabled
 			};
 		}
 

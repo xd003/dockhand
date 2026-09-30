@@ -18,6 +18,7 @@ import { toWebReadableStream } from './node-readable-stream';
 import { buildImagePruneFilters } from './image-prune-core';
 import { demuxDockerStream } from './docker-demux-core';
 import { computeRequestTimeoutMs, isPrunePath } from './backups/request-timeout';
+import { decodeHawserComposeStream, HAWSER_COMPOSE_STREAM_HEADER } from './hawser-compose-stream';
 import { helperWaitDeadline, helperExitFromState } from './helper-wait-core';
 import { cancelReaderOnAbort } from './reader-abort-core';
 import { configuredMacAddress, endpointWithoutGeneratedMac } from './endpoint-mac-core';
@@ -923,11 +924,23 @@ export async function dockerFetch(
 			};
 		}
 
+		// Hawser Standard compose with a line sink: ask for NDJSON output and read the
+		// response as a stream, still bounded by COMPOSE_TIMEOUT as a whole.
+		const composeStream = !!onLine && path === '/_hawser/compose' && config.connectionType === 'hawser-standard';
+		const composeTimeoutMs = parseInt(process.env.COMPOSE_TIMEOUT || '900') * 1000;
+		if (composeStream) {
+			extraHeaders[HAWSER_COMPOSE_STREAM_HEADER] = 'ndjson';
+			finalOptions.headers = { ...finalOptions.headers, [HAWSER_COMPOSE_STREAM_HEADER]: 'ndjson' };
+			finalOptions.signal ??= AbortSignal.timeout(composeTimeoutMs);
+		}
+		const streamResponse = streaming || composeStream;
+
 		// For HTTPS: use node:https with persistent Agent (fallback when Go proxy is down).
 		// For plain HTTP: use standard fetch().
 		if (config.type === 'https') {
 			try {
-				const response = await httpsAgentRequest(config, path, finalOptions, streaming || false, extraHeaders);
+				const raw = await httpsAgentRequest(config, path, finalOptions, streamResponse, extraHeaders);
+				const response = composeStream ? await decodeHawserComposeStream(raw, onLine!) : raw;
 				const elapsed = Date.now() - startTime;
 				if (elapsed > 5000 && !path.includes('/stats')) {
 					console.warn(`[Docker] ${config.connectionType || 'direct'} ${config.host}: ${method} ${path} took ${elapsed}ms`);
@@ -944,7 +957,6 @@ export async function dockerFetch(
 		// Plain HTTP — use standard fetch()
 		if (!streaming && !finalOptions.signal) {
 			const isComposeOperation = path === '/_hawser/compose';
-			const composeTimeoutMs = parseInt(process.env.COMPOSE_TIMEOUT || '900') * 1000;
 			const isPrune = isPrunePath(path);
 			finalOptions.signal = AbortSignal.timeout(isComposeOperation ? composeTimeoutMs : isPrune ? 300000 : 30000);
 		}
@@ -961,13 +973,14 @@ export async function dockerFetch(
 		// is disabled; they are bounded by their own AbortController (fired on container
 		// exit) instead. headersTimeout stays at undici's default so a pre-header stall
 		// is still capped.
-		if (streaming) {
+		if (streamResponse) {
 			const { getStreamingDispatcher } = await import('./dns-dispatcher');
 			(finalOptions as RequestInit & { dispatcher?: unknown }).dispatcher = getStreamingDispatcher();
 		}
 
 		try {
-			const response = await fetch(url, finalOptions);
+			const raw = await fetch(url, finalOptions);
+			const response = composeStream ? await decodeHawserComposeStream(raw, onLine!) : raw;
 			const elapsed = Date.now() - startTime;
 			if (elapsed > 5000 && !path.includes('/stats')) {
 				console.warn(`[Docker] ${config.connectionType || 'direct'} ${config.host}: ${method} ${path} took ${elapsed}ms`);

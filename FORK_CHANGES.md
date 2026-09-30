@@ -28,6 +28,7 @@ If you manage multiple Compose projects, remote Docker hosts, or Git-backed stac
 ## Everyday administration
 
 - **No duplicate Docker environments:** Detect when a socket, direct TCP connection, or Hawser connection points to an already-registered Docker daemon, avoiding duplicate environment entries for the same host.
+- **Live Hawser Standard deploy output:** Pull and build output from a Hawser-standard agent streams into the deploy window, including the Git deploy window, as it happens instead of appearing only when Compose finishes. Needs an agent with Standard compose streaming; older agents keep the previous end-of-run output.
 - **Stable live-sorted rows:** While you hover over a stack or container, live CPU, memory, disk, and network updates do not move the row out from under the pointer.
 - **Read-only stack names:** Click an internal stack's name to inspect it without opening edit mode; use the pencil control when you intend to make changes.
 - **Add missing variables when editing:** In the pencil editor, the Variables panel stays read-only but offers **Add missing** for `${VAR}`s the Compose file references and nothing defines. Added variables can be edited or removed until saved, and the footer offers **Save changes** and **Save and deploy** only while there are added variables to save. Git stacks save them as Dockhand overrides; internal stacks append non-secret ones to the `.env` file without touching existing lines, and keep secrets in Dockhand only.

@@ -120,7 +120,7 @@ else
     # as the running user. Switching PUID on an install that ran as root is the one
     # case that does: those folders stay root-owned, and stacks cannot be created or
     # edited until the operator chowns them once. The manual says so.
-    for subdir in db git-repos tmp icons snapshots scanner-cache hawser-migration-archives; do
+    for subdir in db git-repos tmp icons icon-cache deploy-logs snapshots scanner-cache hawser-migration-archives; do
         if [ -d "$DATA_DIR/$subdir" ]; then
             chown -R "$RUN_USER":"$RUN_USER" "$DATA_DIR/$subdir" 2>/dev/null || true
         fi
@@ -137,7 +137,7 @@ else
     if [ -n "$DATA_DIR" ] && [ "$DATA_DIR" != "/app/data" ] && [ "$DATA_DIR" != "./data" ]; then
         mkdir -p "$DATA_DIR"
         chown "$RUN_USER":"$RUN_USER" "$DATA_DIR" 2>/dev/null || true
-        for subdir in db git-repos tmp icons snapshots scanner-cache hawser-migration-archives; do
+        for subdir in db git-repos tmp icons icon-cache deploy-logs snapshots scanner-cache hawser-migration-archives; do
             if [ -d "$DATA_DIR/$subdir" ]; then
                 chown -R "$RUN_USER":"$RUN_USER" "$DATA_DIR/$subdir" 2>/dev/null || true
             fi

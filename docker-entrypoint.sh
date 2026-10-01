@@ -118,7 +118,7 @@ else
     # (e.g. ./postgresql:/var/lib/postgresql) that need different ownership (#719).
     DATA_DIR="${DATA_DIR:-/app/data}"
     chown "$RUN_USER":"$RUN_USER" "$DATA_DIR" 2>/dev/null || true
-    for subdir in db stacks git-repos tmp icons snapshots scanner-cache; do
+    for subdir in db stacks git-repos tmp icons icon-cache deploy-logs snapshots scanner-cache; do
         if [ -d "$DATA_DIR/$subdir" ]; then
             chown -R "$RUN_USER":"$RUN_USER" "$DATA_DIR/$subdir" 2>/dev/null || true
         fi
@@ -130,7 +130,7 @@ else
     if [ -n "$DATA_DIR" ] && [ "$DATA_DIR" != "/app/data" ] && [ "$DATA_DIR" != "./data" ]; then
         mkdir -p "$DATA_DIR"
         chown "$RUN_USER":"$RUN_USER" "$DATA_DIR" 2>/dev/null || true
-        for subdir in db stacks git-repos tmp icons snapshots scanner-cache; do
+        for subdir in db stacks git-repos tmp icons icon-cache deploy-logs snapshots scanner-cache; do
             if [ -d "$DATA_DIR/$subdir" ]; then
                 chown -R "$RUN_USER":"$RUN_USER" "$DATA_DIR/$subdir" 2>/dev/null || true
             fi

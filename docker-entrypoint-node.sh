@@ -3,6 +3,14 @@ set -e
 
 # Dockhand Docker Entrypoint (Node.js)
 # === Configuration ===
+# PUID/PGID are intentionally not baked into the image: when neither is set the
+# container keeps running as root (backward compatible). When either is set,
+# Dockhand drops to that UID/GID, including the image default 1001.
+if [ -n "${PUID+x}" ] || [ -n "${PGID+x}" ]; then
+    PUID_PGID_SET=true
+else
+    PUID_PGID_SET=false
+fi
 PUID=${PUID:-1001}
 PGID=${PGID:-1001}
 
@@ -73,7 +81,7 @@ fi
 if [ "$PUID" = "0" ]; then
     echo "Running as root user (PUID=0)"
     RUN_USER="root"
-elif [ "$RUNNING_AS_ROOT" = "true" ] && [ "$PUID" = "1001" ] && [ "$PGID" = "1001" ]; then
+elif [ "$RUNNING_AS_ROOT" = "true" ] && [ "$PUID_PGID_SET" = "false" ]; then
     echo "Running as root user"
     RUN_USER="root"
 else
@@ -108,7 +116,7 @@ else
     # (e.g. ./postgresql:/var/lib/postgresql) that need different ownership (#719).
     DATA_DIR="${DATA_DIR:-/app/data}"
     chown "$RUN_USER":"$RUN_USER" "$DATA_DIR" 2>/dev/null || true
-    for subdir in db stacks git-repos tmp icons snapshots scanner-cache; do
+    for subdir in db stacks git-repos tmp icons icon-cache deploy-logs snapshots scanner-cache; do
         if [ -d "$DATA_DIR/$subdir" ]; then
             chown -R "$RUN_USER":"$RUN_USER" "$DATA_DIR/$subdir" 2>/dev/null || true
         fi
@@ -120,7 +128,7 @@ else
     if [ -n "$DATA_DIR" ] && [ "$DATA_DIR" != "/app/data" ] && [ "$DATA_DIR" != "./data" ]; then
         mkdir -p "$DATA_DIR"
         chown "$RUN_USER":"$RUN_USER" "$DATA_DIR" 2>/dev/null || true
-        for subdir in db stacks git-repos tmp icons snapshots scanner-cache; do
+        for subdir in db stacks git-repos tmp icons icon-cache deploy-logs snapshots scanner-cache; do
             if [ -d "$DATA_DIR/$subdir" ]; then
                 chown -R "$RUN_USER":"$RUN_USER" "$DATA_DIR/$subdir" 2>/dev/null || true
             fi

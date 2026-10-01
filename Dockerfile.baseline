@@ -90,8 +90,6 @@ ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
     HOST=0.0.0.0 \
     DATA_DIR=/app/data \
     HOME=/home/dockhand \
-    PUID=1001 \
-    PGID=1001 \
     LD_PRELOAD=/usr/lib/libgetrandom-shim.so \
     DOCKHAND_VARIANT=baseline
 

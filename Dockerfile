@@ -129,9 +129,7 @@ ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     PORT=3000 \
     HOST=0.0.0.0 \
     DATA_DIR=/app/data \
-    HOME=/home/dockhand \
-    PUID=1001 \
-    PGID=1001
+    HOME=/home/dockhand
 
 # Create docker compose plugin symlink
 RUN mkdir -p /usr/libexec/docker/cli-plugins \

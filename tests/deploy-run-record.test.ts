@@ -256,7 +256,7 @@ describe('DeployRunRecorder.addSecrets() -- provider-resolved secrets added AFTE
 // constructor) stands in for BUDGET_BYTES (2 GiB in production) -- nothing
 // here writes gigabytes of data to prove the same code path.
 // ---------------------------------------------------------------------------
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, afterEach } from 'bun:test';
@@ -364,6 +364,34 @@ describe('DeployRunRecorder.line() -- size-budget truncation', () => {
 		// Not every one of the 20 lines can have landed -- otherwise truncation
 		// never actually stopped anything, it just decorated a full log.
 		expect((log ?? '').split('\n').length).toBeLessThan(22);
+	});
+});
+
+describe('DeployRunRecorder -- log file write failures', () => {
+	test('an unwritable deploy-logs directory still closes the row with the deploy outcome', async () => {
+		resetDbState();
+		// A FILE where the directory must be: every mkdir/appendFile under it fails,
+		// like a root-owned deploy-logs/ after the container drops to PUID/PGID.
+		await writeFile(join(lineTestsScratchDir, 'deploy-logs'), '');
+		const { DeployRunRecorder } = await import('../src/lib/server/deploy-run-record');
+		const recorder = new DeployRunRecorder(4, Date.now(), {
+			options: { pull: false, build: true, forceRecreate: false },
+			composeHash: 'aaa',
+			envHash: 'bbb',
+			secrets: [],
+			envId: 7
+		});
+
+		recorder.line(' Container app  Recreated');
+		recorder.line(' Container app  Started');
+		await recorder.end(true);
+
+		const update = endUpdate();
+		expect(update?.status).toBe('success');
+		const details = update?.details as Record<string, any> | undefined;
+		expect(details?.truncated).toBe(true);
+		expect(details?.summary?.containersRecreated).toBe(1);
+		expect(details?.summary?.containersStarted).toBe(1);
 	});
 });
 

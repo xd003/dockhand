@@ -61,6 +61,9 @@ export class DeployRunRecorder implements RunRecorder {
 	/** Chain of queued appends -- see line()'s doc comment for why this exists. */
 	private tail: Promise<void> = Promise.resolve();
 	private truncated = false;
+	/** Set once a log write fails: later lines still feed the summary, but are no
+	 *  longer written, and the stored details mark the log incomplete. */
+	private logWriteFailed = false;
 	/** Tracks the deploy-logs/ size budget without a full directory re-scan on every
 	 *  appended line -- see SizeBudgetTracker's doc comment (deploy-log-store.ts). */
 	private readonly sizeBudget: SizeBudgetTracker;
@@ -114,19 +117,28 @@ export class DeployRunRecorder implements RunRecorder {
 			// file: a line that gets skipped because truncation already kicked in
 			// isn't counted as if it had been written.
 			this.lines.push(line);
+			if (this.logWriteFailed) return;
 			const chunk = line + '\n';
-			await appendRunLog(this.envId, this.runId, chunk);
-			// Checked AFTER writing, not before: a budget check ahead of the write
-			// would either reject a legitimate line on stale size info, or need a
-			// second read straight after anyway. Checking once, right after the
-			// write that just happened, is both simpler and exactly what "abort at
-			// the end of writing, not truncate mid-line" (design doc §5) asks for.
-			// recordAppend() itself only re-scans the directory occasionally (see
-			// SizeBudgetTracker) -- it does NOT re-stat the whole deploy-logs/
-			// directory on every call, unlike the budgetExceeded() this replaced.
-			if (await this.sizeBudget.recordAppend(Buffer.byteLength(chunk, 'utf8'))) {
-				this.truncated = true;
-				await appendRunLog(this.envId, this.runId, TRUNCATION_NOTICE);
+			try {
+				await appendRunLog(this.envId, this.runId, chunk);
+				// Checked AFTER writing, not before: a budget check ahead of the write
+				// would either reject a legitimate line on stale size info, or need a
+				// second read straight after anyway. Checking once, right after the
+				// write that just happened, is both simpler and exactly what "abort at
+				// the end of writing, not truncate mid-line" (design doc §5) asks for.
+				// recordAppend() itself only re-scans the directory occasionally (see
+				// SizeBudgetTracker) -- it does NOT re-stat the whole deploy-logs/
+				// directory on every call, unlike the budgetExceeded() this replaced.
+				if (await this.sizeBudget.recordAppend(Buffer.byteLength(chunk, 'utf8'))) {
+					this.truncated = true;
+					await appendRunLog(this.envId, this.runId, TRUNCATION_NOTICE);
+				}
+			} catch (error) {
+				// A failed write (e.g. a root-owned deploy-logs/ after the container drops
+				// to PUID/PGID) must not reject `tail`: end() awaits it, and a rejection
+				// there would leave the row "running" forever.
+				this.logWriteFailed = true;
+				console.error(`[DeployRun ${this.runId}] Failed to write deploy log; further output is not recorded:`, error);
 			}
 		});
 	}
@@ -178,7 +190,7 @@ export class DeployRunRecorder implements RunRecorder {
 			composeHash: this.composeHash,
 			envHash: this.envHash,
 			logFile: runLogFileName(this.runId),
-			truncated: this.truncated
+			truncated: this.truncated || this.logWriteFailed
 		});
 
 		// "Who" is best-effort only (design doc §10.5: webhook/cron/startup have no

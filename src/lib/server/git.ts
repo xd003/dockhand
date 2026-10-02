@@ -1138,6 +1138,33 @@ export function readEnvFileInRepo(
 	}
 }
 
+/**
+ * Read a git stack's ordered compose files from an existing clone without syncing it.
+ * Same lexical + realpath containment as readEnvFileInRepo.
+ */
+export function readComposeFilesInRepo(
+	repoPath: string,
+	composePaths: string[]
+): { contents: string[]; error?: string } {
+	if (!existsSync(repoPath)) {
+		return { contents: [], error: 'Repository not synced yet' };
+	}
+	const realRoot = realpathSync(repoPath);
+	const contents: string[] = [];
+	for (const path of composePaths) {
+		const fullPath = resolve(repoPath, path);
+		if (!isPathUnderRoot(fullPath, repoPath) || !existsSync(fullPath)) {
+			return { contents: [], error: `Compose file not found: ${path}` };
+		}
+		const realPath = realpathSync(fullPath);
+		if (!isPathUnderRoot(realPath, realRoot)) {
+			return { contents: [], error: `Compose path must resolve inside the repository: ${path}` };
+		}
+		contents.push(readFileSync(realPath, 'utf-8'));
+	}
+	return { contents };
+}
+
 interface PreviewEnvOptions {
 	repoUrl: string;
 	branch: string;
@@ -1343,6 +1370,8 @@ export interface GitEngine {
 	deleteGitStackFiles(stackId: number, stackName?: string, environmentId?: number | null): Promise<void>;
 	listGitStackEnvFiles(stackId: number): Promise<{ files: string[]; error?: string }>;
 	readGitStackEnvFile(stackId: number, envFilePath: string): Promise<{ vars: Record<string, string>; error?: string }>;
+	/** Compose files in configured order from the stack's checkout, cloning it first if missing (never a stack sync). */
+	readGitStackComposeFiles(stackId: number): Promise<{ contents: string[]; error?: string }>;
 	// Repository-level operations (centralized only).
 	syncRepository?(repoId: number): Promise<SyncResult>;
 	syncRepositoryExclusive?(repoId: number): Promise<SyncResult>;
@@ -1492,6 +1521,10 @@ export async function listGitStackEnvFiles(stackId: number): Promise<{ files: st
 
 export async function readGitStackEnvFile(stackId: number, envFilePath: string): Promise<{ vars: Record<string, string>; error?: string }> {
 	return (await getEngineForStack(stackId)).readGitStackEnvFile(stackId, envFilePath);
+}
+
+export async function readGitStackComposeFiles(stackId: number): Promise<{ contents: string[]; error?: string }> {
+	return (await getEngineForStack(stackId)).readGitStackComposeFiles(stackId);
 }
 
 export async function syncRepository(repoId: number): Promise<SyncResult> {

@@ -4,7 +4,7 @@
 
 <script lang="ts">
 	import { matchesStackFilter } from '$lib/utils/grid-filters';
-	import { onMount, onDestroy } from 'svelte';
+	import { onMount, onDestroy, untrack } from 'svelte';
 	import { goto, afterNavigate } from '$app/navigation';
 	import { page } from '$app/stores';
 	import { toast } from 'svelte-sonner';
@@ -40,6 +40,7 @@
 	import ContainerIcon from '$lib/components/ContainerIcon.svelte';
 	import BatchOperationModal from '$lib/components/BatchOperationModal.svelte';
 	import type { ComposeStackInfo, ContainerStats, StackContainer } from '$lib/types';
+	import type { DeclaredComposeService } from '$lib/utils/compose-services';
 	import { showsManagementActions } from '$lib/utils/stack-actions';
 	import { sumStackStats, type StackStats } from '$lib/utils/stack-stats';
 	import StackModal from './StackModal.svelte';
@@ -1171,6 +1172,7 @@
 				}
 			}
 			stackEnvVarCounts = counts;
+			refreshExpandedStackServices();
 		} catch (error) {
 			console.error('Failed to fetch stacks:', error);
 			toast.error('Failed to load stacks');
@@ -1275,6 +1277,92 @@ let gitMigratingStackId = $state<number | null>(null);
 			toast.error(`Failed to start ${name}`);
 		} finally {
 			stackActionLoading = null;
+		}
+	}
+
+	// Services declared in compose, fetched for expanded managed stacks so services without
+	// a container (stack saved but never deployed, or only partly started) still show up and
+	// can be started one by one. Keyed by env + stack; refreshed with every stack list fetch
+	// (compose edits, Git syncs) while the previous answer stays on screen.
+	let stackServices = $state<Record<string, { services: DeclaredComposeService[]; error?: string }>>({});
+	const stackServicesInFlight = new Set<string>();
+	let serviceActionLoading = $state<string | null>(null);
+
+	function stackServicesKey(stackName: string): string {
+		return `${envId ?? ''}:${stackName}`;
+	}
+
+	async function loadStackServices(stackName: string) {
+		const key = stackServicesKey(stackName);
+		if (stackServicesInFlight.has(key)) return;
+		stackServicesInFlight.add(key);
+		try {
+			const response = await fetch(appendEnvParam(`/api/stacks/${encodeURIComponent(stackName)}/services`, envId));
+			const data = await response.json();
+			stackServices[key] = response.ok
+				? { services: Array.isArray(data.services) ? data.services : [], error: data.error }
+				: { services: [], error: data.error || 'Failed to load services' };
+		} catch {
+			stackServices[key] = { services: [], error: 'Failed to load services' };
+		} finally {
+			stackServicesInFlight.delete(key);
+		}
+	}
+
+	function hasServicesToList(stackName: string): boolean {
+		return expandedStacks.has(stackName) && !!stackSources[stackName];
+	}
+
+	function refreshExpandedStackServices() {
+		for (const stack of stacks) {
+			if (hasServicesToList(stack.name)) loadStackServices(stack.name);
+		}
+	}
+
+	// First load when a stack is expanded; later loads come from fetchStacks.
+	$effect(() => {
+		for (const stack of stacks) {
+			if (hasServicesToList(stack.name) && untrack(() => stackServices[stackServicesKey(stack.name)]) === undefined) {
+				loadStackServices(stack.name);
+			}
+		}
+	});
+
+	function servicesWithoutContainer(stack: ComposeStackInfo): DeclaredComposeService[] {
+		const entry = stackServices[stackServicesKey(stack.name)];
+		if (!entry) return [];
+		const created = new Set((stack.containerDetails ?? []).map((container) => container.service));
+		return entry.services.filter((service) => !created.has(service.name));
+	}
+
+	async function startStackService(stackName: string, serviceName: string) {
+		operationError = null;
+		serviceActionLoading = `${stackName}/${serviceName}`;
+		startComposeOutput(`Starting ${serviceName} (${stackName})`, stackName, 'start');
+		try {
+			const response = await fetch(
+				appendEnvParam(`/api/stacks/${encodeURIComponent(stackName)}/services/${encodeURIComponent(serviceName)}/start`, envId),
+				{ method: 'POST' }
+			);
+			const data = await readJobResponse(response, appendComposeOutputLine);
+			finishComposeOutput(
+				typeof data.output === 'string' ? data.output : undefined,
+				Boolean(data.success),
+				typeof data.exitCode === 'number' ? data.exitCode : undefined,
+				typeof data.error === 'string' ? data.error : undefined
+			);
+			if (!data.success) {
+				toast.error(`Failed to start ${serviceName}`);
+				return;
+			}
+			toast.success(`Started ${serviceName}`);
+			await fetchStacks();
+		} catch (error) {
+			console.error('Failed to start service:', error);
+			finishComposeOutput(undefined, false, undefined, error instanceof Error ? error.message : 'Failed to start service');
+			toast.error(`Failed to start ${serviceName}`);
+		} finally {
+			serviceActionLoading = null;
 		}
 	}
 
@@ -2913,7 +3001,9 @@ let gitMigratingStackId = $state<number | null>(null);
 			{/snippet}
 
 			{#snippet expandedRow(stack, rowState)}
-				{#if stack.containerDetails?.length > 0}
+				{@const pendingServices = servicesWithoutContainer(stack)}
+				{@const servicesEntry = stackServices[stackServicesKey(stack.name)]}
+				{#if stack.containerDetails?.length > 0 || pendingServices.length > 0}
 					<div class="stack-expanded-content p-2 sm:p-4 sm:pl-12 shadow-inner bg-muted/30">
 						<div class="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3">
 							{#each stack.containerDetails as container (container.id)}
@@ -3359,13 +3449,53 @@ let gitMigratingStackId = $state<number | null>(null);
 									</div>
 								</div>
 							{/each}
+							<!-- Declared services without a container yet: start them one at a time
+							     without deploying the whole stack. -->
+							{#each pendingServices as service (service.name)}
+								{@const isServiceLoading = serviceActionLoading === `${stack.name}/${service.name}`}
+								<div class="stack-container-card min-w-0 p-3 rounded-lg bg-background border border-dashed text-xs">
+									<div class="flex items-center gap-2 mb-2">
+										<Box class="w-4 h-4 shrink-0 text-muted-foreground" />
+										<span class="font-medium truncate" title={service.name}>{service.name}</span>
+										<span class="flex-1"></span>
+										<span class={getStatusClasses('created')}>not created</span>
+									</div>
+									<div class="text-muted-foreground mb-2 space-y-0.5">
+										<div class="truncate" title={service.image ?? 'Built from source'}>{service.image ?? 'Built from source'}</div>
+										{#if service.profiles.length > 0}
+											<div class="text-2xs truncate" title="Profiles: {service.profiles.join(', ')}">Profiles: {service.profiles.join(', ')}</div>
+										{/if}
+									</div>
+									<div class="stack-container-actions flex items-center justify-end pt-2 border-t border-muted">
+										{#if isServiceLoading}
+											<Loader2 class="w-3.5 h-3.5 animate-spin text-muted-foreground" />
+										{:else if $canAccess('stacks', 'start')}
+											<button
+												type="button"
+												title="Start service"
+												disabled={serviceActionLoading !== null || stackActionLoading === stack.name}
+												onclick={(e) => { e.stopPropagation(); startStackService(stack.name, service.name); }}
+												class="p-1 rounded hover:bg-muted transition-colors opacity-70 hover:opacity-100 cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
+											>
+												<Play class="w-3.5 h-3.5 text-muted-foreground hover:text-emerald-500" />
+											</button>
+										{/if}
+									</div>
+								</div>
+							{/each}
 						</div>
 					</div>
 				{:else}
 					<div class="p-4 pl-12 shadow-inner bg-muted/30">
-						<div class="flex items-center justify-center gap-2 py-4 text-muted-foreground text-sm">
-							<Box class="w-4 h-4" />
-							<span>No containers</span>
+						<div class="flex flex-col items-center justify-center gap-1 py-4 text-muted-foreground text-sm">
+							{#if hasServicesToList(stack.name) && !servicesEntry}
+								<span class="inline-flex items-center gap-2"><Loader2 class="w-4 h-4 animate-spin" />Loading services…</span>
+							{:else}
+								<span class="inline-flex items-center gap-2"><Box class="w-4 h-4" />No containers</span>
+								{#if servicesEntry?.error}
+									<span class="text-xs">{servicesEntry.error}</span>
+								{/if}
+							{/if}
 						</div>
 					</div>
 				{/if}

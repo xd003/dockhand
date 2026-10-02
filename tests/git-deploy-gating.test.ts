@@ -201,6 +201,14 @@ describe('mergeDeployGitStackOpts', () => {
 		merged.onLine?.('ready');
 		assert.deepEqual(lines, ['first:ready', 'second:ready']);
 	});
+
+	it('widens a service-only deploy to the whole stack unless both target the same service', () => {
+		const base = { force: true, ignoreForceRedeploy: false };
+		assert.equal(mergeDeployGitStackOpts({ ...base, serviceName: 'db' }, { ...base, serviceName: 'db' }).serviceName, 'db');
+		assert.equal(mergeDeployGitStackOpts({ ...base, serviceName: 'db' }, base).serviceName, undefined);
+		assert.equal(mergeDeployGitStackOpts(base, { ...base, serviceName: 'db' }).serviceName, undefined);
+		assert.equal(mergeDeployGitStackOpts({ ...base, serviceName: 'db' }, { ...base, serviceName: 'web' }).serviceName, undefined);
+	});
 });
 
 describe('repoFanOutDefersStack', () => {

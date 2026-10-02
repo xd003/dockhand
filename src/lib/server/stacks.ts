@@ -73,7 +73,8 @@ import { stripSurroundingQuotes } from './secretproviders/shared';
 import { resolveComposeDockerHost, buildComposeBaseArgs } from './compose-docker-args';
 import { unregisterSchedule } from './scheduler';
 import { sendEventNotification } from './notifications';
-import { deleteGitStackFiles, parseEnvFileContent } from './git';
+import { deleteGitStackFiles, deployGitStack, parseEnvFileContent, readGitStackComposeFiles } from './git';
+import { listDeclaredComposeServices, type DeclaredComposeService } from '$lib/utils/compose-services';
 import { isDeletableStackDir } from './stack-delete-guard';
 import { cleanPem } from '$lib/utils/pem';
 import { rewriteComposeVolumePaths, getHostDataDir, getCachedContainerMounts, hostPathInContainerMount } from './host-path';
@@ -210,6 +211,8 @@ export interface DeployStackOptions {
 	build?: boolean; // Build images before starting (--build)
 	noBuildCache?: boolean; // Disable build cache (--no-cache, requires --build)
 	pullPolicy?: string; // Pull policy: 'always' | 'missing' | 'never'
+	/** Bring up only this service (and its dependencies) instead of the whole stack. */
+	serviceName?: string;
 	composePath?: string; // Custom compose file path (for adopted/imported stacks)
 	composePaths?: string[]; // Multiple compose file paths (ordered)
 	envPath?: string; // Custom env file path (for adopted/imported stacks)
@@ -2452,6 +2455,8 @@ export interface RequireComposeResult {
 	composePath?: string;
 	/** Multiple compose file paths (ordered) */
 	composePaths?: string[];
+	/** Compose file contents keyed by path (multi-file stacks) */
+	composeContents?: Record<string, string>;
 	/** Full path to the env file (for --env-file flag) */
 	envPath?: string;
 	/** Stack source type (internal/git/external), plumbed through from getStackComposeFile to avoid a redundant getStackSource lookup in callers */
@@ -2535,6 +2540,7 @@ export async function requireComposeFile(
 		// passing those raw paths to docker compose -f would double-prefix them
 		// against the stack working directory.
 		composePaths: composeResult.composePaths?.length ? composeResult.composePaths : undefined,
+		composeContents: composeResult.composeContents,
 		envPath: envFilePath ?? undefined,
 		sourceType: composeResult.sourceType
 	};
@@ -2648,6 +2654,112 @@ export async function redeployStackFromDir(
 	);
 }
 
+/** Compose file contents in Compose merge order (primary first). */
+function orderedComposeContents(result: { content?: string; composePaths?: string[] | null; composeContents?: Record<string, string> }): string[] {
+	const contents = (result.composePaths ?? [])
+		.filter((path) => result.composeContents?.[path] !== undefined)
+		.map((path) => result.composeContents![path]);
+	if (contents.length > 0) return contents;
+	return result.content !== undefined ? [result.content] : [];
+}
+
+/**
+ * Whether an always-enabled declared service has no container yet. `docker compose start`
+ * only resumes existing containers, so such a stack must go through `up`. Unparseable
+ * compose keeps the previous container-count behavior; Compose reports the real error.
+ */
+function hasServiceWithoutContainer(result: RequireComposeResult, containers: Array<{ labels: Record<string, string> }>): boolean {
+	let declared: DeclaredComposeService[];
+	try {
+		declared = listDeclaredComposeServices(orderedComposeContents(result));
+	} catch {
+		return false;
+	}
+	const created = new Set(containers.map((container) => container.labels['com.docker.compose.service']));
+	return declared.some((service) => service.profiles.length === 0 && !created.has(service.name));
+}
+
+/**
+ * Services declared by a stack's compose file(s), whether or not they have containers.
+ * A Git stack that has never been deployed has no stack directory yet, so its services
+ * come from the repository checkout. That read never runs a stack sync: a sync would
+ * advance lastCommit and change what the next scheduled sync deploys.
+ */
+export async function getStackServices(
+	stackName: string,
+	envId?: number | null
+): Promise<{ services: DeclaredComposeService[]; error?: string }> {
+	const composeResult = await getStackComposeFile(stackName, envId);
+	let contents: string[];
+	if (composeResult.success) {
+		contents = orderedComposeContents(composeResult);
+	} else {
+		const source = await getStackSource(stackName, envId);
+		if (source?.sourceType !== 'git' || !source.gitStackId) {
+			return { services: [], error: composeResult.error || `Compose file not found for stack "${stackName}"` };
+		}
+		const gitFiles = await readGitStackComposeFiles(source.gitStackId);
+		if (gitFiles.error) return { services: [], error: gitFiles.error };
+		contents = gitFiles.contents;
+	}
+	try {
+		return { services: listDeclaredComposeServices(contents) };
+	} catch (error) {
+		return { services: [], error: `Invalid compose file: ${error instanceof Error ? error.message : String(error)}` };
+	}
+}
+
+/**
+ * Bring up one service of a stack (`docker compose up -d <service>`; Compose also starts
+ * its depends_on services). Works before the stack was ever deployed: a Git stack without
+ * a stack directory is synced and deployed for just this service.
+ */
+export async function startStackService(
+	stackName: string,
+	serviceName: string,
+	envId?: number | null,
+	options: { userId?: number; onLine?: (line: string) => void } = {}
+): Promise<StackOperationResult> {
+	const { services, error } = await getStackServices(stackName, envId);
+	if (error) return { success: false, error };
+	if (!services.some((service) => service.name === serviceName)) {
+		return { success: false, error: `Service "${serviceName}" is not defined in stack "${stackName}"` };
+	}
+
+	const result = await requireComposeFile(stackName, envId);
+	if (!result.success) {
+		const source = await getStackSource(stackName, envId);
+		if (source?.sourceType !== 'git' || !source.gitStackId) {
+			return { success: false, error: result.error || `Compose file not found for stack "${stackName}"` };
+		}
+		return deployGitStack(source.gitStackId, {
+			triggeredBy: 'manual',
+			userId: options.userId,
+			onLine: options.onLine,
+			serviceName
+		});
+	}
+
+	await applyProviderSecretsToComposeResult(result, stackName, envId, `[Stack:${stackName}]`);
+	return executeComposeCommand(
+		'up',
+		{
+			stackName,
+			envId,
+			workingDir: result.stackDir,
+			composePath: result.composePath,
+			composePaths: result.composePaths,
+			envPath: result.envPath,
+			useOverrideFile: result.sourceType === 'git',
+			serviceName
+		},
+		result.content!,
+		result.nonSecretVars,
+		result.secretVars,
+		options.onLine
+	);
+}
+
 /**
  * Start a stack using docker compose start (resumes stopped containers).
  * Falls back to docker compose up if containers don't exist (stack was removed/down).
@@ -2692,11 +2804,12 @@ export async function startStack(
 
 	const opts: ComposeCommandOptions = { stackName, envId, workingDir: result.stackDir, composePath: result.composePath, composePaths: result.composePaths, envPath: result.envPath, useOverrideFile: isGitStack };
 
-	// Check if containers exist for this stack. If they do, use 'start' to resume
-	// them (preserves container IDs, avoids Traefik race conditions from recreation).
-	// If no containers exist (stack was removed/down), use 'up' to create them.
+	// Check if containers exist for this stack. If every always-enabled service has
+	// one, use 'start' to resume them (preserves container IDs, avoids Traefik race
+	// conditions from recreation). If any are missing (stack was removed/down, or only
+	// some services were started individually), use 'up' to create them.
 	const containers = await getStackContainers(stackName, envId);
-	const operation = containers.length > 0 ? 'start' : 'up';
+	const operation = containers.length > 0 && !hasServiceWithoutContainer(result, containers) ? 'start' : 'up';
 
 	// Resolve secret-provider values for BOTH operations: `docker compose start`
 	// parses and interpolates the compose file too, so a stack with required
@@ -3401,7 +3514,7 @@ async function deployBoundHawserStack(options: DeployStackOptions): Promise<Stac
 		updateBoundComposeFiles: !!options.remoteGitRoot,
 		envPath: envFileContent !== undefined ? effectiveEnv : undefined, useOverrideFile: !!sourceDir,
 		forceRecreate: options.forceRecreate, build: options.build, noBuildCache: options.noBuildCache,
-		pullPolicy: options.pullPolicy
+		pullPolicy: options.pullPolicy, serviceName: options.serviceName
 	};
 	options.onComposeStarted?.();
 	const result = await executeComposeCommand('up', cmdOptions, compose, sourceDir ? resolved.dbNonSecretVars : undefined, resolved.secretVars, options.onLine);
@@ -3658,7 +3771,8 @@ export async function deployStackUnlocked(options: DeployStackOptions): Promise<
 			composePaths: actualComposePaths,
 			envPath: actualEnvPath,
 			useOverrideFile: isGitStack,
-			inPlace: !!inPlaceProjectDir
+			inPlace: !!inPlaceProjectDir,
+			serviceName: options.serviceName
 		};
 		const composeEnvVars = isGitStack ? dbNonSecretVars : undefined;
 

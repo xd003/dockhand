@@ -10,6 +10,8 @@ export interface DeployGitStackOpts {
 	triggeredBy?: 'cron' | 'webhook' | 'manual' | 'startup';
 	userId?: number;
 	onLine?: (line: string) => void;
+	/** Bring up only this service (and its dependencies) instead of the whole stack. */
+	serviceName?: string;
 }
 
 export interface ShouldDeployGitStackInput extends DeployGitStackOpts {
@@ -79,6 +81,8 @@ export function isDeployFailure(syncStatus: string | null | undefined, syncError
  * - `force` if either caller forces
  * - honor `forceRedeploy` unless ALL callers opt into `ignoreForceRedeploy`
  *   (a stack-level webhook must not lose to a repo fan-out)
+ * - a service-only deploy stays service-only only when both target the same
+ *   service; anything else widens to the whole stack
  */
 export function mergeDeployGitStackOpts(
 	a: DeployGitStackOpts,
@@ -89,12 +93,14 @@ export function mergeDeployGitStackOpts(
 		: a.onLine ?? b.onLine;
 	const triggeredBy = a.triggeredBy ?? b.triggeredBy;
 	const userId = a.userId ?? b.userId;
+	const serviceName = a.serviceName === b.serviceName ? a.serviceName : undefined;
 	return {
 		force: a.force || b.force,
 		ignoreForceRedeploy: a.ignoreForceRedeploy && b.ignoreForceRedeploy,
 		...(triggeredBy !== undefined ? { triggeredBy } : {}),
 		...(userId !== undefined ? { userId } : {}),
-		...(onLine ? { onLine } : {})
+		...(onLine ? { onLine } : {}),
+		...(serviceName !== undefined ? { serviceName } : {})
 	};
 }
 

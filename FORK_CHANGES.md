@@ -7,6 +7,7 @@ If you manage multiple Compose projects, remote Docker hosts, or Git-backed stac
 ## Compose and Git-backed stacks
 
 - **Ordered Compose deployments:** Select multiple Compose files for a stack and control the order in which they are applied. Base files and overrides are combined predictably rather than depending on an implicit file order.
+- **Start services individually:** Expanding a stack lists every service its Compose files declare, including services that have no container yet, so a stack saved with **Create** (local or Git) shows its services before the first deploy. Start one service at a time — for example the database, restore it, then the rest — without deploying the whole stack. A never-deployed Git stack is cloned to read its services and deploys only the chosen service (plus its `depends_on`). Starting the whole stack afterwards also creates any services that were never started.
 - **Shared Git repositories:** Manage multiple stacks from a single repository checkout instead of maintaining a separate clone for each stack. Schedules and webhooks can operate at repository level, and existing stacks can be migrated individually.
 - **Safer Git stack setup:** Preview the combined Compose configuration before creating a centralized Git stack. Load repository environment values when needed and validate variables so missing values are caught during setup.
 - **Git environment overrides:** Edit a Git-backed stack's environment overrides in the stack editor, alongside its Compose configuration.

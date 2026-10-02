@@ -25,6 +25,7 @@ import {
 	parseEnvFileContent,
 	listEnvFilesInRepo,
 	readEnvFileInRepo,
+	readComposeFilesInRepo,
 	type SyncResult,
 	type ProgressCallback,
 	type DeployGitStackResult,
@@ -584,7 +585,8 @@ async function deployGitStackCoreUnlocked(
 			ignoreForceRedeploy: options?.ignoreForceRedeploy ?? false,
 			triggeredBy: options?.triggeredBy,
 			userId: options?.userId,
-			onLine: options?.onLine
+			onLine: options?.onLine,
+			serviceName: options?.serviceName
 		},
 		syncResult,
 		onLine: options?.onLine,
@@ -873,6 +875,35 @@ export async function readGitStackEnvFile(
 	return readEnvFileInRepo(repoPath, envFilePath);
 }
 
+/**
+ * Read the stack's compose files from its per-stack clone. A never-deployed stack
+ * without a clone gets one the same way the create flow provisions it (pending clone
+ * adopted into the stack location), so lastCommit and first-deploy change detection
+ * stay untouched.
+ */
+export async function readGitStackComposeFiles(stackId: number): Promise<{ contents: string[]; error?: string }> {
+	const gitStack = await getGitStack(stackId);
+	if (!gitStack) {
+		return { contents: [], error: 'Git stack not found' };
+	}
+	const repoPath = await getStackRepoPath(stackId, gitStack.stackName, gitStack.environmentId);
+	if (!existsSync(repoPath)) {
+		const provisioned = await withGitRepositoryMutationLock(gitStack.repositoryId, async () => {
+			if (existsSync(repoPath)) return { success: true };
+			const clone = await cloneGitRepositoryToPending(gitStack.repositoryId, gitStack.branch);
+			if (!clone.success || !clone.token) return clone;
+			const adopted = await adoptPendingGitClone(stackId, clone.token);
+			if (!adopted.success) discardPendingGitClone(clone.token, gitStack.repositoryId);
+			return adopted;
+		});
+		if (!provisioned.success) {
+			return { contents: [], error: provisioned.error || 'Failed to clone the repository' };
+		}
+	}
+	const configured = parseComposePathsColumn(gitStack.composePaths);
+	return readComposeFilesInRepo(repoPath, configured.length > 0 ? configured : [gitStack.composePath]);
+}
+
 // =============================================================================
 // ENGINE EXPORT
 // =============================================================================
@@ -883,5 +914,6 @@ export const StackGitEngine: GitEngine = {
 	deployGitStackWithProgress,
 	deleteGitStackFiles,
 	listGitStackEnvFiles,
-	readGitStackEnvFile
+	readGitStackEnvFile,
+	readGitStackComposeFiles
 };

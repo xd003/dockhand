@@ -28400,6 +28400,153 @@
         ]
       }
     },
+    "/api/stacks/{name}/services": {
+      "get": {
+        "operationId": "get_api_stacks_name_services",
+        "tags": [
+          "stacks"
+        ],
+        "summary": "List the services a stack's compose file(s) declare, including ones without containers",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Stack name (from GET /api/stacks)"
+          },
+          {
+            "name": "env",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Environment id (from GET /api/environments)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "services is [{name, image?, profiles}] in declaration order; error explains an empty list (e.g. compose file not found).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "services": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {}
+                      }
+                    },
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "services"
+                  ]
+                },
+                "example": {
+                  "services": [
+                    {}
+                  ],
+                  "error": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission denied (needs stacks:view), or access denied to this environment"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "description": "Lets a stack that was saved but never deployed (or only partly started) show and start individual services. A never-deployed Git stack is read from its repository checkout (cloned on first use, without a stack sync)."
+      }
+    },
+    "/api/stacks/{name}/services/{service}/start": {
+      "post": {
+        "operationId": "post_api_stacks_name_services_service_start",
+        "tags": [
+          "stacks"
+        ],
+        "summary": "Start one service of a stack (docker compose up -d <service>), asynchronously",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Stack name (from GET /api/stacks)"
+          },
+          {
+            "name": "service",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Service name (from GET /api/stacks/{name}/services)"
+          },
+          {
+            "name": "env",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Environment id (from GET /api/environments)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Fire-and-forget job id — poll GET /api/jobs/{jobId} for the result. Send \"Accept: application/json\" (without text/event-stream) to instead block and receive the final {success,output|error} synchronously.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "jobId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "jobId"
+                  ]
+                },
+                "example": {
+                  "jobId": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission denied (needs stacks:start), or access denied to this environment"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "description": "Creates and starts the service's container (plus its depends_on services) even when the stack was never deployed. A never-deployed Git stack is synced and deployed for just this service."
+      }
+    },
     "/api/stacks/{name}/start": {
       "post": {
         "operationId": "post_api_stacks_name_start",

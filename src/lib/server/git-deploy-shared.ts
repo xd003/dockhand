@@ -240,6 +240,7 @@ export async function deployStackFromSync(args: DeployStackFromSyncArgs): Promis
 			build: gitStack.buildOnDeploy,
 			noBuildCache: gitStack.noBuildCache,
 			pullPolicy: gitStack.repullImages ? 'always' : undefined,
+			serviceName: opts.serviceName,
 			filesToDelete: syncResult.deletionPlan?.toDelete,
 			gitPublishPaths: syncResult.newFiles ? Object.keys(syncResult.newFiles) : undefined,
 			isGitDeploy: true, // suppress stack_* notification; we emit git_sync_* below

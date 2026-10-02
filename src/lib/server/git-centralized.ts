@@ -46,6 +46,7 @@ import {
 	parseEnvFileContent,
 	listEnvFilesInRepo,
 	readEnvFileInRepo,
+	readComposeFilesInRepo,
 	type SyncResult,
 	type ProgressCallback,
 	type DeployGitStackResult,
@@ -765,7 +766,8 @@ export async function deployGitStack(
 		ignoreForceRedeploy: options?.ignoreForceRedeploy ?? false,
 		triggeredBy: options?.triggeredBy,
 		userId: options?.userId,
-		onLine: options?.onLine
+		onLine: options?.onLine,
+		serviceName: options?.serviceName
 	};
 
 	return runCoalesced(
@@ -848,6 +850,30 @@ export async function readGitStackEnvFile(
 	return readEnvFileInRepo(repoPath, envFilePath);
 }
 
+/**
+ * Read the stack's compose files from the shared clone, provisioning the clone first
+ * when it does not exist yet (repository-level sync; per-stack lastCommit is untouched).
+ */
+export async function readGitStackComposeFiles(stackId: number): Promise<{ contents: string[]; error?: string }> {
+	const gitStack = await getGitStack(stackId);
+	if (!gitStack) {
+		return { contents: [], error: 'Git stack not found' };
+	}
+	const repo = await getGitRepository(gitStack.repositoryId);
+	if (!repo) {
+		return { contents: [], error: 'Repository not found' };
+	}
+	const repoPath = getRepoPath(repo.name);
+	if (!existsSync(repoPath)) {
+		const provisioned = await syncRepositoryExclusive(repo.id);
+		if (!provisioned.success) {
+			return { contents: [], error: provisioned.error || 'Failed to clone the repository' };
+		}
+	}
+	const configured = parseComposePathsColumn(gitStack.composePaths);
+	return readComposeFilesInRepo(repoPath, configured.length > 0 ? configured : [gitStack.composePath]);
+}
+
 // =============================================================================
 // ENGINE EXPORT
 // =============================================================================
@@ -859,6 +885,7 @@ export const CentralizedGitEngine: GitEngine = {
 	deleteGitStackFiles,
 	listGitStackEnvFiles,
 	readGitStackEnvFile,
+	readGitStackComposeFiles,
 	syncRepository,
 	syncRepositoryExclusive,
 	deployFromRepositoryWithFanOut,

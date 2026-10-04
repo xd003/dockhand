@@ -25,6 +25,13 @@ import { fileURLToPath } from 'node:url';
 import { eq, sql } from 'drizzle-orm';
 import { createHash } from 'node:crypto';
 import { building } from '$app/environment';
+import {
+	applyUnrecordedMigrations,
+	readJournalMigrations,
+	postgresMigrationExecutor,
+	sqliteMigrationExecutor,
+	syncMigrationTimestamps
+} from './migration-reconcile';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -479,21 +486,31 @@ async function runMigrations(
 	logInfo(`Applied: ${state.appliedMigrations.length}`);
 	logInfo(`Pending: ${state.pendingMigrations.length}`);
 
-	if (state.pendingMigrations.length === 0) {
-		logSuccess('Database schema is up to date');
-		return { success: true, applied: 0, skipped: false };
-	}
-
-	// Log pending migrations
-	console.log('\nPending migrations:');
-	for (const migration of state.pendingMigrations) {
-		logStep(migration);
-	}
-	console.log('');
-
-	// Run migrations
+	// An existing database is tracked by hash, not by Drizzle's timestamp watermark (see
+	// migration-reconcile.ts); a fresh one goes through Drizzle's migrate().
 	try {
-		if (postgres) {
+		const executor = postgres ? postgresMigrationExecutor(client) : sqliteMigrationExecutor(client);
+		const journalMigrations = state.tableExists ? readJournalMigrations(migrationsFolder) : [];
+		for (const tag of await syncMigrationTimestamps(journalMigrations, executor)) {
+			logStep(`Re-stamped applied migration ${tag}`);
+		}
+
+		if (state.pendingMigrations.length === 0) {
+			logSuccess('Database schema is up to date');
+			return { success: true, applied: 0, skipped: false };
+		}
+
+		// Log pending migrations
+		console.log('\nPending migrations:');
+		for (const migration of state.pendingMigrations) {
+			logStep(migration);
+		}
+		console.log('');
+
+		// Run migrations
+		if (state.tableExists) {
+			await applyUnrecordedMigrations(journalMigrations, executor);
+		} else if (postgres) {
 			const { migrate } = await import('drizzle-orm/postgres-js/migrator');
 			await migrate(database, { migrationsFolder });
 		} else {

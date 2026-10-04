@@ -158,6 +158,12 @@ export async function getEnvironment(id: number): Promise<Environment | undefine
 	};
 }
 
+/** True when container event (activity) collection is off for the environment. */
+export async function isActivityCollectionDisabled(envId: number): Promise<boolean> {
+	const rows = await db.select({ v: environments.collectActivity }).from(environments).where(eq(environments.id, envId));
+	return rows[0]?.v === false;
+}
+
 export async function getEnvironmentByName(name: string): Promise<Environment | undefined> {
 	const results = await db.select().from(environments).where(eq(environments.name, name));
 	if (!results[0]) return undefined;

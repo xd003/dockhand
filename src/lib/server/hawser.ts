@@ -7,7 +7,7 @@
 
 import { db, hawserTokens, environments, eq, and } from './db/drizzle.js';
 import { transportTimeoutError } from './docker-probe-core';
-import { logContainerEvent, type ContainerEventAction } from './db.js';
+import { isActivityCollectionDisabled, logContainerEvent, type ContainerEventAction } from './db.js';
 import { containerEventEmitter } from './event-collector.js';
 import { sendEnvironmentNotification } from './notifications/index.js';
 import { shouldNotifyContainerEvent } from './container-event-notify.js';
@@ -198,6 +198,8 @@ export async function handleEdgeContainerEvent(
 	event: ContainerEventMessage['event']
 ): Promise<void> {
 	try {
+		if (await isActivityCollectionDisabled(environmentId)) return;
+
 		// Log the event
 		console.log(`[Hawser] Container event from env ${environmentId}: ${event.action} ${event.containerName || event.containerId}`);
 

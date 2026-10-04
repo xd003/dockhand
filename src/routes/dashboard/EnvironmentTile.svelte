@@ -555,7 +555,9 @@
 					{#if stats.recentEvents}
 						<DashboardRecentEvents events={stats.recentEvents} limit={8} onclick={oneventsclick} />
 					{/if}
-					<DashboardTopContainers containers={stats.topContainers} limit={8} loading={stats.loading?.topContainers || showConnecting} />
+					{#if stats.collectContainerMetrics}
+						<DashboardTopContainers containers={stats.topContainers} limit={8} loading={stats.loading?.topContainers || showConnecting} />
+					{/if}
 				</div>
 			{/if}
 		</Card.Content>
@@ -600,7 +602,9 @@
 					</div>
 					<!-- Right column -->
 					<div class="space-y-3 border-l border-border/50 pl-4">
-						<DashboardTopContainers containers={stats.topContainers} limit={8} loading={stats.loading?.topContainers || showConnecting} />
+						{#if stats.collectContainerMetrics}
+							<DashboardTopContainers containers={stats.topContainers} limit={8} loading={stats.loading?.topContainers || showConnecting} />
+						{/if}
 					</div>
 				</div>
 			{/if}
@@ -649,7 +653,9 @@
 					</div>
 					<!-- Right column -->
 					<div class="space-y-3 border-l border-border/50 pl-4">
-						<DashboardTopContainers containers={stats.topContainers} limit={10} loading={stats.loading?.topContainers || showConnecting} />
+						{#if stats.collectContainerMetrics}
+							<DashboardTopContainers containers={stats.topContainers} limit={10} loading={stats.loading?.topContainers || showConnecting} />
+						{/if}
 						{#if stats.collectMetrics && stats.metrics && stats.metricsHistory}
 							<DashboardCpuMemoryCharts metricsHistory={stats.metricsHistory} metrics={stats.metrics} />
 						{/if}
@@ -698,7 +704,9 @@
 						{#if stats.recentEvents}
 							<DashboardRecentEvents events={stats.recentEvents} limit={10} onclick={oneventsclick} />
 						{/if}
-						<DashboardTopContainers containers={stats.topContainers} limit={10} loading={stats.loading?.topContainers || showConnecting} />
+						{#if stats.collectContainerMetrics}
+							<DashboardTopContainers containers={stats.topContainers} limit={10} loading={stats.loading?.topContainers || showConnecting} />
+						{/if}
 					</div>
 					<!-- Right column -->
 					<div class="space-y-3 border-l border-border/50 pl-4">

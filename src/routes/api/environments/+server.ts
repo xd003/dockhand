@@ -155,6 +155,7 @@ export const POST: RequestHandler = async (event) => {
 			socketPath: data.socketPath || '/var/run/docker.sock',
 			collectActivity: data.collectActivity !== false,
 			collectMetrics: data.collectMetrics !== false,
+			collectContainerMetrics: data.collectContainerMetrics !== false,
 			highlightChanges: data.highlightChanges !== false,
 			labels: serializeLabels(labels),
 			connectionType: connectionType,

@@ -17,7 +17,7 @@
 	import { formatBytes } from '$lib/utils/format';
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
-	import { currentEnvironment, appendEnvParam, environments } from '$lib/stores/environment';
+	import { currentEnvironment, appendEnvParam, environments, isContainerMetricsEnabled } from '$lib/stores/environment';
 	import ImageLayersView from '../images/ImageLayersView.svelte';
 	import ContainerComposeTab from './ContainerComposeTab.svelte';
 	import LogsPanel from '../logs/LogsPanel.svelte';
@@ -340,6 +340,7 @@
 
 	// Current environment details for port URL generation
 	const currentEnvDetails = $derived($environments.find(e => e.id === $currentEnvironment?.id) ?? null);
+	const containerMetricsEnabled = $derived(isContainerMetricsEnabled(currentEnvDetails));
 
 	function extractHostFromUrl(urlString: string): string | null {
 		if (!urlString) return null;
@@ -435,7 +436,7 @@
 	// Start/stop stats collection based on container state (separate effect)
 	$effect(() => {
 		if (open && containerData?.State?.Running) {
-			startStatsCollection();
+			if (containerMetricsEnabled) startStatsCollection(); else stopStatsCollection();
 			// One-shot fetch so the Overview's process count tile renders
 			// immediately, even if the user never opens the Processes tab.
 			if (!processesData) fetchProcesses();
@@ -788,7 +789,7 @@
 						</Tooltip.Content>
 					</Tooltip.Root>
 				{/if}
-				{#if containerData?.State?.Running && !loading}
+				{#if containerData?.State?.Running && !loading && containerMetricsEnabled}
 					<span class="inline-flex items-center gap-1.5 ml-2 text-xs {isLiveConnected ? 'text-emerald-500' : 'text-muted-foreground'}" title={isLiveConnected ? m.containers_inspect_live_receiving() : m.containers_inspect_connection_lost()}>
 						<Wifi class="w-3.5 h-3.5 {isLiveConnected ? 'animate-pulse' : ''}" />
 						{isLiveConnected ? m.containers_inspect_live() : m.containers_inspect_offline()}
@@ -957,7 +958,8 @@
 					<Tabs.Content value="overview" class="flex-1 min-h-0 pb-4 space-y-4 overflow-auto">
 						<!-- Real-time Stats (only for running containers) -->
 						{#if containerData.State?.Running}
-							<div class="grid grid-cols-2 lg:grid-cols-5 gap-3">
+							<div class="grid {containerMetricsEnabled ? 'grid-cols-2 lg:grid-cols-5' : 'grid-cols-1'} gap-3">
+								{#if containerMetricsEnabled}
 								<!-- CPU -->
 								<div class="p-3 border border-border rounded-lg">
 									<div class="flex items-center gap-2 mb-2">
@@ -1043,6 +1045,7 @@
 										</div>
 									</div>
 								</div>
+								{/if}
 								<!-- Processes -->
 								<div class="p-3 border border-border rounded-lg">
 									<div class="flex items-center gap-2 mb-2">

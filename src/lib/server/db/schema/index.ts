@@ -34,6 +34,7 @@ export const environments = sqliteTable('environments', {
 	icon: text('icon').default('globe'),
 	collectActivity: integer('collect_activity', { mode: 'boolean' }).default(true),
 	collectMetrics: integer('collect_metrics', { mode: 'boolean' }).default(true),
+	collectContainerMetrics: integer('collect_container_metrics', { mode: 'boolean' }).default(true),
 	highlightChanges: integer('highlight_changes', { mode: 'boolean' }).default(true),
 	labels: text('labels'), // JSON array of label strings for categorization
 	// Connection settings

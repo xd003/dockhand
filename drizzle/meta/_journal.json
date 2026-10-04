@@ -183,6 +183,13 @@
       "when": 1792100240000,
       "tag": "0025_stack_project_dir",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "6",
+      "when": 1792100300000,
+      "tag": "0026_collect_container_metrics",
+      "breakpoints": true
     }
   ]
 }

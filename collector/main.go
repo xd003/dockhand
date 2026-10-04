@@ -36,6 +36,7 @@ type InMessage struct {
 	Config         *EnvConfig `json:"config,omitempty"`
 	ConnectionType string     `json:"connectionType,omitempty"`
 	HawserToken    string     `json:"hawserToken,omitempty"`
+	CollectMetrics bool       `json:"collectMetrics,omitempty"`
 	IntervalMs     int        `json:"intervalMs,omitempty"`
 	Mode           string     `json:"mode,omitempty"`
 	PollIntervalMs int        `json:"pollIntervalMs,omitempty"`
@@ -954,11 +955,16 @@ func (m *manager) configure(msg InMessage) {
 
 	m.envs[msg.EnvID] = env
 
-	go m.runMetrics(env)
+	// Per-container stats polling is the expensive part; skip it entirely when
+	// the env has metrics collection off. Online/offline status is still
+	// reported by the events loop (stream and poll mode both ping).
+	if msg.CollectMetrics {
+		go m.runMetrics(env)
+	}
 	go m.runEvents(env)
 	go m.runDiskChecks(env)
 
-	fmt.Fprintf(os.Stderr, "[collector] configured env %d (%s) type=%s base=%s\n", env.id, env.name, msg.ConnectionType, baseURL)
+	fmt.Fprintf(os.Stderr, "[collector] configured env %d (%s) type=%s base=%s metrics=%t\n", env.id, env.name, msg.ConnectionType, baseURL, msg.CollectMetrics)
 }
 
 func (m *manager) remove(envID int) {

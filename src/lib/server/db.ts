@@ -5,6 +5,7 @@
  * Supports both SQLite and PostgreSQL.
  */
 
+import { applyActivityOverrides, getActivityOverrides } from './activity-overrides';
 import type { SecretProviderConfig, SecretProviderType } from './secretproviders/shared';
 import { normalizeColor, type Tag, type TagColor } from '$lib/utils/tags-core';
 import { passkeysEnabledFromSetting } from '$lib/utils/passkey-availability';
@@ -136,7 +137,7 @@ export function initDatabase() {
 
 export async function getEnvironments(): Promise<Environment[]> {
 	const results = await db.select().from(environments).orderBy(sql`lower(${environments.name})`);
-	return results.map((e: Environment) => ({
+	return results.map((e: Environment) => applyActivityOverrides({
 		...e,
 		tlsKey: decrypt(e.tlsKey),
 		hawserToken: decrypt(e.hawserToken)
@@ -150,6 +151,8 @@ export async function hasEnvironments(): Promise<boolean> {
 
 /** True only when the environment explicitly turned off live per-container stats. */
 export async function isContainerMetricsDisabled(envId: number): Promise<boolean> {
+	const forced = getActivityOverrides().collectContainerMetrics;
+	if (forced !== null) return !forced;
 	const rows = await db.select({ v: environments.collectContainerMetrics }).from(environments).where(eq(environments.id, envId));
 	return rows[0]?.v === false;
 }
@@ -157,15 +160,17 @@ export async function isContainerMetricsDisabled(envId: number): Promise<boolean
 export async function getEnvironment(id: number): Promise<Environment | undefined> {
 	const results = await db.select().from(environments).where(eq(environments.id, id));
 	if (!results[0]) return undefined;
-	return {
+	return applyActivityOverrides({
 		...results[0],
 		tlsKey: decrypt(results[0].tlsKey),
 		hawserToken: decrypt(results[0].hawserToken)
-	};
+	});
 }
 
 /** True when container event (activity) collection is off for the environment. */
 export async function isActivityCollectionDisabled(envId: number): Promise<boolean> {
+	const forced = getActivityOverrides().collectActivity;
+	if (forced !== null) return !forced;
 	const rows = await db.select({ v: environments.collectActivity }).from(environments).where(eq(environments.id, envId));
 	return rows[0]?.v === false;
 }
@@ -173,11 +178,11 @@ export async function isActivityCollectionDisabled(envId: number): Promise<boole
 export async function getEnvironmentByName(name: string): Promise<Environment | undefined> {
 	const results = await db.select().from(environments).where(eq(environments.name, name));
 	if (!results[0]) return undefined;
-	return {
+	return applyActivityOverrides({
 		...results[0],
 		tlsKey: decrypt(results[0].tlsKey),
 		hawserToken: decrypt(results[0].hawserToken)
-	};
+	});
 }
 
 export async function createEnvironment(env: Omit<Environment, 'id' | 'createdAt' | 'updatedAt'>): Promise<Environment> {
@@ -200,15 +205,16 @@ export async function createEnvironment(env: Omit<Environment, 'id' | 'createdAt
 		connectionType: env.connectionType || 'socket',
 		hawserToken: encrypt(env.hawserToken) || null
 	}).returning();
-	return {
+	return applyActivityOverrides({
 		...result[0],
 		tlsKey: decrypt(result[0].tlsKey),
 		hawserToken: decrypt(result[0].hawserToken)
-	};
+	});
 }
 
 export async function updateEnvironment(id: number, env: Partial<Environment>): Promise<Environment | undefined> {
 	const updateData: Record<string, any> = { updatedAt: new Date().toISOString() };
+	const ov = getActivityOverrides();
 
 	if (env.name !== undefined) updateData.name = env.name;
 	if (env.host !== undefined) updateData.host = env.host;
@@ -220,9 +226,9 @@ export async function updateEnvironment(id: number, env: Partial<Environment>): 
 	if (env.tlsSkipVerify !== undefined) updateData.tlsSkipVerify = env.tlsSkipVerify;
 	if (env.icon !== undefined) updateData.icon = env.icon;
 	if (env.socketPath !== undefined) updateData.socketPath = env.socketPath;
-	if (env.collectActivity !== undefined) updateData.collectActivity = env.collectActivity;
-	if (env.collectMetrics !== undefined) updateData.collectMetrics = env.collectMetrics;
-	if (env.collectContainerMetrics !== undefined) updateData.collectContainerMetrics = env.collectContainerMetrics;
+	if (env.collectActivity !== undefined && ov.collectActivity === null) updateData.collectActivity = env.collectActivity;
+	if (env.collectMetrics !== undefined && ov.collectMetrics === null) updateData.collectMetrics = env.collectMetrics;
+	if (env.collectContainerMetrics !== undefined && ov.collectContainerMetrics === null) updateData.collectContainerMetrics = env.collectContainerMetrics;
 	if (env.highlightChanges !== undefined) updateData.highlightChanges = env.highlightChanges;
 	if (env.labels !== undefined) updateData.labels = env.labels;
 	if (env.connectionType !== undefined) updateData.connectionType = env.connectionType;

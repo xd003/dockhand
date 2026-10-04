@@ -3,7 +3,12 @@
 	import { Label } from '$lib/components/ui/label';
 	import { TogglePill } from '$lib/components/ui/toggle-pill';
 	import * as Select from '$lib/components/ui/select';
-	import { Percent, HardDrive, TriangleAlert } from 'lucide-svelte';
+	import { Percent, HardDrive, TriangleAlert, Lock } from 'lucide-svelte';
+	import {
+		ACTIVITY_OVERRIDE_ENV_VARS,
+		NO_ACTIVITY_OVERRIDES,
+		type ActivityOverrides
+	} from '$lib/utils/activity-overrides';
 	import {
 		percentageUnsupportedNote,
 		percentageOptionDisabled
@@ -23,6 +28,8 @@
 		storageDriver?: string | null;
 		/** The mode as loaded from the server, so switching away cannot lock it out. */
 		storedDiskWarningMode?: 'percentage' | 'absolute' | null;
+		/** Values forced by COLLECT_* env vars; non-null locks the matching toggle. */
+		overrides?: ActivityOverrides;
 	}
 
 	let {
@@ -36,7 +43,8 @@
 		diskWarningThresholdGb = $bindable(),
 		percentageSupported = null,
 		storageDriver = null,
-		storedDiskWarningMode = null
+		storedDiskWarningMode = null,
+		overrides = NO_ACTIVITY_OVERRIDES
 	}: Props = $props();
 
 	// Only a definite "no" disables the option. An unreachable host stays unknown, so a
@@ -49,22 +57,31 @@
 	<div class="flex-1">
 		<Label>Collect container activity</Label>
 		<p class="text-xs text-muted-foreground">Track container events (start, stop, restart, etc.) from this environment in real-time</p>
+		{#if overrides.collectActivity !== null}
+			<p class="text-xs text-amber-500 flex items-center gap-1 mt-1"><Lock class="w-3 h-3" />Set by the <code class="bg-muted px-1 rounded">{ACTIVITY_OVERRIDE_ENV_VARS.collectActivity}</code> environment variable</p>
+		{/if}
 	</div>
-	<TogglePill bind:checked={collectActivity} />
+	<TogglePill bind:checked={collectActivity} disabled={overrides.collectActivity !== null} />
 </div>
 <div class="flex items-start gap-3">
 	<div class="flex-1">
 		<Label>Collect system metrics</Label>
 		<p class="text-xs text-muted-foreground">Collect CPU and memory history for the dashboard tiles and charts. Per-container live stats are controlled separately below.</p>
+		{#if overrides.collectMetrics !== null}
+			<p class="text-xs text-amber-500 flex items-center gap-1 mt-1"><Lock class="w-3 h-3" />Set by the <code class="bg-muted px-1 rounded">{ACTIVITY_OVERRIDE_ENV_VARS.collectMetrics}</code> environment variable</p>
+		{/if}
 	</div>
-	<TogglePill bind:checked={collectMetrics} />
+	<TogglePill bind:checked={collectMetrics} disabled={overrides.collectMetrics !== null} />
 </div>
 <div class="flex items-start gap-3">
 	<div class="flex-1">
 		<Label>Collect container metrics</Label>
 		<p class="text-xs text-muted-foreground">Poll live CPU, memory, network I/O and disk I/O for each container on the containers and stacks pages, in container details, and for the dashboard's top containers. When off, Dockhand sends no per-container stats requests to this environment and these values are hidden.</p>
+		{#if overrides.collectContainerMetrics !== null}
+			<p class="text-xs text-amber-500 flex items-center gap-1 mt-1"><Lock class="w-3 h-3" />Set by the <code class="bg-muted px-1 rounded">{ACTIVITY_OVERRIDE_ENV_VARS.collectContainerMetrics}</code> environment variable</p>
+		{/if}
 	</div>
-	<TogglePill bind:checked={collectContainerMetrics} />
+	<TogglePill bind:checked={collectContainerMetrics} disabled={overrides.collectContainerMetrics !== null} />
 </div>
 <div class="flex items-start gap-3">
 	<div class="flex-1">

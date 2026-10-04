@@ -81,6 +81,7 @@
 	import ImagePullProgressPopover from '../../images/ImagePullProgressPopover.svelte';
 	import EnvironmentBackupsTab from './EnvironmentBackupsTab.svelte';
 	import { page } from '$app/stores'; // BETA GATE: backups feature flag
+	import { NO_ACTIVITY_OVERRIDES, type ActivityOverrides } from '$lib/utils/activity-overrides';
 	import { TogglePill, ToggleGroup } from '$lib/components/ui/toggle-pill';
 	import { ShieldOff } from 'lucide-svelte';
 	import { focusFirstInput } from '$lib/utils';
@@ -311,6 +312,9 @@
 	let formCollectActivity = $state(true);
 	let formCollectMetrics = $state(true);
 	let formCollectContainerMetrics = $state(true);
+	const activityOverrides = $derived<ActivityOverrides>(
+		($page.data.activityOverrides as ActivityOverrides | undefined) ?? NO_ACTIVITY_OVERRIDES
+	);
 	let formHighlightChanges = $state(true);
 	let formDiskWarningEnabled = $state(true);
 	let formDiskWarningMode = $state<'percentage' | 'absolute'>('percentage');
@@ -688,9 +692,9 @@
 			formIcon = 'globe';
 			pendingIconData = null;
 			formSocketPath = '/var/run/docker.sock';
-			formCollectActivity = true;
-			formCollectMetrics = true;
-			formCollectContainerMetrics = true;
+			formCollectActivity = activityOverrides.collectActivity ?? true;
+			formCollectMetrics = activityOverrides.collectMetrics ?? true;
+			formCollectContainerMetrics = activityOverrides.collectContainerMetrics ?? true;
 			formHighlightChanges = true;
 			formDiskWarningEnabled = true;
 			formDiskWarningMode = 'percentage';
@@ -1709,7 +1713,7 @@
 
 	async function addEnvNotification(envId: number, notificationId: number) {
 		try {
-			if (environment && !environment.collectActivity) {
+			if (environment && !environment.collectActivity && activityOverrides.collectActivity === null) {
 				await fetch(`/api/environments/${envId}`, {
 					method: 'PUT',
 					headers: { 'Content-Type': 'application/json' },
@@ -2863,6 +2867,7 @@
 						bind:collectActivity={formCollectActivity}
 						bind:collectMetrics={formCollectMetrics}
 						bind:collectContainerMetrics={formCollectContainerMetrics}
+						overrides={activityOverrides}
 						bind:highlightChanges={formHighlightChanges}
 						bind:diskWarningEnabled={formDiskWarningEnabled}
 						bind:diskWarningMode={formDiskWarningMode}
@@ -3209,7 +3214,9 @@
 					{:else}
 						<p class="text-xs text-muted-foreground mt-2 flex-shrink-0">
 							Configure which notification channels should send alerts for events from this environment.
-							{#if environment && !environment.collectActivity}
+							{#if activityOverrides.collectActivity === false}
+								<span class="text-amber-500">Activity collection is forced off by the COLLECT_CONTAINER_ACTIVITY environment variable, so no container events will be notified.</span>
+							{:else if environment && !environment.collectActivity}
 								<span class="text-amber-500">Activity collection will be enabled automatically when you add a channel.</span>
 							{/if}
 						</p>

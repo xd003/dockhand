@@ -3,6 +3,7 @@ import { redirect } from '@sveltejs/kit';
 import { isAuthEnabled, validateSession } from '$lib/server/auth';
 import { hasAdminUser } from '$lib/server/db';
 import { BACKUPS_ENABLED, API_DOCS_ENABLED, ALLOW_WEBHOOKS_WITHOUT_SECRET } from '$lib/server/features';
+import { getActivityOverrides } from '$lib/server/activity-overrides';
 
 // Routes that don't require authentication. The API docs viewer is public only
 // when opt-in via FEAT_API_DOCS (the route 404s otherwise; see features.ts).
@@ -14,6 +15,7 @@ export const load: LayoutServerLoad = async ({ cookies, url }) => {
 	// Runtime flag to suppress the "What's New" modal (#1235). Read here (not via
 	// a build-time define) so it can be toggled by an env var at `docker run`.
 	const disableWhatsNew = process.env.DISABLE_WHATS_NEW === 'true';
+	const activityOverrides = getActivityOverrides();
 
 	// If auth is disabled, allow everything
 	if (!authEnabled) {
@@ -22,7 +24,8 @@ export const load: LayoutServerLoad = async ({ cookies, url }) => {
 			user: null,
 			disableWhatsNew,
 			backupsEnabled: BACKUPS_ENABLED,
-			allowSecretlessWebhook: ALLOW_WEBHOOKS_WITHOUT_SECRET
+			allowSecretlessWebhook: ALLOW_WEBHOOKS_WITHOUT_SECRET,
+			activityOverrides
 		};
 	}
 
@@ -43,7 +46,8 @@ export const load: LayoutServerLoad = async ({ cookies, url }) => {
 				setupMode: true,
 				disableWhatsNew,
 				backupsEnabled: BACKUPS_ENABLED,
-				allowSecretlessWebhook: ALLOW_WEBHOOKS_WITHOUT_SECRET
+				allowSecretlessWebhook: ALLOW_WEBHOOKS_WITHOUT_SECRET,
+				activityOverrides
 			};
 		}
 
@@ -65,6 +69,7 @@ export const load: LayoutServerLoad = async ({ cookies, url }) => {
 		} : null,
 		disableWhatsNew,
 		backupsEnabled: BACKUPS_ENABLED,
-		allowSecretlessWebhook: ALLOW_WEBHOOKS_WITHOUT_SECRET
+		allowSecretlessWebhook: ALLOW_WEBHOOKS_WITHOUT_SECRET,
+		activityOverrides
 	};
 };

@@ -100,6 +100,10 @@ const warnedNoPoolSize = new Set<number>();
 const envNames: Map<number, string> = new Map();
 // Track which envIds are currently configured in Go
 const configuredEnvs: Set<number> = new Set();
+// Subset of configuredEnvs with metrics collection enabled
+const metricsEnvs: Set<number> = new Set();
+// Subset of configuredEnvs with activity (container event) collection enabled
+const activityEnvs: Set<number> = new Set();
 
 // Health status transition tracking: only store DB events when status changes
 // Key: `${envId}-${containerId}` → last known sub-status (e.g. "healthy", "unhealthy")
@@ -220,7 +224,7 @@ function handleLine(line: string): void {
 
 function handleMetrics(msg: GoMessage): void {
 	if (!msg.envId || msg.cpu === undefined || msg.memPercent === undefined) return;
-	if (!configuredEnvs.has(msg.envId)) return;
+	if (!metricsEnvs.has(msg.envId)) return;
 
 	const before = rssBeforeOp();
 	pushMetric(msg.envId, msg.cpu, msg.memPercent, msg.memUsed || 0, msg.memTotal || 0);
@@ -270,7 +274,7 @@ function handleEnvStatus(msg: GoMessage): void {
 
 async function handleContainerEvent(msg: GoMessage): Promise<void> {
 	if (!msg.envId || !msg.event) return;
-	if (!configuredEnvs.has(msg.envId)) return;
+	if (!activityEnvs.has(msg.envId)) return;
 
 	const before = rssBeforeOp();
 	const event = msg.event;
@@ -484,6 +488,11 @@ async function sendEnvironmentConfigs(): Promise<void> {
 		// Skip hawser-edge (events come via WebSocket)
 		if (env.connectionType === 'hawser-edge') continue;
 
+		// Envs with both metrics and activity off are not collected at all. Leaving
+		// them out of activeIds makes the cleanup below send `remove` to Go when
+		// they were previously configured.
+		if (env.collectMetrics === false && env.collectActivity === false) continue;
+
 		activeIds.add(env.id);
 		envNames.set(env.id, env.name);
 
@@ -508,8 +517,8 @@ async function sendEnvironmentConfigs(): Promise<void> {
 			};
 		}
 
-		// Only send if env has metrics or activity collection enabled
-		if (env.collectMetrics === false && env.collectActivity === false) continue;
+		const collectMetrics = env.collectMetrics !== false;
+		const collectActivity = env.collectActivity !== false;
 
 		enqueue({
 			type: 'configure',
@@ -517,10 +526,15 @@ async function sendEnvironmentConfigs(): Promise<void> {
 			name: env.name,
 			config,
 			connectionType: env.connectionType || 'socket',
-			hawserToken: env.hawserToken || undefined
+			hawserToken: env.hawserToken || undefined,
+			collectMetrics
 		});
 
 		configuredEnvs.add(env.id);
+		if (collectMetrics) metricsEnvs.add(env.id);
+		else metricsEnvs.delete(env.id);
+		if (collectActivity) activityEnvs.add(env.id);
+		else activityEnvs.delete(env.id);
 	}
 
 	// Remove envs that are no longer active
@@ -528,6 +542,8 @@ async function sendEnvironmentConfigs(): Promise<void> {
 		if (!activeIds.has(envId)) {
 			enqueue({ type: 'remove', envId });
 			configuredEnvs.delete(envId);
+			metricsEnvs.delete(envId);
+			activityEnvs.delete(envId);
 			envNames.delete(envId);
 		}
 	}
@@ -647,6 +663,8 @@ export async function startSubprocesses(): Promise<void> {
 			console.warn(`[SubprocessManager] Go worker exited with code ${code}, restarting in ${restartDelay / 1000}s...`);
 			proc = null;
 			configuredEnvs.clear();
+			metricsEnvs.clear();
+			activityEnvs.clear();
 			setTimeout(() => startSubprocesses(), restartDelay);
 			restartDelay = Math.min(restartDelay * 2, MAX_RESTART_DELAY);
 		}
@@ -712,6 +730,8 @@ export async function stopSubprocesses(): Promise<void> {
 	recentEvents.clear();
 	lastDiskWarning.clear();
 	configuredEnvs.clear();
+	metricsEnvs.clear();
+	activityEnvs.clear();
 }
 
 /**

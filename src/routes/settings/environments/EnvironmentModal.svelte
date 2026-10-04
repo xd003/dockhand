@@ -125,6 +125,7 @@
 		socketPath?: string;
 		collectActivity: boolean;
 		collectMetrics: boolean;
+		collectContainerMetrics?: boolean;
 		highlightChanges: boolean;
 		connectionType?: ConnectionType;
 		hawserLastSeen?: string;
@@ -314,6 +315,7 @@
 	let formSocketPath = $state('/var/run/docker.sock');
 	let formCollectActivity = $state(true);
 	let formCollectMetrics = $state(true);
+	let formCollectContainerMetrics = $state(true);
 	let formHighlightChanges = $state(true);
 	let formDiskWarningEnabled = $state(true);
 	let formDiskWarningMode = $state<'percentage' | 'absolute'>('percentage');
@@ -642,6 +644,7 @@
 			formSocketPath = environment.socketPath || '/var/run/docker.sock';
 			formCollectActivity = environment.collectActivity ?? true;
 			formCollectMetrics = environment.collectMetrics ?? true;
+			formCollectContainerMetrics = environment.collectContainerMetrics ?? true;
 			formHighlightChanges = environment.highlightChanges ?? true;
 			formConnectionType = (environment.connectionType as ConnectionType) || 'socket';
 			formHawserToken = '';
@@ -692,6 +695,7 @@
 			formSocketPath = '/var/run/docker.sock';
 			formCollectActivity = true;
 			formCollectMetrics = true;
+			formCollectContainerMetrics = true;
 			formHighlightChanges = true;
 			formDiskWarningEnabled = true;
 			formDiskWarningMode = 'percentage';
@@ -922,6 +926,7 @@
 					socketPath: formConnectionType === 'socket' ? formSocketPath : undefined,
 					collectActivity: formCollectActivity,
 					collectMetrics: formCollectMetrics,
+					collectContainerMetrics: formCollectContainerMetrics,
 					highlightChanges: formHighlightChanges,
 					labels: formLabels,
 					connectionType: formConnectionType,
@@ -1119,6 +1124,7 @@
 					socketPath: formConnectionType === 'socket' ? formSocketPath : undefined,
 					collectActivity: formCollectActivity,
 					collectMetrics: formCollectMetrics,
+					collectContainerMetrics: formCollectContainerMetrics,
 					highlightChanges: formHighlightChanges,
 					labels: formLabels,
 					connectionType: formConnectionType,
@@ -2850,6 +2856,7 @@
 					<ActivityTab
 						bind:collectActivity={formCollectActivity}
 						bind:collectMetrics={formCollectMetrics}
+						bind:collectContainerMetrics={formCollectContainerMetrics}
 						bind:highlightChanges={formHighlightChanges}
 						bind:diskWarningEnabled={formDiskWarningEnabled}
 						bind:diskWarningMode={formDiskWarningMode}

@@ -247,6 +247,7 @@ export function formatFieldName(field: string): string {
 		'socketPath': 'Socket path',
 		'collectActivity': 'Collect activity',
 		'collectMetrics': 'Collect metrics',
+		'collectContainerMetrics': 'Collect container metrics',
 		'highlightChanges': 'Highlight changes'
 	};
 

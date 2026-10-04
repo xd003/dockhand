@@ -2,7 +2,7 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getContainerStats, EnvironmentNotFoundError } from '$lib/server/docker';
 import { authorize } from '$lib/server/authorize';
-import { hasEnvironments } from '$lib/server/db';
+import { hasEnvironments, isContainerMetricsDisabled } from '$lib/server/db';
 import { validateDockerIdParam } from '$lib/server/docker-validation';
 import { calculateCpuPercent, calculateMemoryUsage, calculateMemoryLimit, calculateNetworkIO, calculateBlockIO } from '$lib/server/stats-calc-core';
 
@@ -16,6 +16,7 @@ import { calculateCpuPercent, calculateMemoryUsage, calculateMemoryLimit, calcul
  * resp-200: {cpuPercent:number!, memoryUsage:integer!, memoryRaw:integer!, memoryCache:integer!, memoryLimit:integer!, memoryPercent:number!, networkRx:integer!, networkTx:integer!, blockRead:integer!, blockWrite:integer!, timestamp:integer!}
  * resp-403: Permission denied
  * resp-404: No environment configured, the environment was not found, or the container was not found
+ * resp-409: Container stats are disabled for this environment
  * resp-500: Failed to read the container stats
  */
 export const GET: RequestHandler = async ({ params, url, cookies }) => {
@@ -35,6 +36,10 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 	// Early return if no environments configured (fresh install)
 	if (!await hasEnvironments()) {
 		return json({ error: 'No environment configured' }, { status: 404 });
+	}
+
+	if (envIdNum && await isContainerMetricsDisabled(envIdNum)) {
+		return json({ error: 'Container stats are disabled for this environment' }, { status: 409 });
 	}
 
 	try {

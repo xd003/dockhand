@@ -2,7 +2,7 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { listContainers, EnvironmentNotFoundError } from '$lib/server/docker';
 import { authorize } from '$lib/server/authorize';
-import { hasEnvironments } from '$lib/server/db';
+import { hasEnvironments, isContainerMetricsDisabled } from '$lib/server/db';
 import type { ContainerStats } from '$lib/types';
 import { withTimeout, sampleContainerStats } from '$lib/server/container-stats';
 import { groupStackStats } from '$lib/utils/stack-stats';
@@ -37,6 +37,11 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 	}
 
 	if (!(await hasEnvironments()) || !envIdNum) {
+		return json([]);
+	}
+
+	// Live per-container stats turned off for this environment: make no Docker stats calls
+	if (await isContainerMetricsDisabled(envIdNum)) {
 		return json([]);
 	}
 

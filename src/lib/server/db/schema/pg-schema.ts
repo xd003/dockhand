@@ -37,6 +37,7 @@ export const environments = pgTable('environments', {
 	icon: text('icon').default('globe'),
 	collectActivity: boolean('collect_activity').default(true),
 	collectMetrics: boolean('collect_metrics').default(true),
+	collectContainerMetrics: boolean('collect_container_metrics').default(true),
 	highlightChanges: boolean('highlight_changes').default(true),
 	labels: text('labels'), // JSON array of label strings for categorization
 	// Connection settings

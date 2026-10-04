@@ -2263,6 +2263,11 @@ html.colored-actions.dark .grid-action-transfer { color: rgb(96 165 250); }
 		white-space: nowrap;
 	}
 
+	/* The inline logs panel is desktop-only; mobile cards keep "Open logs in full view". */
+	.stack-container-actions button.stack-inline-logs {
+		display: none;
+	}
+
 	[data-slot='table-container'] {
 		overflow-x: hidden;
 	}

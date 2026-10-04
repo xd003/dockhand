@@ -41,6 +41,8 @@
 		// Sorting
 		sortState?: DataGridSortState;
 		onSortChange?: (state: DataGridSortState) => void;
+		/** Column ids to hide for this render only (does not touch saved grid preferences) */
+		hiddenColumns?: readonly string[];
 
 		// Infinite scroll (virtual mode)
 		hasMore?: boolean;
@@ -145,6 +147,7 @@
 		skeletonRows = 8,
 		class: className = '',
 		wrapperClass = '',
+		hiddenColumns = [],
 		headerCell,
 		cell,
 		emptyState,
@@ -167,11 +170,11 @@
 		const prefs = gridPrefs[gridId];
 		if (!prefs?.columns?.length) {
 			// Default: configurable columns visible (honoring per-column defaultVisible)
-			return columnConfigs.filter((c) => !c.fixed && c.defaultVisible !== false).map((c) => c.id);
+			return columnConfigs.filter((c) => !c.fixed && c.defaultVisible !== false && !hiddenColumns.includes(c.id)).map((c) => c.id);
 		}
 		// Filter out fixed columns - they're rendered separately via fixedStartCols/fixedEndCols
 		const fixedIds = new Set([...fixedStartCols, ...fixedEndCols]);
-		return prefs.columns.filter((c) => c.visible && !fixedIds.has(c.id)).map((c) => c.id);
+		return prefs.columns.filter((c) => c.visible && !fixedIds.has(c.id) && !hiddenColumns.includes(c.id)).map((c) => c.id);
 	});
 	const mobileSummaryColumn = $derived(
 		['status', 'state', 'driver', 'tags', 'image'].find((id) => id !== orderedColumns[0] && orderedColumns.includes(id))
@@ -825,7 +828,7 @@
 						{#if colId === 'actions'}
 							<div class="flex items-center justify-end gap-1">
 								<span>{m.grid_actions()}</span>
-								<ColumnSettingsPopover {gridId} />
+								<ColumnSettingsPopover {gridId} {hiddenColumns} />
 							</div>
 						{/if}
 					</th>
@@ -970,7 +973,7 @@
 					{#if colId === 'actions'}
 						<div class="flex items-center justify-end gap-1">
 							<span>{m.grid_actions()}</span>
-							<ColumnSettingsPopover {gridId} />
+							<ColumnSettingsPopover {gridId} {hiddenColumns} />
 						</div>
 					{:else if headerCell}
 						{@render headerCell(colConfig!, sortState)}
@@ -1217,7 +1220,7 @@
 			{allSelected ? 'Deselect all' : 'Select all'}
 		</button>
 	{/if}
-	<ColumnSettingsPopover {gridId} />
+	<ColumnSettingsPopover {gridId} {hiddenColumns} />
 </div>
 
 <div data-grid-id={gridId} class="flex-1 min-h-0 min-w-0 overflow-auto rounded-lg data-grid-wrapper {wrapperClass}" bind:this={scrollContainer} role="region" aria-label={`${gridId} data table`} onscroll={handleScroll} onpointerover={handleRowPointerOver} onpointerout={handleRowPointerOut} onpointerleave={() => onRowPointerChange?.(false)} onpointercancel={() => onRowPointerChange?.(false)}>

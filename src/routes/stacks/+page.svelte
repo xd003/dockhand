@@ -59,7 +59,8 @@
 	import VersionUpdateBadge from '$lib/components/VersionUpdateBadge.svelte';
 	import VersionUpdateModal from '$lib/components/VersionUpdateModal.svelte';
 	import LogsPanel from '../logs/LogsPanel.svelte';
-	import { currentEnvironment, environments, appendEnvParam, clearStaleEnvironment } from '$lib/stores/environment';
+	import { currentEnvironment, environments, appendEnvParam, clearStaleEnvironment, isContainerMetricsEnabled } from '$lib/stores/environment';
+	import { CONTAINER_STATS_COLUMN_IDS } from '$lib/config/grid-columns';
 	import { onDockerEvent, isContainerListChange } from '$lib/stores/events';
 	import { canAccess, isAdmin } from '$lib/stores/auth';
 	import { readJobResponse } from '$lib/utils/sse-fetch';
@@ -320,6 +321,7 @@
 
 	// Derived: current environment details for reactive port URL generation
 	const currentEnvDetails = $derived($environments.find(e => e.id === $currentEnvironment?.id) ?? null);
+	const containerMetricsEnabled = $derived(isContainerMetricsEnabled(currentEnvDetails));
 
 	// Polling intervals - module scope for cleanup in onDestroy
 	let stacksInterval: ReturnType<typeof setInterval> | null = null;
@@ -385,6 +387,7 @@
 	let frozenStackOrder: string[] | null = $state(null);
 
 	async function fetchStats() {
+		if (!containerMetricsEnabled) return;
 		// Skip if previous fetch is still in-flight
 		if (statsFetching) return;
 
@@ -2160,6 +2163,505 @@ let gitMigratingStackId = $state<number | null>(null);
 			description="Create a stack or deploy from Git to get started"
 		/>
 	{:else}
+		<!-- Containers + not-yet-created services of a stack; shared by the desktop
+		     expanded row and the mobile expanded card so both show the same services. -->
+		{#snippet stackServiceCards(stack: ComposeStackInfo)}
+			{@const pendingServices = servicesWithoutContainer(stack)}
+			{@const servicesEntry = stackServices[stackServicesKey(stack.name)]}
+			{#if stack.containerDetails?.length > 0 || pendingServices.length > 0}
+				<div class="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3">
+							{#each stack.containerDetails as container (container.id)}
+								{@const isLoading = containerActionLoading === container.id}
+								<div class="stack-container-card min-w-0 p-3 rounded-lg bg-background border text-xs">
+									<div class="flex items-center gap-2 mb-2">
+										{#if $appSettings.useSelfhstIcons || iconOverrides[container.name]}
+											<!-- override + its custom-icon key use the real container.name; name=
+											     stays the service for better auto-match when there is no override. -->
+											<ContainerIcon
+												image={container.image}
+												name={container.service || container.name}
+												override={iconOverrides[container.name]}
+												overrideKey={container.name}
+												{envId}
+												class="w-4 h-4"
+												fallbackClass={container.state === 'running' ? 'text-emerald-500' : 'text-muted-foreground'}
+												showFallbackWhenOff
+											/>
+										{:else}
+											<Box class="w-4 h-4 shrink-0 {container.state === 'running' ? 'text-emerald-500' : 'text-muted-foreground'}" />
+										{/if}
+										<span class="font-medium truncate" title={container.name}>{containerDisplayName({ name: container.service || container.name, labels: container.labels })}</span>
+										{#if container.updateAvailable && $appSettings.highlightUpdates}
+											<!-- Update arrow + changelog link read as one pair — keep them tight. -->
+											<span class="inline-flex items-center gap-0.5 shrink-0">
+												{#if $canAccess('containers', 'manage')}
+													<ConfirmPopover
+														action="Update"
+														itemType="container"
+														itemName={container.name}
+														position="left"
+														title="Update available - click to update"
+														onConfirm={() => updateSingleContainer(container.id, container.name)}
+													>
+														{#snippet children({ open })}
+															<CircleArrowUp class="w-3.5 h-3.5 shrink-0 text-amber-500 cursor-pointer" />
+														{/snippet}
+													</ConfirmPopover>
+												{/if}
+												{#if $appSettings.showImageChangelogLinks}
+													{@const changelogUrl = resolveChangelogUrl(container.image, container.labels)}
+													{#if changelogUrl}
+														<a
+															href={changelogUrl}
+															target="_blank"
+															rel="noopener noreferrer"
+															onclick={(e) => e.stopPropagation()}
+															title="View changelog"
+															class="shrink-0 text-amber-500 hover:text-amber-400 transition-colors"
+														>
+															<NotepadText class="w-3 h-3" />
+														</a>
+													{/if}
+												{/if}
+											</span>
+										{:else if failedUpdateCheckIds.has(container.id)}
+											<Tooltip.Root>
+												<Tooltip.Trigger>
+													<AlertTriangle class="w-3.5 h-3.5 shrink-0 text-red-500 cursor-help" />
+												</Tooltip.Trigger>
+												<Tooltip.Content side="right" class="w-72 p-3">
+													<div class="space-y-1.5">
+														<p class="font-medium text-sm flex items-center gap-1.5 whitespace-nowrap">
+															<AlertTriangle class="w-4 h-4 text-red-500 shrink-0" />
+															Update check failed
+														</p>
+														<p class="text-muted-foreground text-xs break-words">{failedUpdateCheckErrors.get(container.id) ?? 'Could not query registry'}</p>
+														<p class="text-muted-foreground text-xs">Update status unknown — often a Docker Hub rate limit. Try again later.</p>
+													</div>
+												</Tooltip.Content>
+											</Tooltip.Root>
+										{/if}
+										{#if container.newerVersion}
+											<VersionUpdateBadge
+												newerVersion={container.newerVersion}
+												variant="pill"
+												onclick={() => openVersionModal(container)}
+											/>
+										{/if}
+										<span class="flex-1"></span>
+										{#if container.health}
+											<span title={container.health}>
+												{#if container.health === 'healthy'}
+													<HeartPulse class="w-3.5 h-3.5 {getHealthClasses(container.health)}" />
+												{:else if container.health === 'unhealthy'}
+													<HeartOff class="w-3.5 h-3.5 {getHealthClasses(container.health)}" />
+												{:else}
+													<Heart class="w-3.5 h-3.5 {getHealthClasses(container.health)}" />
+												{/if}
+											</span>
+										{/if}
+										<span class={getStatusClasses(container.state)}>{container.state}</span>
+									</div>
+									<div class="text-muted-foreground mb-2 space-y-0.5">
+										<div class="truncate" title={container.image}>{container.image}</div>
+										<div class="flex items-center gap-2 text-2xs">
+											<span class="inline-flex items-center gap-1">
+												<Clock class="w-2.5 h-2.5" />
+												{formatUptime(container.status)}
+											</span>
+											{#if container.restartCount > 0}
+												<span class="inline-flex items-center gap-0.5 text-amber-600 dark:text-amber-400" title="{container.restartCount} restart{container.restartCount > 1 ? 's' : ''}">
+													<RotateCw class="w-2.5 h-2.5" />
+													{container.restartCount}
+												</span>
+											{/if}
+										</div>
+									</div>
+									<!-- CPU/Memory/Net/Disk mini sparkline graphs -->
+									{#if containerMetricsEnabled && container.state === 'running'}
+										{@const stats = containerStats.get(container.id)}
+										{@const history = containerStatsHistory.get(container.id)}
+										{#key statsUpdateCount}
+										<div class="grid grid-cols-4 gap-1.5 mb-2">
+											<!-- CPU sparkline -->
+											<div class="space-y-0">
+												<div class="flex justify-between text-2xs">
+													<span class="text-muted-foreground">CPU</span>
+													<span class="font-mono {stats?.cpuPercent && stats.cpuPercent > 80 ? 'text-red-500' : stats?.cpuPercent && stats.cpuPercent > 50 ? 'text-yellow-500' : 'text-muted-foreground'}">{stats?.cpuPercent?.toFixed(0) ?? '-'}%</span>
+												</div>
+												{#if history?.cpu && history.cpu.length >= 2}
+													<svg class="w-full h-4" viewBox="0 0 60 16" preserveAspectRatio="none">
+														<path d={generateAreaPath(history.cpu, 60, 16)} fill="rgba(59, 130, 246, 0.15)" />
+														<path d={generateSparklinePath(history.cpu, 60, 16)} fill="none" stroke="rgb(59, 130, 246)" stroke-width="1" />
+													</svg>
+												{:else}
+													<div class="h-4 bg-muted/30 rounded animate-pulse"></div>
+												{/if}
+											</div>
+											<!-- Memory sparkline -->
+											<div class="space-y-0">
+												<div class="flex justify-between text-2xs">
+													<span class="text-muted-foreground">Mem</span>
+													<span class="font-mono text-muted-foreground">{stats ? formatBytesCompact(stats.memoryUsage) : '-'}</span>
+												</div>
+												{#if history?.mem && history.mem.length >= 2}
+													<svg class="w-full h-4" viewBox="0 0 60 16" preserveAspectRatio="none">
+														<path d={generateAreaPath(history.mem, 60, 16)} fill="rgba(168, 85, 247, 0.15)" />
+														<path d={generateSparklinePath(history.mem, 60, 16)} fill="none" stroke="rgb(168, 85, 247)" stroke-width="1" />
+													</svg>
+												{:else}
+													<div class="h-4 bg-muted/30 rounded animate-pulse"></div>
+												{/if}
+											</div>
+											<!-- Network I/O sparkline -->
+											<div class="space-y-0">
+												<div class="flex justify-between text-2xs">
+													<span class="text-muted-foreground">Net</span>
+													<span class="font-mono text-muted-foreground">{stats ? formatBytesCompact(stats.networkRx + stats.networkTx) : '-'}</span>
+												</div>
+												{#if history?.netRx && history.netRx.length >= 2}
+													<svg class="w-full h-4" viewBox="0 0 60 16" preserveAspectRatio="none">
+														<path d={generateAreaPath(history.netRx.map((rx, i) => rx + (history.netTx[i] || 0)), 60, 16)} fill="rgba(34, 197, 94, 0.15)" />
+														<path d={generateSparklinePath(history.netRx.map((rx, i) => rx + (history.netTx[i] || 0)), 60, 16)} fill="none" stroke="rgb(34, 197, 94)" stroke-width="1" />
+													</svg>
+												{:else}
+													<div class="h-4 bg-muted/30 rounded animate-pulse"></div>
+												{/if}
+											</div>
+											<!-- Disk I/O sparkline -->
+											<div class="space-y-0">
+												<div class="flex justify-between text-2xs">
+													<span class="text-muted-foreground">Disk</span>
+													<span class="font-mono text-muted-foreground">{stats ? formatBytesCompact(stats.blockRead + stats.blockWrite) : '-'}</span>
+												</div>
+												{#if history?.diskR && history.diskR.length >= 2}
+													<svg class="w-full h-4" viewBox="0 0 60 16" preserveAspectRatio="none">
+														<path d={generateAreaPath(history.diskR.map((r, i) => r + (history.diskW[i] || 0)), 60, 16)} fill="rgba(251, 146, 60, 0.15)" />
+														<path d={generateSparklinePath(history.diskR.map((r, i) => r + (history.diskW[i] || 0)), 60, 16)} fill="none" stroke="rgb(251, 146, 60)" stroke-width="1" />
+													</svg>
+												{:else}
+													<div class="h-4 bg-muted/30 rounded animate-pulse"></div>
+												{/if}
+											</div>
+										</div>
+										{/key}
+									{/if}
+									<div class="flex flex-wrap gap-1.5 mb-2 text-2xs">
+										<!-- Custom URL from dockhand.url label -->
+										{#if parseCustomUrl(container.labels?.['dockhand.url'])}
+											{@const stackParsedUrl = parseCustomUrl(container.labels?.['dockhand.url'])}
+											{#if stackParsedUrl}
+												<a
+													href={stackParsedUrl.url}
+													target="_blank"
+													rel="noopener noreferrer"
+													onclick={(e) => e.stopPropagation()}
+													class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
+													title="Open {stackParsedUrl.url} in new tab"
+												>
+													<Globe class="w-2.5 h-2.5" />
+													<span class="max-w-[120px] truncate">{stackParsedUrl.name || stackParsedUrl.url.replace(/^https?:\/\//, '')}</span>
+													<ExternalLink class="w-2.5 h-2.5 opacity-60" />
+												</a>
+											{/if}
+										{:else}
+											<!-- Traefik fallback URLs (#2). dockhand.url suppresses these, as does the
+											     "Honor Traefik/Pangolin labels" setting being off. -->
+											{#each ($appSettings.honorProxyLabels ? extractTraefikUrls(container.labels) : []) as t}
+												<a
+													href={t.url}
+													target="_blank"
+													rel="noopener noreferrer"
+													onclick={(e) => e.stopPropagation()}
+													class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
+													title="Traefik router {t.router} → {t.url}"
+												>
+													<Globe class="w-2.5 h-2.5" />
+													<span class="max-w-[120px] truncate">{t.url.replace(/^https?:\/\//, '')}</span>
+													<ExternalLink class="w-2.5 h-2.5 opacity-60" />
+												</a>
+											{/each}
+											<!-- Pangolin fallback URLs (#2 follow-up). Same suppression rules. -->
+											{#each ($appSettings.honorProxyLabels ? extractPangolinUrls(container.labels) : []) as p}
+												<a
+													href={p.url}
+													target="_blank"
+													rel="noopener noreferrer"
+													onclick={(e) => e.stopPropagation()}
+													class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
+													title="Pangolin resource {p.resource} → {p.url}"
+												>
+													<Globe class="w-2.5 h-2.5" />
+													<span class="max-w-[120px] truncate">{p.displayName ?? p.url.replace(/^https?:\/\//, '')}</span>
+													<ExternalLink class="w-2.5 h-2.5 opacity-60" />
+												</a>
+											{/each}
+											<!-- caddy-docker-proxy fallback URLs (#1390). Same suppression rules. -->
+											{#each ($appSettings.honorProxyLabels ? extractCaddyUrls(container.labels) : []) as c}
+												<a
+													href={c.url}
+													target="_blank"
+													rel="noopener noreferrer"
+													onclick={(e) => e.stopPropagation()}
+													class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
+													title="Caddy {c.group}: {c.url}"
+												>
+													<Globe class="w-2.5 h-2.5" />
+													<span class="max-w-[120px] truncate">{c.url.replace(/^https?:\/\//, '')}</span>
+													<ExternalLink class="w-2.5 h-2.5 opacity-60" />
+												</a>
+											{/each}
+										{/if}
+										<!-- Clickable ports with range collapsing -->
+										{#if container.ports.length > 0}
+											{@const mappedPorts = formatPorts(container.ports)}
+											{#each mappedPorts as port}
+												{@const portParsed = parseCustomUrl(container.labels?.[`dockhand.port.${port.publicPort}.url`])}
+												{@const portUrl = portParsed?.url || null}
+												{@const url = portUrl || getPortUrl(port.publicPort)}
+												{#if url}
+													<a
+														href={url}
+														target="_blank"
+														rel="noopener noreferrer"
+														onclick={(e) => e.stopPropagation()}
+														class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded {portUrl ? 'bg-primary/10 text-primary hover:bg-primary/20' : 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200 hover:bg-blue-200 dark:hover:bg-blue-800'} transition-colors"
+														title="Open {url} in new tab"
+													>
+														<code>{portParsed?.name ?? port.display}</code>
+														<ExternalLink class="w-2.5 h-2.5 {portUrl ? 'opacity-60' : ''}" />
+													</a>
+												{:else}
+													<span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200">
+														<code>{port.display}</code>
+													</span>
+												{/if}
+											{/each}
+										{/if}
+										<!-- Network with IP -->
+										{#if container.networks.length > 0}
+											{@const ip = getContainerIp(container.networks)}
+											<Tooltip.Root>
+												<Tooltip.Trigger>
+													<span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200">
+														<Network class="w-2.5 h-2.5" />
+														{ip !== '-' ? ip : container.networks.length}
+													</span>
+												</Tooltip.Trigger>
+												<Tooltip.Content class="whitespace-nowrap max-w-none">
+													{#each container.networks as net}
+														<div class="font-mono text-xs">{net.name}: {net.ipAddress || 'no IP'}</div>
+													{/each}
+												</Tooltip.Content>
+											</Tooltip.Root>
+										{/if}
+										<!-- Volumes -->
+										{#if container.volumeCount > 0}
+											<span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200" title="{container.volumeCount} volume{container.volumeCount > 1 ? 's' : ''} mounted">
+												<HardDrive class="w-2.5 h-2.5" />
+												{container.volumeCount}
+											</span>
+										{/if}
+									</div>
+									<div class="stack-container-actions flex items-center justify-between pt-2 border-t border-muted">
+										<div class="flex gap-1">
+											<button
+												type="button"
+												title="Open logs inline"
+												onclick={(e) => { e.stopPropagation(); showContainerLogs(container); }}
+												class="stack-inline-logs p-1 rounded hover:bg-muted transition-colors opacity-70 hover:opacity-100 cursor-pointer {currentLogsContainerId === container.id ? 'bg-muted text-blue-500' : ''}"
+											>
+												<FileText class="w-3.5 h-3.5 {currentLogsContainerId === container.id ? 'text-blue-500' : 'text-muted-foreground hover:text-foreground'}" />
+											</button>
+											<button
+												type="button"
+												title="Open logs in full view"
+												onclick={(e) => { e.stopPropagation(); goto(appendEnvParam(`/logs?container=${container.id}`, envId)); }}
+												class="p-1 rounded hover:bg-muted transition-colors opacity-70 hover:opacity-100 cursor-pointer"
+											>
+												<FileOutput class="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
+											</button>
+											{#if container.state === 'running' && $canAccess('containers', 'exec')}
+												<button
+													type="button"
+													title="Open terminal"
+													onclick={(e) => { e.stopPropagation(); goto(appendEnvParam(`/terminal?container=${container.id}`, envId)); }}
+													class="p-1 rounded hover:bg-muted transition-colors opacity-70 hover:opacity-100 cursor-pointer"
+												>
+													<Terminal class="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
+												</button>
+											{/if}
+											{#if container.state === 'running' && $canAccess('containers', 'files')}
+												<button
+													type="button"
+													title="Browse files"
+													onclick={(e) => { e.stopPropagation(); browseFiles(container.id, container.name); }}
+													class="p-1 rounded hover:bg-muted transition-colors opacity-70 hover:opacity-100 cursor-pointer"
+												>
+													<FolderOpen class="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
+												</button>
+											{/if}
+											<button
+												type="button"
+												title="Inspect container"
+												onclick={(e) => { e.stopPropagation(); inspectContainer(container.id, container.name); }}
+												class="p-1 rounded hover:bg-muted transition-colors opacity-70 hover:opacity-100 cursor-pointer"
+											>
+												<Eye class="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
+											</button>
+										</div>
+										<div class="relative flex gap-1">
+											{#if operationError?.id === container.id && operationError?.message}
+												<div class="absolute bottom-full right-0 mb-1 z-50 bg-destructive text-destructive-foreground rounded-md shadow-lg p-2 text-xs flex items-start gap-2 max-w-lg w-max">
+													<AlertTriangle class="w-3 h-3 flex-shrink-0 mt-0.5" />
+													<span class="break-words">{operationError.message}</span>
+													<button onclick={() => operationError = null} class="flex-shrink-0 hover:bg-white/20 rounded p-0.5">
+														<X class="w-3 h-3" />
+													</button>
+												</div>
+											{/if}
+											{#if isLoading}
+												<Loader2 class="w-3.5 h-3.5 animate-spin text-muted-foreground" />
+											{:else}
+												{#if container.state === 'paused'}
+													{#if $canAccess('containers', 'unpause')}
+														<button
+															type="button"
+															title="Unpause"
+															onclick={(e) => unpauseContainer(container.id, e)}
+															class="p-1 rounded hover:bg-muted transition-colors opacity-70 hover:opacity-100 cursor-pointer"
+														>
+															<Play class="w-3.5 h-3.5 text-muted-foreground hover:text-emerald-500" />
+														</button>
+													{/if}
+												{:else if container.state !== 'running'}
+													{#if $canAccess('containers', 'start')}
+														<button
+															type="button"
+															title="Start"
+															onclick={(e) => startContainer(container.id, e)}
+															class="p-1 rounded hover:bg-muted transition-colors opacity-70 hover:opacity-100 cursor-pointer"
+														>
+															<Play class="w-3.5 h-3.5 text-muted-foreground hover:text-emerald-500" />
+														</button>
+													{/if}
+												{/if}
+												{#if container.state === 'running'}
+													{#if $canAccess('containers', 'restart')}
+														<ConfirmPopover
+															open={confirmRestartContainerId === container.id}
+															action="Restart"
+															itemType="container"
+															itemName={container.service}
+															title="Restart"
+															onConfirm={() => restartContainer(container.id)}
+															onOpenChange={(open) => confirmRestartContainerId = open ? container.id : null}
+														>
+															{#snippet children({ open })}
+																<RotateCcw class="w-3.5 h-3.5 {open ? 'text-amber-500' : 'text-muted-foreground hover:text-amber-500'}" />
+															{/snippet}
+														</ConfirmPopover>
+													{/if}
+													{#if $canAccess('containers', 'pause')}
+														<ConfirmPopover
+															open={confirmPauseContainerId === container.id}
+															action="Pause"
+															itemType="container"
+															itemName={container.service}
+															title="Pause"
+															onConfirm={() => pauseContainer(container.id)}
+															onOpenChange={(open) => confirmPauseContainerId = open ? container.id : null}
+														>
+															{#snippet children({ open })}
+																<Pause class="w-3.5 h-3.5 {open ? 'text-amber-500' : 'text-muted-foreground hover:text-amber-500'}" />
+															{/snippet}
+														</ConfirmPopover>
+													{/if}
+													{#if $canAccess('containers', 'stop')}
+														<ConfirmPopover
+															open={confirmStopContainerId === container.id}
+															action="Stop"
+															itemType="container"
+															itemName={container.service}
+															title="Stop"
+															onConfirm={() => stopContainer(container.id)}
+															onOpenChange={(open) => confirmStopContainerId = open ? container.id : null}
+														>
+															{#snippet children({ open })}
+																<Square class="w-3.5 h-3.5 {open ? 'text-destructive' : 'text-muted-foreground hover:text-destructive'}" />
+															{/snippet}
+														</ConfirmPopover>
+													{/if}
+												{/if}
+											{/if}
+											{#if $canAccess('containers', 'remove')}
+												<ConfirmPopover
+													open={confirmRemoveContainerId === container.id}
+													action="Remove"
+													itemType="container"
+													itemName={container.service}
+													title="Remove"
+													onConfirm={() => removeContainer(container.id)}
+													onOpenChange={(open) => confirmRemoveContainerId = open ? container.id : null}
+												>
+													{#snippet children({ open })}
+														<Trash2 class="w-3.5 h-3.5 {open ? 'text-destructive' : 'text-muted-foreground hover:text-destructive'}" />
+													{/snippet}
+												</ConfirmPopover>
+											{/if}
+										</div>
+									</div>
+								</div>
+							{/each}
+							<!-- Declared services without a container yet: start them one at a time
+							     without deploying the whole stack. -->
+							{#each pendingServices as service (service.name)}
+								{@const isServiceLoading = serviceActionLoading === `${stack.name}/${service.name}`}
+								<div class="stack-container-card min-w-0 p-3 rounded-lg bg-background border border-dashed text-xs">
+									<div class="flex items-center gap-2 mb-2">
+										<Box class="w-4 h-4 shrink-0 text-muted-foreground" />
+										<span class="font-medium truncate" title={service.name}>{service.name}</span>
+										<span class="flex-1"></span>
+										<span class={getStatusClasses('created')}>not created</span>
+									</div>
+									<div class="text-muted-foreground mb-2 space-y-0.5">
+										<div class="truncate" title={service.image ?? 'Built from source'}>{service.image ?? 'Built from source'}</div>
+										{#if service.profiles.length > 0}
+											<div class="text-2xs truncate" title="Profiles: {service.profiles.join(', ')}">Profiles: {service.profiles.join(', ')}</div>
+										{/if}
+									</div>
+									<div class="stack-container-actions flex items-center justify-end pt-2 border-t border-muted">
+										{#if isServiceLoading}
+											<Loader2 class="w-3.5 h-3.5 animate-spin text-muted-foreground" />
+										{:else if $canAccess('stacks', 'start')}
+											<button
+												type="button"
+												title="Start service"
+												disabled={serviceActionLoading !== null || stackActionLoading === stack.name}
+												onclick={(e) => { e.stopPropagation(); startStackService(stack.name, service.name); }}
+												class="p-1 rounded hover:bg-muted transition-colors opacity-70 hover:opacity-100 cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
+											>
+												<Play class="w-3.5 h-3.5 text-muted-foreground hover:text-emerald-500" />
+											</button>
+										{/if}
+									</div>
+								</div>
+							{/each}
+				</div>
+			{:else}
+				<div class="flex flex-col items-center justify-center gap-1 py-4 text-muted-foreground text-sm">
+					{#if hasServicesToList(stack.name) && !servicesEntry}
+						<span class="inline-flex items-center gap-2"><Loader2 class="w-4 h-4 animate-spin" />Loading services…</span>
+					{:else}
+						<span class="inline-flex items-center gap-2"><Box class="w-4 h-4" />No containers</span>
+						{#if servicesEntry?.error}
+							<span class="max-w-full px-2 text-center text-xs break-all">{servicesEntry.error}</span>
+						{/if}
+					{/if}
+				</div>
+			{/if}
+		{/snippet}
+
 		<div class="min-h-0 min-w-0 flex-1 overflow-y-auto md:hidden">
 			<div class="sticky top-0 z-20 flex w-full min-w-0 gap-2 bg-background pb-3">
 				<MobileSearchInput bind:value={searchInput} label="Search stacks" class="relative min-w-0 flex-1 basis-0" />
@@ -2263,12 +2765,17 @@ let gitMigratingStackId = $state<number | null>(null);
 
 						{#if expandedStacks.has(stack.name)}
 							<div class="space-y-3 border-t bg-muted/20 p-3">
-								<p class="text-xs font-medium text-muted-foreground">Resources</p>
+								<p class="text-xs font-medium text-muted-foreground">Services</p>
+								{@render stackServiceCards(stack)}
+
+								<p class="pt-1 text-xs font-medium text-muted-foreground">Resources</p>
 								<div class="grid grid-cols-2 gap-2">
+									{#if containerMetricsEnabled}
 									<div class="rounded-lg bg-background/80 p-2.5"><div class="text-xs text-muted-foreground">CPU</div><div class="mt-0.5 truncate font-mono text-xs font-semibold">{stats ? `${stats.cpuPercent.toFixed(1)}%` : '-'}</div></div>
 									<div class="rounded-lg bg-background/80 p-2.5"><div class="text-xs text-muted-foreground">Memory</div><div class="mt-0.5 truncate font-mono text-xs font-semibold">{stats ? `${formatBytesCompact(stats.memoryUsage)} / ${formatBytesCompact(stats.memoryLimit, 0)}` : '-'}</div></div>
 									<div class="rounded-lg bg-background/80 p-2.5"><div class="text-xs text-muted-foreground">Net I/O</div><div class="mt-0.5 truncate font-mono text-xs font-semibold">{stats ? `↓${formatBytesCompact(stats.networkRx, 0)} ↑${formatBytesCompact(stats.networkTx, 0)}` : '-'}</div></div>
 									<div class="rounded-lg bg-background/80 p-2.5"><div class="text-xs text-muted-foreground">Disk I/O</div><div class="mt-0.5 truncate font-mono text-xs font-semibold">{stats ? `r${formatBytesCompact(stats.blockRead, 0)} w${formatBytesCompact(stats.blockWrite, 0)}` : '-'}</div></div>
+									{/if}
 									<div class="rounded-lg bg-background/80 p-2.5"><div class="text-xs text-muted-foreground">Networks</div><div class="mt-0.5 font-mono text-xs font-semibold">{getStackNetworkCount(stack)}</div></div>
 									<div class="rounded-lg bg-background/80 p-2.5"><div class="text-xs text-muted-foreground">Volumes</div><div class="mt-0.5 font-mono text-xs font-semibold">{getStackVolumeCount(stack)}</div></div>
 								</div>
@@ -2366,6 +2873,7 @@ let gitMigratingStackId = $state<number | null>(null);
 			data={filteredStacks}
 			keyField="name"
 			gridId="stacks"
+		hiddenColumns={containerMetricsEnabled ? [] : CONTAINER_STATS_COLUMN_IDS}
 			loading={loading}
 			wrapperClass="border bg-card/40 shadow-sm"
 			selectable
@@ -3001,504 +3509,10 @@ let gitMigratingStackId = $state<number | null>(null);
 			{/snippet}
 
 			{#snippet expandedRow(stack, rowState)}
-				{@const pendingServices = servicesWithoutContainer(stack)}
-				{@const servicesEntry = stackServices[stackServicesKey(stack.name)]}
-				{#if stack.containerDetails?.length > 0 || pendingServices.length > 0}
-					<div class="stack-expanded-content p-2 sm:p-4 sm:pl-12 shadow-inner bg-muted/30">
-						<div class="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3">
-							{#each stack.containerDetails as container (container.id)}
-								{@const isLoading = containerActionLoading === container.id}
-								<div class="stack-container-card min-w-0 p-3 rounded-lg bg-background border text-xs">
-									<div class="flex items-center gap-2 mb-2">
-										{#if $appSettings.useSelfhstIcons || iconOverrides[container.name]}
-											<!-- override + its custom-icon key use the real container.name; name=
-											     stays the service for better auto-match when there is no override. -->
-											<ContainerIcon
-												image={container.image}
-												name={container.service || container.name}
-												override={iconOverrides[container.name]}
-												overrideKey={container.name}
-												{envId}
-												class="w-4 h-4"
-												fallbackClass={container.state === 'running' ? 'text-emerald-500' : 'text-muted-foreground'}
-												showFallbackWhenOff
-											/>
-										{:else}
-											<Box class="w-4 h-4 shrink-0 {container.state === 'running' ? 'text-emerald-500' : 'text-muted-foreground'}" />
-										{/if}
-										<span class="font-medium truncate" title={container.name}>{containerDisplayName({ name: container.service || container.name, labels: container.labels })}</span>
-										{#if container.updateAvailable && $appSettings.highlightUpdates}
-											<!-- Update arrow + changelog link read as one pair — keep them tight. -->
-											<span class="inline-flex items-center gap-0.5 shrink-0">
-												{#if $canAccess('containers', 'manage')}
-													<ConfirmPopover
-														action="Update"
-														itemType="container"
-														itemName={container.name}
-														position="left"
-														title="Update available - click to update"
-														onConfirm={() => updateSingleContainer(container.id, container.name)}
-													>
-														{#snippet children({ open })}
-															<CircleArrowUp class="w-3.5 h-3.5 shrink-0 text-amber-500 cursor-pointer" />
-														{/snippet}
-													</ConfirmPopover>
-												{/if}
-												{#if $appSettings.showImageChangelogLinks}
-													{@const changelogUrl = resolveChangelogUrl(container.image, container.labels)}
-													{#if changelogUrl}
-														<a
-															href={changelogUrl}
-															target="_blank"
-															rel="noopener noreferrer"
-															onclick={(e) => e.stopPropagation()}
-															title="View changelog"
-															class="shrink-0 text-amber-500 hover:text-amber-400 transition-colors"
-														>
-															<NotepadText class="w-3 h-3" />
-														</a>
-													{/if}
-												{/if}
-											</span>
-										{:else if failedUpdateCheckIds.has(container.id)}
-											<Tooltip.Root>
-												<Tooltip.Trigger>
-													<AlertTriangle class="w-3.5 h-3.5 shrink-0 text-red-500 cursor-help" />
-												</Tooltip.Trigger>
-												<Tooltip.Content side="right" class="w-72 p-3">
-													<div class="space-y-1.5">
-														<p class="font-medium text-sm flex items-center gap-1.5 whitespace-nowrap">
-															<AlertTriangle class="w-4 h-4 text-red-500 shrink-0" />
-															Update check failed
-														</p>
-														<p class="text-muted-foreground text-xs break-words">{failedUpdateCheckErrors.get(container.id) ?? 'Could not query registry'}</p>
-														<p class="text-muted-foreground text-xs">Update status unknown — often a Docker Hub rate limit. Try again later.</p>
-													</div>
-												</Tooltip.Content>
-											</Tooltip.Root>
-										{/if}
-										{#if container.newerVersion}
-											<VersionUpdateBadge
-												newerVersion={container.newerVersion}
-												variant="pill"
-												onclick={() => openVersionModal(container)}
-											/>
-										{/if}
-										<span class="flex-1"></span>
-										{#if container.health}
-											<span title={container.health}>
-												{#if container.health === 'healthy'}
-													<HeartPulse class="w-3.5 h-3.5 {getHealthClasses(container.health)}" />
-												{:else if container.health === 'unhealthy'}
-													<HeartOff class="w-3.5 h-3.5 {getHealthClasses(container.health)}" />
-												{:else}
-													<Heart class="w-3.5 h-3.5 {getHealthClasses(container.health)}" />
-												{/if}
-											</span>
-										{/if}
-										<span class={getStatusClasses(container.state)}>{container.state}</span>
-									</div>
-									<div class="text-muted-foreground mb-2 space-y-0.5">
-										<div class="truncate" title={container.image}>{container.image}</div>
-										<div class="flex items-center gap-2 text-2xs">
-											<span class="inline-flex items-center gap-1">
-												<Clock class="w-2.5 h-2.5" />
-												{formatUptime(container.status)}
-											</span>
-											{#if container.restartCount > 0}
-												<span class="inline-flex items-center gap-0.5 text-amber-600 dark:text-amber-400" title="{container.restartCount} restart{container.restartCount > 1 ? 's' : ''}">
-													<RotateCw class="w-2.5 h-2.5" />
-													{container.restartCount}
-												</span>
-											{/if}
-										</div>
-									</div>
-									<!-- CPU/Memory/Net/Disk mini sparkline graphs -->
-									{#if container.state === 'running'}
-										{@const stats = containerStats.get(container.id)}
-										{@const history = containerStatsHistory.get(container.id)}
-										{#key statsUpdateCount}
-										<div class="grid grid-cols-4 gap-1.5 mb-2">
-											<!-- CPU sparkline -->
-											<div class="space-y-0">
-												<div class="flex justify-between text-2xs">
-													<span class="text-muted-foreground">CPU</span>
-													<span class="font-mono {stats?.cpuPercent && stats.cpuPercent > 80 ? 'text-red-500' : stats?.cpuPercent && stats.cpuPercent > 50 ? 'text-yellow-500' : 'text-muted-foreground'}">{stats?.cpuPercent?.toFixed(0) ?? '-'}%</span>
-												</div>
-												{#if history?.cpu && history.cpu.length >= 2}
-													<svg class="w-full h-4" viewBox="0 0 60 16" preserveAspectRatio="none">
-														<path d={generateAreaPath(history.cpu, 60, 16)} fill="rgba(59, 130, 246, 0.15)" />
-														<path d={generateSparklinePath(history.cpu, 60, 16)} fill="none" stroke="rgb(59, 130, 246)" stroke-width="1" />
-													</svg>
-												{:else}
-													<div class="h-4 bg-muted/30 rounded animate-pulse"></div>
-												{/if}
-											</div>
-											<!-- Memory sparkline -->
-											<div class="space-y-0">
-												<div class="flex justify-between text-2xs">
-													<span class="text-muted-foreground">Mem</span>
-													<span class="font-mono text-muted-foreground">{stats ? formatBytesCompact(stats.memoryUsage) : '-'}</span>
-												</div>
-												{#if history?.mem && history.mem.length >= 2}
-													<svg class="w-full h-4" viewBox="0 0 60 16" preserveAspectRatio="none">
-														<path d={generateAreaPath(history.mem, 60, 16)} fill="rgba(168, 85, 247, 0.15)" />
-														<path d={generateSparklinePath(history.mem, 60, 16)} fill="none" stroke="rgb(168, 85, 247)" stroke-width="1" />
-													</svg>
-												{:else}
-													<div class="h-4 bg-muted/30 rounded animate-pulse"></div>
-												{/if}
-											</div>
-											<!-- Network I/O sparkline -->
-											<div class="space-y-0">
-												<div class="flex justify-between text-2xs">
-													<span class="text-muted-foreground">Net</span>
-													<span class="font-mono text-muted-foreground">{stats ? formatBytesCompact(stats.networkRx + stats.networkTx) : '-'}</span>
-												</div>
-												{#if history?.netRx && history.netRx.length >= 2}
-													<svg class="w-full h-4" viewBox="0 0 60 16" preserveAspectRatio="none">
-														<path d={generateAreaPath(history.netRx.map((rx, i) => rx + (history.netTx[i] || 0)), 60, 16)} fill="rgba(34, 197, 94, 0.15)" />
-														<path d={generateSparklinePath(history.netRx.map((rx, i) => rx + (history.netTx[i] || 0)), 60, 16)} fill="none" stroke="rgb(34, 197, 94)" stroke-width="1" />
-													</svg>
-												{:else}
-													<div class="h-4 bg-muted/30 rounded animate-pulse"></div>
-												{/if}
-											</div>
-											<!-- Disk I/O sparkline -->
-											<div class="space-y-0">
-												<div class="flex justify-between text-2xs">
-													<span class="text-muted-foreground">Disk</span>
-													<span class="font-mono text-muted-foreground">{stats ? formatBytesCompact(stats.blockRead + stats.blockWrite) : '-'}</span>
-												</div>
-												{#if history?.diskR && history.diskR.length >= 2}
-													<svg class="w-full h-4" viewBox="0 0 60 16" preserveAspectRatio="none">
-														<path d={generateAreaPath(history.diskR.map((r, i) => r + (history.diskW[i] || 0)), 60, 16)} fill="rgba(251, 146, 60, 0.15)" />
-														<path d={generateSparklinePath(history.diskR.map((r, i) => r + (history.diskW[i] || 0)), 60, 16)} fill="none" stroke="rgb(251, 146, 60)" stroke-width="1" />
-													</svg>
-												{:else}
-													<div class="h-4 bg-muted/30 rounded animate-pulse"></div>
-												{/if}
-											</div>
-										</div>
-										{/key}
-									{/if}
-									<div class="flex flex-wrap gap-1.5 mb-2 text-2xs">
-										<!-- Custom URL from dockhand.url label -->
-										{#if parseCustomUrl(container.labels?.['dockhand.url'])}
-											{@const stackParsedUrl = parseCustomUrl(container.labels?.['dockhand.url'])}
-											{#if stackParsedUrl}
-												<a
-													href={stackParsedUrl.url}
-													target="_blank"
-													rel="noopener noreferrer"
-													onclick={(e) => e.stopPropagation()}
-													class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
-													title="Open {stackParsedUrl.url} in new tab"
-												>
-													<Globe class="w-2.5 h-2.5" />
-													<span class="max-w-[120px] truncate">{stackParsedUrl.name || stackParsedUrl.url.replace(/^https?:\/\//, '')}</span>
-													<ExternalLink class="w-2.5 h-2.5 opacity-60" />
-												</a>
-											{/if}
-										{:else}
-											<!-- Traefik fallback URLs (#2). dockhand.url suppresses these, as does the
-											     "Honor Traefik/Pangolin labels" setting being off. -->
-											{#each ($appSettings.honorProxyLabels ? extractTraefikUrls(container.labels) : []) as t}
-												<a
-													href={t.url}
-													target="_blank"
-													rel="noopener noreferrer"
-													onclick={(e) => e.stopPropagation()}
-													class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
-													title="Traefik router {t.router} → {t.url}"
-												>
-													<Globe class="w-2.5 h-2.5" />
-													<span class="max-w-[120px] truncate">{t.url.replace(/^https?:\/\//, '')}</span>
-													<ExternalLink class="w-2.5 h-2.5 opacity-60" />
-												</a>
-											{/each}
-											<!-- Pangolin fallback URLs (#2 follow-up). Same suppression rules. -->
-											{#each ($appSettings.honorProxyLabels ? extractPangolinUrls(container.labels) : []) as p}
-												<a
-													href={p.url}
-													target="_blank"
-													rel="noopener noreferrer"
-													onclick={(e) => e.stopPropagation()}
-													class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
-													title="Pangolin resource {p.resource} → {p.url}"
-												>
-													<Globe class="w-2.5 h-2.5" />
-													<span class="max-w-[120px] truncate">{p.displayName ?? p.url.replace(/^https?:\/\//, '')}</span>
-													<ExternalLink class="w-2.5 h-2.5 opacity-60" />
-												</a>
-											{/each}
-											<!-- caddy-docker-proxy fallback URLs (#1390). Same suppression rules. -->
-											{#each ($appSettings.honorProxyLabels ? extractCaddyUrls(container.labels) : []) as c}
-												<a
-													href={c.url}
-													target="_blank"
-													rel="noopener noreferrer"
-													onclick={(e) => e.stopPropagation()}
-													class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
-													title="Caddy {c.group}: {c.url}"
-												>
-													<Globe class="w-2.5 h-2.5" />
-													<span class="max-w-[120px] truncate">{c.url.replace(/^https?:\/\//, '')}</span>
-													<ExternalLink class="w-2.5 h-2.5 opacity-60" />
-												</a>
-											{/each}
-										{/if}
-										<!-- Clickable ports with range collapsing -->
-										{#if container.ports.length > 0}
-											{@const mappedPorts = formatPorts(container.ports)}
-											{#each mappedPorts as port}
-												{@const portParsed = parseCustomUrl(container.labels?.[`dockhand.port.${port.publicPort}.url`])}
-												{@const portUrl = portParsed?.url || null}
-												{@const url = portUrl || getPortUrl(port.publicPort)}
-												{#if url}
-													<a
-														href={url}
-														target="_blank"
-														rel="noopener noreferrer"
-														onclick={(e) => e.stopPropagation()}
-														class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded {portUrl ? 'bg-primary/10 text-primary hover:bg-primary/20' : 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200 hover:bg-blue-200 dark:hover:bg-blue-800'} transition-colors"
-														title="Open {url} in new tab"
-													>
-														<code>{portParsed?.name ?? port.display}</code>
-														<ExternalLink class="w-2.5 h-2.5 {portUrl ? 'opacity-60' : ''}" />
-													</a>
-												{:else}
-													<span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200">
-														<code>{port.display}</code>
-													</span>
-												{/if}
-											{/each}
-										{/if}
-										<!-- Network with IP -->
-										{#if container.networks.length > 0}
-											{@const ip = getContainerIp(container.networks)}
-											<Tooltip.Root>
-												<Tooltip.Trigger>
-													<span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200">
-														<Network class="w-2.5 h-2.5" />
-														{ip !== '-' ? ip : container.networks.length}
-													</span>
-												</Tooltip.Trigger>
-												<Tooltip.Content class="whitespace-nowrap max-w-none">
-													{#each container.networks as net}
-														<div class="font-mono text-xs">{net.name}: {net.ipAddress || 'no IP'}</div>
-													{/each}
-												</Tooltip.Content>
-											</Tooltip.Root>
-										{/if}
-										<!-- Volumes -->
-										{#if container.volumeCount > 0}
-											<span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200" title="{container.volumeCount} volume{container.volumeCount > 1 ? 's' : ''} mounted">
-												<HardDrive class="w-2.5 h-2.5" />
-												{container.volumeCount}
-											</span>
-										{/if}
-									</div>
-									<div class="stack-container-actions flex items-center justify-between pt-2 border-t border-muted">
-										<div class="flex gap-1">
-											<button
-												type="button"
-												title="Open logs inline"
-												onclick={(e) => { e.stopPropagation(); showContainerLogs(container); }}
-												class="p-1 rounded hover:bg-muted transition-colors opacity-70 hover:opacity-100 cursor-pointer {currentLogsContainerId === container.id ? 'bg-muted text-blue-500' : ''}"
-											>
-												<FileText class="w-3.5 h-3.5 {currentLogsContainerId === container.id ? 'text-blue-500' : 'text-muted-foreground hover:text-foreground'}" />
-											</button>
-											<button
-												type="button"
-												title="Open logs in full view"
-												onclick={(e) => { e.stopPropagation(); goto(appendEnvParam(`/logs?container=${container.id}`, envId)); }}
-												class="p-1 rounded hover:bg-muted transition-colors opacity-70 hover:opacity-100 cursor-pointer"
-											>
-												<FileOutput class="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
-											</button>
-											{#if container.state === 'running' && $canAccess('containers', 'exec')}
-												<button
-													type="button"
-													title="Open terminal"
-													onclick={(e) => { e.stopPropagation(); goto(appendEnvParam(`/terminal?container=${container.id}`, envId)); }}
-													class="p-1 rounded hover:bg-muted transition-colors opacity-70 hover:opacity-100 cursor-pointer"
-												>
-													<Terminal class="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
-												</button>
-											{/if}
-											{#if container.state === 'running' && $canAccess('containers', 'files')}
-												<button
-													type="button"
-													title="Browse files"
-													onclick={(e) => { e.stopPropagation(); browseFiles(container.id, container.name); }}
-													class="p-1 rounded hover:bg-muted transition-colors opacity-70 hover:opacity-100 cursor-pointer"
-												>
-													<FolderOpen class="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
-												</button>
-											{/if}
-											<button
-												type="button"
-												title="Inspect container"
-												onclick={(e) => { e.stopPropagation(); inspectContainer(container.id, container.name); }}
-												class="p-1 rounded hover:bg-muted transition-colors opacity-70 hover:opacity-100 cursor-pointer"
-											>
-												<Eye class="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
-											</button>
-										</div>
-										<div class="relative flex gap-1">
-											{#if operationError?.id === container.id && operationError?.message}
-												<div class="absolute bottom-full right-0 mb-1 z-50 bg-destructive text-destructive-foreground rounded-md shadow-lg p-2 text-xs flex items-start gap-2 max-w-lg w-max">
-													<AlertTriangle class="w-3 h-3 flex-shrink-0 mt-0.5" />
-													<span class="break-words">{operationError.message}</span>
-													<button onclick={() => operationError = null} class="flex-shrink-0 hover:bg-white/20 rounded p-0.5">
-														<X class="w-3 h-3" />
-													</button>
-												</div>
-											{/if}
-											{#if isLoading}
-												<Loader2 class="w-3.5 h-3.5 animate-spin text-muted-foreground" />
-											{:else}
-												{#if container.state === 'paused'}
-													{#if $canAccess('containers', 'unpause')}
-														<button
-															type="button"
-															title="Unpause"
-															onclick={(e) => unpauseContainer(container.id, e)}
-															class="p-1 rounded hover:bg-muted transition-colors opacity-70 hover:opacity-100 cursor-pointer"
-														>
-															<Play class="w-3.5 h-3.5 text-muted-foreground hover:text-emerald-500" />
-														</button>
-													{/if}
-												{:else if container.state !== 'running'}
-													{#if $canAccess('containers', 'start')}
-														<button
-															type="button"
-															title="Start"
-															onclick={(e) => startContainer(container.id, e)}
-															class="p-1 rounded hover:bg-muted transition-colors opacity-70 hover:opacity-100 cursor-pointer"
-														>
-															<Play class="w-3.5 h-3.5 text-muted-foreground hover:text-emerald-500" />
-														</button>
-													{/if}
-												{/if}
-												{#if container.state === 'running'}
-													{#if $canAccess('containers', 'restart')}
-														<ConfirmPopover
-															open={confirmRestartContainerId === container.id}
-															action="Restart"
-															itemType="container"
-															itemName={container.service}
-															title="Restart"
-															onConfirm={() => restartContainer(container.id)}
-															onOpenChange={(open) => confirmRestartContainerId = open ? container.id : null}
-														>
-															{#snippet children({ open })}
-																<RotateCcw class="w-3.5 h-3.5 {open ? 'text-amber-500' : 'text-muted-foreground hover:text-amber-500'}" />
-															{/snippet}
-														</ConfirmPopover>
-													{/if}
-													{#if $canAccess('containers', 'pause')}
-														<ConfirmPopover
-															open={confirmPauseContainerId === container.id}
-															action="Pause"
-															itemType="container"
-															itemName={container.service}
-															title="Pause"
-															onConfirm={() => pauseContainer(container.id)}
-															onOpenChange={(open) => confirmPauseContainerId = open ? container.id : null}
-														>
-															{#snippet children({ open })}
-																<Pause class="w-3.5 h-3.5 {open ? 'text-amber-500' : 'text-muted-foreground hover:text-amber-500'}" />
-															{/snippet}
-														</ConfirmPopover>
-													{/if}
-													{#if $canAccess('containers', 'stop')}
-														<ConfirmPopover
-															open={confirmStopContainerId === container.id}
-															action="Stop"
-															itemType="container"
-															itemName={container.service}
-															title="Stop"
-															onConfirm={() => stopContainer(container.id)}
-															onOpenChange={(open) => confirmStopContainerId = open ? container.id : null}
-														>
-															{#snippet children({ open })}
-																<Square class="w-3.5 h-3.5 {open ? 'text-destructive' : 'text-muted-foreground hover:text-destructive'}" />
-															{/snippet}
-														</ConfirmPopover>
-													{/if}
-												{/if}
-											{/if}
-											{#if $canAccess('containers', 'remove')}
-												<ConfirmPopover
-													open={confirmRemoveContainerId === container.id}
-													action="Remove"
-													itemType="container"
-													itemName={container.service}
-													title="Remove"
-													onConfirm={() => removeContainer(container.id)}
-													onOpenChange={(open) => confirmRemoveContainerId = open ? container.id : null}
-												>
-													{#snippet children({ open })}
-														<Trash2 class="w-3.5 h-3.5 {open ? 'text-destructive' : 'text-muted-foreground hover:text-destructive'}" />
-													{/snippet}
-												</ConfirmPopover>
-											{/if}
-										</div>
-									</div>
-								</div>
-							{/each}
-							<!-- Declared services without a container yet: start them one at a time
-							     without deploying the whole stack. -->
-							{#each pendingServices as service (service.name)}
-								{@const isServiceLoading = serviceActionLoading === `${stack.name}/${service.name}`}
-								<div class="stack-container-card min-w-0 p-3 rounded-lg bg-background border border-dashed text-xs">
-									<div class="flex items-center gap-2 mb-2">
-										<Box class="w-4 h-4 shrink-0 text-muted-foreground" />
-										<span class="font-medium truncate" title={service.name}>{service.name}</span>
-										<span class="flex-1"></span>
-										<span class={getStatusClasses('created')}>not created</span>
-									</div>
-									<div class="text-muted-foreground mb-2 space-y-0.5">
-										<div class="truncate" title={service.image ?? 'Built from source'}>{service.image ?? 'Built from source'}</div>
-										{#if service.profiles.length > 0}
-											<div class="text-2xs truncate" title="Profiles: {service.profiles.join(', ')}">Profiles: {service.profiles.join(', ')}</div>
-										{/if}
-									</div>
-									<div class="stack-container-actions flex items-center justify-end pt-2 border-t border-muted">
-										{#if isServiceLoading}
-											<Loader2 class="w-3.5 h-3.5 animate-spin text-muted-foreground" />
-										{:else if $canAccess('stacks', 'start')}
-											<button
-												type="button"
-												title="Start service"
-												disabled={serviceActionLoading !== null || stackActionLoading === stack.name}
-												onclick={(e) => { e.stopPropagation(); startStackService(stack.name, service.name); }}
-												class="p-1 rounded hover:bg-muted transition-colors opacity-70 hover:opacity-100 cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
-											>
-												<Play class="w-3.5 h-3.5 text-muted-foreground hover:text-emerald-500" />
-											</button>
-										{/if}
-									</div>
-								</div>
-							{/each}
-						</div>
-					</div>
-				{:else}
-					<div class="p-4 pl-12 shadow-inner bg-muted/30">
-						<div class="flex flex-col items-center justify-center gap-1 py-4 text-muted-foreground text-sm">
-							{#if hasServicesToList(stack.name) && !servicesEntry}
-								<span class="inline-flex items-center gap-2"><Loader2 class="w-4 h-4 animate-spin" />Loading services…</span>
-							{:else}
-								<span class="inline-flex items-center gap-2"><Box class="w-4 h-4" />No containers</span>
-								{#if servicesEntry?.error}
-									<span class="text-xs">{servicesEntry.error}</span>
-								{/if}
-							{/if}
-						</div>
-					</div>
-				{/if}
+				{@const hasServiceCards = stack.containerDetails?.length > 0 || servicesWithoutContainer(stack).length > 0}
+				<div class="{hasServiceCards ? 'stack-expanded-content p-2 sm:p-4 sm:pl-12' : 'p-4 pl-12'} shadow-inner bg-muted/30">
+					{@render stackServiceCards(stack)}
+				</div>
 			{/snippet}
 		</DataGrid>
 

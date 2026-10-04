@@ -12,6 +12,7 @@
 	interface Props {
 		collectActivity: boolean;
 		collectMetrics: boolean;
+		collectContainerMetrics: boolean;
 		highlightChanges: boolean;
 		diskWarningEnabled: boolean;
 		diskWarningMode: 'percentage' | 'absolute';
@@ -27,6 +28,7 @@
 	let {
 		collectActivity = $bindable(),
 		collectMetrics = $bindable(),
+		collectContainerMetrics = $bindable(),
 		highlightChanges = $bindable(),
 		diskWarningEnabled = $bindable(),
 		diskWarningMode = $bindable(),
@@ -53,9 +55,16 @@
 <div class="flex items-start gap-3">
 	<div class="flex-1">
 		<Label>Collect system metrics</Label>
-		<p class="text-xs text-muted-foreground">Collect CPU and memory history for the dashboard tiles and charts. The live per-container stats on the containers page are always shown and are not affected by this.</p>
+		<p class="text-xs text-muted-foreground">Collect CPU and memory history for the dashboard tiles and charts. Per-container live stats are controlled separately below.</p>
 	</div>
 	<TogglePill bind:checked={collectMetrics} />
+</div>
+<div class="flex items-start gap-3">
+	<div class="flex-1">
+		<Label>Collect container metrics</Label>
+		<p class="text-xs text-muted-foreground">Poll live CPU, memory, network I/O and disk I/O for each container on the containers and stacks pages, in container details, and for the dashboard's top containers. When off, Dockhand sends no per-container stats requests to this environment and these values are hidden.</p>
+	</div>
+	<TogglePill bind:checked={collectContainerMetrics} />
 </div>
 <div class="flex items-start gap-3">
 	<div class="flex-1">

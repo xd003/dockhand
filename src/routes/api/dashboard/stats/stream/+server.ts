@@ -124,6 +124,7 @@ async function getEnvironmentStatsProgressive(
 		socketPath: env.socketPath ?? undefined,
 		collectActivity: env.collectActivity,
 		collectMetrics: env.collectMetrics ?? true,
+		collectContainerMetrics: env.collectContainerMetrics !== false,
 		scannerEnabled: false,
 		updateCheckEnabled: false,
 		updateCheckAutoUpdate: false,
@@ -445,7 +446,7 @@ async function getEnvironmentStatsProgressive(
 		// PHASE 4: Top containers (slow - requires per-container stats)
 		// Limited to TOP_CONTAINERS_LIMIT containers to reduce API calls
 		const topContainersPromise = containersPromise.then(async (containers) => {
-			const runningContainersList = containers.filter((c: any) => c.state === 'running');
+			const runningContainersList = env.collectContainerMetrics === false ? [] : containers.filter((c: any) => c.state === 'running');
 
 			const topContainersPromises = runningContainersList.slice(0, TOP_CONTAINERS_LIMIT).map(async (container: any) => {
 				try {
@@ -592,6 +593,7 @@ export const GET: RequestHandler = async ({ request, cookies }) => {
 				socketPath: env.socketPath ?? undefined,
 				collectActivity: env.collectActivity,
 				collectMetrics: env.collectMetrics ?? true,
+				collectContainerMetrics: env.collectContainerMetrics !== false,
 				labels: parseLabels(env.labels),
 				connectionType: (env.connectionType as 'socket' | 'direct' | 'hawser-standard' | 'hawser-edge') || 'socket',
 				// Initial loading state for all sections

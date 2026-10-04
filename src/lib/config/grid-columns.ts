@@ -16,6 +16,9 @@ const NET_IO_SORT_CYCLE = [
 	{ field: 'netTx', direction: 'asc' as const }
 ];
 
+/** Live per-container stats columns (same ids in the containers and stacks grids). */
+export const CONTAINER_STATS_COLUMN_IDS: readonly string[] = ['cpu', 'memory', 'networkIO', 'diskIO'];
+
 // Container grid columns
 export const containerColumns: ColumnConfig[] = [
 	{ id: 'select', label: '', fixed: 'start', width: 32, resizable: false },

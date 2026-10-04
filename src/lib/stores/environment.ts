@@ -21,6 +21,12 @@ export interface Environment {
 	publicIp?: string | null;
 	timezone?: string;
 	highlightChanges?: boolean;
+	collectContainerMetrics?: boolean;
+}
+
+/** Live per-container stats are on unless the environment turned them off (unknown env → on; the server enforces the real gate). */
+export function isContainerMetricsEnabled(env: Pick<Environment, 'collectContainerMetrics'> | null | undefined): boolean {
+	return env?.collectContainerMetrics !== false;
 }
 
 const STORAGE_KEY = 'dockhand:environment';

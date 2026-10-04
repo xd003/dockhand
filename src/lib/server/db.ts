@@ -148,6 +148,12 @@ export async function hasEnvironments(): Promise<boolean> {
 	return results.length > 0;
 }
 
+/** True only when the environment explicitly turned off live per-container stats. */
+export async function isContainerMetricsDisabled(envId: number): Promise<boolean> {
+	const rows = await db.select({ v: environments.collectContainerMetrics }).from(environments).where(eq(environments.id, envId));
+	return rows[0]?.v === false;
+}
+
 export async function getEnvironment(id: number): Promise<Environment | undefined> {
 	const results = await db.select().from(environments).where(eq(environments.id, id));
 	if (!results[0]) return undefined;
@@ -188,6 +194,7 @@ export async function createEnvironment(env: Omit<Environment, 'id' | 'createdAt
 		socketPath: env.socketPath || '/var/run/docker.sock',
 		collectActivity: env.collectActivity !== false,
 		collectMetrics: env.collectMetrics !== false,
+		collectContainerMetrics: env.collectContainerMetrics !== false,
 		highlightChanges: env.highlightChanges !== false,
 		labels: env.labels || null,
 		connectionType: env.connectionType || 'socket',
@@ -215,6 +222,7 @@ export async function updateEnvironment(id: number, env: Partial<Environment>): 
 	if (env.socketPath !== undefined) updateData.socketPath = env.socketPath;
 	if (env.collectActivity !== undefined) updateData.collectActivity = env.collectActivity;
 	if (env.collectMetrics !== undefined) updateData.collectMetrics = env.collectMetrics;
+	if (env.collectContainerMetrics !== undefined) updateData.collectContainerMetrics = env.collectContainerMetrics;
 	if (env.highlightChanges !== undefined) updateData.highlightChanges = env.highlightChanges;
 	if (env.labels !== undefined) updateData.labels = env.labels;
 	if (env.connectionType !== undefined) updateData.connectionType = env.connectionType;

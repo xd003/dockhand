@@ -9290,6 +9290,9 @@
           "404": {
             "description": "No environment configured, the environment was not found, or the container was not found"
           },
+          "409": {
+            "description": "Container stats are disabled for this environment"
+          },
           "500": {
             "description": "Failed to read the container stats"
           }
@@ -11543,6 +11546,9 @@
                     "type": "boolean"
                   },
                   "collectMetrics": {
+                    "type": "boolean"
+                  },
+                  "collectContainerMetrics": {
                     "type": "boolean"
                   },
                   "highlightChanges": {

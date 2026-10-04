@@ -45,6 +45,7 @@
 		socketPath?: string;
 		collectActivity: boolean;
 		collectMetrics: boolean;
+		collectContainerMetrics: boolean;
 		connectionType?: 'socket' | 'direct' | 'hawser-standard' | 'hawser-edge';
 		labels?: string[];
 	}
@@ -126,6 +127,7 @@
 									socketPath: env.socketPath,
 									collectActivity: false,
 									collectMetrics: true,
+									collectContainerMetrics: true,
 									connectionType: env.connectionType || 'socket',
 									updateCheckEnabled: false,
 									updateCheckAutoUpdate: false,
@@ -144,7 +146,7 @@
 							topContainers: [],
 							loading: { containers: true, images: true, volumes: true, networks: true, stacks: true, diskUsage: true, topContainers: true }
 						} as EnvironmentStats,
-						info: { id: env.id, name: env.name, host: env.host, port: env.port, icon: env.icon || 'globe', socketPath: env.socketPath, collectActivity: false, collectMetrics: true, connectionType: env.connectionType || 'socket' },
+						info: { id: env.id, name: env.name, host: env.host, port: env.port, icon: env.icon || 'globe', socketPath: env.socketPath, collectActivity: false, collectMetrics: true, collectContainerMetrics: true, connectionType: env.connectionType || 'socket' },
 						loading: true
 					}));
 					tiles = skeletonTiles;
@@ -490,6 +492,7 @@
 											socketPath: env.socketPath,
 											collectActivity: env.collectActivity ?? false,
 											collectMetrics: env.collectMetrics ?? true,
+											collectContainerMetrics: env.collectContainerMetrics ?? true,
 											connectionType: env.connectionType || 'socket',
 											updateCheckEnabled: false,
 											updateCheckAutoUpdate: false,
@@ -535,6 +538,7 @@
 														port: envInfo.port,
 														collectActivity: envInfo.collectActivity ?? false,
 														collectMetrics: envInfo.collectMetrics ?? true,
+														collectContainerMetrics: envInfo.collectContainerMetrics ?? true,
 														connectionType: envInfo.connectionType || 'socket',
 														labels: envInfo.labels || [],
 														loading: envInfo.loading

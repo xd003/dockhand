@@ -53,6 +53,7 @@ export interface EnvironmentStats {
 	socketPath?: string;
 	collectActivity: boolean;
 	collectMetrics: boolean;
+	collectContainerMetrics: boolean;
 	scannerEnabled: boolean;
 	updateCheckEnabled: boolean;
 	updateCheckAutoUpdate: boolean;
@@ -180,6 +181,7 @@ export const GET: RequestHandler = async ({ cookies, url }) => {
 				socketPath: env.socketPath ?? undefined,
 				collectActivity: env.collectActivity,
 				collectMetrics: env.collectMetrics ?? true,
+				collectContainerMetrics: env.collectContainerMetrics !== false,
 				scannerEnabled: false,
 				updateCheckEnabled: false,
 				updateCheckAutoUpdate: false,

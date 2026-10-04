@@ -1,7 +1,7 @@
 import type { RequestHandler } from './$types';
 import { listContainers, getContainerStats, EnvironmentNotFoundError } from '$lib/server/docker';
 import { authorize } from '$lib/server/authorize';
-import { hasEnvironments } from '$lib/server/db';
+import { hasEnvironments, isContainerMetricsDisabled } from '$lib/server/db';
 import type { ContainerStats } from '$lib/types';
 import { calculateCpuPercent, calculateMemoryUsage, calculateMemoryLimit, calculateNetworkIO, calculateBlockIO } from '$lib/server/stats-calc-core';
 
@@ -35,7 +35,7 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 		});
 	}
 
-	if (!await hasEnvironments() || !envIdNum) {
+	if (!await hasEnvironments() || !envIdNum || await isContainerMetricsDisabled(envIdNum)) {
 		return new Response('event: done\ndata: {}\n\n', {
 			headers: {
 				'Content-Type': 'text/event-stream',

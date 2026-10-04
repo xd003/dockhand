@@ -76,7 +76,8 @@
 		Tag,
 		Unplug, Heart, HeartPulse, HeartOff,
 		ChevronDown,
-		SlidersHorizontal
+		SlidersHorizontal,
+		SearchX
 	} from 'lucide-svelte';
 	import { broom } from '@lucide/lab';
 	import { copyToClipboard } from '$lib/utils/clipboard';
@@ -105,7 +106,8 @@
 	import TagFilter from '$lib/components/TagFilter.svelte';
 	import TagLucideIcon from '$lib/components/TagLucideIcon.svelte';
 	import { EmptyState, NoEnvironment } from '$lib/components/ui/empty-state';
-	import { currentEnvironment, environments, appendEnvParam, clearStaleEnvironment } from '$lib/stores/environment';
+	import { currentEnvironment, environments, appendEnvParam, clearStaleEnvironment, isContainerMetricsEnabled } from '$lib/stores/environment';
+	import { CONTAINER_STATS_COLUMN_IDS } from '$lib/config/grid-columns';
 	import { containerStore } from '$lib/stores/containers';
 	import { onDockerEvent, isContainerListChange } from '$lib/stores/events';
 	import { appSettings } from '$lib/stores/settings';
@@ -350,6 +352,7 @@
 
 	// Derived: current environment details for reactive port URL generation
 	const currentEnvDetails = $derived($environments.find(e => e.id === $currentEnvironment?.id) ?? null);
+	const containerMetricsEnabled = $derived(isContainerMetricsEnabled(currentEnvDetails));
 
 	// Search and sort state - initialize from URL for persistence across navigation
 	const initialSearch = $page.url.searchParams.get('search')
@@ -1729,6 +1732,12 @@
 						Dismiss indicators
 					</DropdownMenu.Item>
 				{/if}
+				{#if $canAccess('containers', 'remove')}
+					<DropdownMenu.Item onclick={() => (confirmPrune = true)} disabled={pruneStatus === 'pruning'} class="min-h-11">
+						<Icon iconNode={broom} />
+						Prune stopped
+					</DropdownMenu.Item>
+				{/if}
 		</MobileActionsMenu>
 	</div>
 
@@ -1992,7 +2001,117 @@
 			description="Create a new container to get started"
 		/>
 	{:else}
-		<!-- Mobile card list: sticky search/filter, swipe actions, tap to expand -->
+		<!-- Ports + proxy URL chips. Desktop shows them in the ports column, the mobile
+	     card in its own block; both render from this one snippet so the extraction
+	     rules (dockhand.url, Traefik/Pangolin/Caddy fallbacks, compact ports) can
+	     never drift between the two views. -->
+	{#snippet portsList(container: ContainerInfo)}
+		{@const ports = formatPorts(container.ports)}
+		{@const exposedPorts = $appSettings.showExposedPorts ? formatExposedPorts(container.ports) : []}
+		{@const parsedUrl = parseCustomUrl(container.labels?.['dockhand.url'])}
+		{@const traefikUrls = (parsedUrl || !$appSettings.honorProxyLabels) ? [] : extractTraefikUrls(container.labels)}
+		{@const pangolinUrls = (parsedUrl || !$appSettings.honorProxyLabels) ? [] : extractPangolinUrls(container.labels)}
+		{@const caddyUrls = (parsedUrl || !$appSettings.honorProxyLabels) ? [] : extractCaddyUrls(container.labels)}
+		{#if ports.length > 0 || exposedPorts.length > 0 || parsedUrl || traefikUrls.length > 0 || pangolinUrls.length > 0 || caddyUrls.length > 0}
+			{@const compactPorts = $appSettings.compactPorts}
+			{@const displayPorts = compactPorts && ports.length > 1 ? [ports[0]] : ports}
+			{@const remainingCount = ports.length - 1}
+			<div class="flex {compactPorts ? 'flex-nowrap' : 'flex-wrap'} gap-1">
+				{#if parsedUrl}
+					<a
+						href={parsedUrl.url}
+						target="_blank"
+						rel="noopener noreferrer"
+						onclick={(e) => e.stopPropagation()}
+						class="inline-flex items-center gap-0.5 text-xs bg-primary/10 hover:bg-primary/20 text-primary px-1 py-0.5 rounded transition-colors shrink-0"
+						title="Open {parsedUrl.url} in new tab"
+					>
+						<Globe class="w-2.5 h-2.5" />
+						<span class="max-w-[120px] truncate">{parsedUrl.name || parsedUrl.url.replace(/^https?:\/\//, '')}</span>
+						<ExternalLink class="w-2.5 h-2.5 opacity-60" />
+					</a>
+				{/if}
+				<!-- Traefik fallback URLs (#2). dockhand.url suppresses these. -->
+				{#each traefikUrls as t}
+					<a
+						href={t.url}
+						target="_blank"
+						rel="noopener noreferrer"
+						onclick={(e) => e.stopPropagation()}
+						class="inline-flex items-center gap-0.5 text-xs bg-primary/10 hover:bg-primary/20 text-primary px-1 py-0.5 rounded transition-colors shrink-0"
+						title="Traefik router {t.router} → {t.url}"
+					>
+						<Globe class="w-2.5 h-2.5" />
+						<span class="max-w-[120px] truncate">{t.url.replace(/^https?:\/\//, '')}</span>
+						<ExternalLink class="w-2.5 h-2.5 opacity-60" />
+					</a>
+				{/each}
+				<!-- Pangolin fallback URLs (#2 follow-up). dockhand.url suppresses these. -->
+				{#each pangolinUrls as p}
+					<a
+						href={p.url}
+						target="_blank"
+						rel="noopener noreferrer"
+						onclick={(e) => e.stopPropagation()}
+						class="inline-flex items-center gap-0.5 text-xs bg-primary/10 hover:bg-primary/20 text-primary px-1 py-0.5 rounded transition-colors shrink-0"
+						title="Pangolin resource {p.resource} → {p.url}"
+					>
+						<Globe class="w-2.5 h-2.5" />
+						<span class="max-w-[120px] truncate">{p.displayName ?? p.url.replace(/^https?:\/\//, '')}</span>
+						<ExternalLink class="w-2.5 h-2.5 opacity-60" />
+					</a>
+				{/each}
+				<!-- caddy-docker-proxy fallback URLs (#1390). dockhand.url suppresses these. -->
+				{#each caddyUrls as c}
+					<a
+						href={c.url}
+						target="_blank"
+						rel="noopener noreferrer"
+						onclick={(e) => e.stopPropagation()}
+						class="inline-flex items-center gap-0.5 text-xs bg-primary/10 hover:bg-primary/20 text-primary px-1 py-0.5 rounded transition-colors shrink-0"
+						title="Caddy {c.group}: {c.url}"
+					>
+						<Globe class="w-2.5 h-2.5" />
+						<span class="max-w-[120px] truncate">{c.url.replace(/^https?:\/\//, '')}</span>
+						<ExternalLink class="w-2.5 h-2.5 opacity-60" />
+					</a>
+				{/each}
+				{#each displayPorts as port}
+					{@const portParsed = parseCustomUrl(container.labels?.[`dockhand.port.${port.publicPort}.url`])}
+					{@const portUrl = portParsed?.url || null}
+					{@const url = portUrl || (currentEnvDetails ? getPortUrl(port.publicPort) : null)}
+					{#if url}
+						<a
+							href={url}
+							target="_blank"
+							rel="noopener noreferrer"
+							onclick={(e) => e.stopPropagation()}
+							class="inline-flex items-center gap-0.5 text-xs {portUrl ? 'bg-primary/10 hover:bg-primary/20 text-primary' : 'bg-muted hover:bg-blue-500/20 hover:text-blue-500'} px-1 py-0.5 rounded transition-colors shrink-0"
+							title="Open {url} in new tab"
+						>
+							<code>{portParsed?.name ?? port.display}</code>
+							<ExternalLink class="w-2.5 h-2.5 {portUrl ? 'opacity-60' : 'text-muted-foreground'}" />
+						</a>
+					{:else}
+						<code class="text-xs bg-muted px-1 py-0.5 rounded shrink-0">{port.display}</code>
+					{/if}
+				{/each}
+				{#if compactPorts && remainingCount > 0}
+					<span
+						class="text-xs bg-muted text-muted-foreground px-1 py-0.5 rounded cursor-default shrink-0"
+						title={ports.map(p => p.display).join(', ')}
+					>+{remainingCount}</span>
+				{/if}
+				{#each exposedPorts as port}
+					<code class="text-xs bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 px-1 py-0.5 rounded shrink-0" title="Exposed (internal) port">{port.display}</code>
+				{/each}
+			</div>
+		{:else}
+			<span class="text-gray-400 dark:text-gray-600 text-xs">-</span>
+		{/if}
+	{/snippet}
+
+	<!-- Mobile card list: sticky search/filter, swipe actions, tap to expand -->
 		<div class="min-h-0 min-w-0 flex-1 overflow-y-auto md:hidden">
 			<div class="sticky top-0 z-20 flex w-full min-w-0 gap-2 bg-background pb-3">
 				<MobileSearchInput bind:value={searchQuery} label="Search containers" class="relative min-w-0 flex-1 basis-0" />
@@ -2008,13 +2127,27 @@
 				</div>
 			</div>
 
+			{#if filteredContainers.length === 0}
+				<div class="flex min-h-48 flex-col items-center justify-center gap-3 rounded-xl border border-dashed px-6 text-center">
+					<SearchX class="size-6 text-muted-foreground" />
+					<div>
+						<p class="text-sm font-medium">No containers match your filters</p>
+						<p class="mt-1 text-xs text-muted-foreground">Try another search or clear the active filters.</p>
+					</div>
+					<Button variant="outline" size="sm" class="min-h-11" onclick={() => { searchQuery = ''; statusFilter = []; tagFilter = []; }}>Clear filters</Button>
+				</div>
+			{:else}
 			<div class="space-y-2 pb-24">
 				{#each filteredContainers as container (container.id)}
 					{@const stats = containerStats.get(container.id)}
 					{@const stack = getComposeProject(container.labels)}
 					<div class="overflow-hidden rounded-xl border bg-card/60 shadow-sm">
 						<div class="relative overflow-hidden">
-							<div class="absolute inset-y-0 right-0 flex w-36">
+							<div
+								class="absolute inset-y-0 right-0 flex w-36 {swipedContainerId === container.id ? '' : 'pointer-events-none'}"
+								aria-hidden={swipedContainerId !== container.id}
+								inert={swipedContainerId !== container.id}
+							>
 								{#if container.state === 'running' || container.state === 'restarting'}
 									{#if $canAccess('containers', 'restart')}
 										<button type="button" onclick={() => { swipedContainerId = null; restartContainer(container.id); }} class="flex min-h-11 flex-1 flex-col items-center justify-center gap-1 bg-amber-500/15 text-xs font-medium text-amber-500">
@@ -2070,18 +2203,55 @@
 						{#if expandedContainers.has(container.id)}
 							<div class="space-y-3 border-t bg-muted/20 p-3">
 								<div class="grid grid-cols-2 gap-2">
+									{#if containerMetricsEnabled}
 									<div class="rounded-lg bg-background/80 p-2.5"><div class="text-[10px] text-muted-foreground">CPU</div><div class="mt-0.5 truncate font-mono text-xs font-semibold">{stats ? `${stats.cpuPercent.toFixed(1)}%` : '-'}</div></div>
 									<div class="rounded-lg bg-background/80 p-2.5"><div class="text-[10px] text-muted-foreground">Memory</div><div class="mt-0.5 truncate font-mono text-xs font-semibold">{stats ? `${formatBytesCompact(stats.memoryUsage)} / ${formatBytesCompact(stats.memoryLimit, 0)}` : '-'}</div></div>
 									<div class="rounded-lg bg-background/80 p-2.5"><div class="text-[10px] text-muted-foreground">Net I/O</div><div class="mt-0.5 truncate font-mono text-xs font-semibold">{stats ? `↓${formatBytesCompact(stats.networkRx, 0)} ↑${formatBytesCompact(stats.networkTx, 0)}` : '-'}</div></div>
 									<div class="rounded-lg bg-background/80 p-2.5"><div class="text-[10px] text-muted-foreground">Disk I/O</div><div class="mt-0.5 truncate font-mono text-xs font-semibold">{stats ? `r${formatBytesCompact(stats.blockRead, 0)} w${formatBytesCompact(stats.blockWrite, 0)}` : '-'}</div></div>
+									{/if}
 									<div class="rounded-lg bg-background/80 p-2.5"><div class="text-[10px] text-muted-foreground">Uptime</div><div class="mt-0.5 truncate font-mono text-xs font-semibold">{formatUptime(container.status)}</div></div>
-									<div class="rounded-lg bg-background/80 p-2.5"><div class="text-[10px] text-muted-foreground">Stack</div><div class="mt-0.5 truncate font-mono text-xs font-semibold">{stack ?? '-'}</div></div>
+									<div class="rounded-lg bg-background/80 p-2.5">
+										<div class="text-[10px] text-muted-foreground">Health</div>
+										{#if container.health}
+											<div class="mt-0.5 flex items-center gap-1.5" title={container.health}>
+												<span class="size-2.5 shrink-0 rounded-full {container.health === 'healthy' ? 'bg-green-500 animate-pulse' : container.health === 'unhealthy' ? 'bg-red-500' : 'bg-yellow-500 animate-pulse'}"></span>
+												<span class="truncate font-mono text-xs font-semibold">{container.health}</span>
+											</div>
+										{:else}
+											<div class="mt-0.5 font-mono text-xs font-semibold text-muted-foreground">-</div>
+										{/if}
+									</div>
+									<div class="rounded-lg bg-background/80 p-2.5"><div class="text-[10px] text-muted-foreground">Restarts</div><div class="mt-0.5 truncate font-mono text-xs font-semibold {container.restartCount > 0 ? 'text-red-500' : 'text-muted-foreground'}" title="{container.restartCount} restarts">{container.restartCount > 0 ? container.restartCount : '-'}</div></div>
+									<div class="rounded-lg bg-background/80 p-2.5"><div class="text-[10px] text-muted-foreground">IP</div><div class="mt-0.5 truncate font-mono text-xs font-semibold">{getContainerIp(container.networks)}</div></div>
+									<div class="rounded-lg bg-background/80 p-2.5">
+										<div class="text-[10px] text-muted-foreground">Auto-update</div>
+										{#if autoUpdateSettings.get(container.name)?.enabled}
+											<div class="mt-0.5 truncate font-mono text-xs font-semibold text-green-500" title={autoUpdateSettings.get(container.name)?.tooltip}>{autoUpdateSettings.get(container.name)?.label ?? 'enabled'}</div>
+										{:else}
+											<div class="mt-0.5 font-mono text-xs font-semibold text-muted-foreground">-</div>
+										{/if}
+									</div>
+									<div class="rounded-lg bg-background/80 p-2.5">
+										<div class="text-[10px] text-muted-foreground">Stack</div>
+										{#if stack}
+											<button type="button" onclick={() => goto(appendEnvParam(`/stacks?search=${encodeURIComponent(stack)}`, envId))} class="mt-0.5 block max-w-full truncate text-left font-mono text-xs font-semibold text-primary hover:underline">{stack}</button>
+										{:else}
+											<div class="mt-0.5 font-mono text-xs font-semibold text-muted-foreground">-</div>
+										{/if}
+									</div>
 								</div>
 								<div class="truncate rounded-lg bg-background/80 px-2.5 py-2 font-mono text-xs text-muted-foreground" title={container.image}>{container.image}</div>
+								<div class="rounded-lg bg-background/80 px-2.5 py-2">
+									<div class="text-[10px] text-muted-foreground">Ports &amp; links</div>
+									<div class="mt-1">{@render portsList(container)}</div>
+								</div>
 
 								<div class="grid grid-cols-2 gap-2">
 									{#if $canAccess('containers', 'logs')}
 										<button type="button" onclick={() => goto(appendEnvParam(`/logs?containers=${container.id}`, envId))} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><FileText class="size-4" />Logs</button>
+									{/if}
+									{#if container.state === 'running' && $canAccess('containers', 'exec')}
+										<button type="button" onclick={() => goto(appendEnvParam(`/terminal?container=${container.id}`, envId))} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><Terminal class="size-4" />Terminal</button>
 									{/if}
 									<button type="button" onclick={() => inspectContainer(container)} class="flex min-h-11 items-center justify-center gap-2 rounded-lg border bg-background text-xs font-medium hover:bg-muted"><Eye class="size-4" />Inspect</button>
 									{#if container.state === 'running' && $canAccess('containers', 'exec')}
@@ -2136,6 +2306,7 @@
 					</div>
 				{/each}
 			</div>
+			{/if}
 		</div>
 
 		<!-- Main content area - changes based on layout mode -->
@@ -2148,6 +2319,7 @@
 				data={filteredContainers}
 				keyField="id"
 				gridId="containers"
+				hiddenColumns={containerMetricsEnabled ? [] : CONTAINER_STATS_COLUMN_IDS}
 				loading={loading}
 				selectable
 				groupBy={containerGroupBy}
@@ -2188,7 +2360,6 @@
 					<span>{group.label}</span>
 				{/snippet}
 				{#snippet cell(column, container, rowState)}
-					{@const ports = formatPorts(container.ports)}
 					{@const stack = getComposeProject(container.labels)}
 					{#if column.id === 'name'}
 						<div class="flex items-center gap-1.5 min-w-0">
@@ -2430,108 +2601,7 @@
 							<code class="text-xs">{primaryIp}</code>
 						{/if}
 					{:else if column.id === 'ports'}
-						{@const exposedPorts = $appSettings.showExposedPorts ? formatExposedPorts(container.ports) : []}
-						{@const parsedUrl = parseCustomUrl(container.labels?.['dockhand.url'])}
-						{@const traefikUrls = (parsedUrl || !$appSettings.honorProxyLabels) ? [] : extractTraefikUrls(container.labels)}
-						{@const pangolinUrls = (parsedUrl || !$appSettings.honorProxyLabels) ? [] : extractPangolinUrls(container.labels)}
-						{@const caddyUrls = (parsedUrl || !$appSettings.honorProxyLabels) ? [] : extractCaddyUrls(container.labels)}
-						{#if ports.length > 0 || exposedPorts.length > 0 || parsedUrl || traefikUrls.length > 0 || pangolinUrls.length > 0 || caddyUrls.length > 0}
-							{@const compactPorts = $appSettings.compactPorts}
-							{@const displayPorts = compactPorts && ports.length > 1 ? [ports[0]] : ports}
-							{@const remainingCount = ports.length - 1}
-							<div class="flex {compactPorts ? 'flex-nowrap' : 'flex-wrap'} gap-1">
-								{#if parsedUrl}
-									<a
-										href={parsedUrl.url}
-										target="_blank"
-										rel="noopener noreferrer"
-										onclick={(e) => e.stopPropagation()}
-										class="inline-flex items-center gap-0.5 text-xs bg-primary/10 hover:bg-primary/20 text-primary px-1 py-0.5 rounded transition-colors shrink-0"
-										title="Open {parsedUrl.url} in new tab"
-									>
-										<Globe class="w-2.5 h-2.5" />
-										<span class="max-w-[120px] truncate">{parsedUrl.name || parsedUrl.url.replace(/^https?:\/\//, '')}</span>
-										<ExternalLink class="w-2.5 h-2.5 opacity-60" />
-									</a>
-								{/if}
-								<!-- Traefik fallback URLs (#2). dockhand.url suppresses these. -->
-								{#each traefikUrls as t}
-									<a
-										href={t.url}
-										target="_blank"
-										rel="noopener noreferrer"
-										onclick={(e) => e.stopPropagation()}
-										class="inline-flex items-center gap-0.5 text-xs bg-primary/10 hover:bg-primary/20 text-primary px-1 py-0.5 rounded transition-colors shrink-0"
-										title="Traefik router {t.router} → {t.url}"
-									>
-										<Globe class="w-2.5 h-2.5" />
-										<span class="max-w-[120px] truncate">{t.url.replace(/^https?:\/\//, '')}</span>
-										<ExternalLink class="w-2.5 h-2.5 opacity-60" />
-									</a>
-								{/each}
-								<!-- Pangolin fallback URLs (#2 follow-up). dockhand.url suppresses these. -->
-								{#each pangolinUrls as p}
-									<a
-										href={p.url}
-										target="_blank"
-										rel="noopener noreferrer"
-										onclick={(e) => e.stopPropagation()}
-										class="inline-flex items-center gap-0.5 text-xs bg-primary/10 hover:bg-primary/20 text-primary px-1 py-0.5 rounded transition-colors shrink-0"
-										title="Pangolin resource {p.resource} → {p.url}"
-									>
-										<Globe class="w-2.5 h-2.5" />
-										<span class="max-w-[120px] truncate">{p.displayName ?? p.url.replace(/^https?:\/\//, '')}</span>
-										<ExternalLink class="w-2.5 h-2.5 opacity-60" />
-									</a>
-								{/each}
-									<!-- caddy-docker-proxy fallback URLs (#1390). dockhand.url suppresses these. -->
-									{#each caddyUrls as c}
-										<a
-											href={c.url}
-											target="_blank"
-											rel="noopener noreferrer"
-											onclick={(e) => e.stopPropagation()}
-											class="inline-flex items-center gap-0.5 text-xs bg-primary/10 hover:bg-primary/20 text-primary px-1 py-0.5 rounded transition-colors shrink-0"
-											title="Caddy {c.group}: {c.url}"
-										>
-											<Globe class="w-2.5 h-2.5" />
-											<span class="max-w-[120px] truncate">{c.url.replace(/^https?:\/\//, '')}</span>
-											<ExternalLink class="w-2.5 h-2.5 opacity-60" />
-										</a>
-									{/each}
-								{#each displayPorts as port}
-									{@const portParsed = parseCustomUrl(container.labels?.[`dockhand.port.${port.publicPort}.url`])}
-									{@const portUrl = portParsed?.url || null}
-									{@const url = portUrl || (currentEnvDetails ? getPortUrl(port.publicPort) : null)}
-									{#if url}
-										<a
-											href={url}
-											target="_blank"
-											rel="noopener noreferrer"
-											onclick={(e) => e.stopPropagation()}
-											class="inline-flex items-center gap-0.5 text-xs {portUrl ? 'bg-primary/10 hover:bg-primary/20 text-primary' : 'bg-muted hover:bg-blue-500/20 hover:text-blue-500'} px-1 py-0.5 rounded transition-colors shrink-0"
-											title="Open {url} in new tab"
-										>
-											<code>{portParsed?.name ?? port.display}</code>
-											<ExternalLink class="w-2.5 h-2.5 {portUrl ? 'opacity-60' : 'text-muted-foreground'}" />
-										</a>
-									{:else}
-										<code class="text-xs bg-muted px-1 py-0.5 rounded shrink-0">{port.display}</code>
-									{/if}
-								{/each}
-								{#if compactPorts && remainingCount > 0}
-									<span
-										class="text-xs bg-muted text-muted-foreground px-1 py-0.5 rounded cursor-default shrink-0"
-										title={ports.map(p => p.display).join(', ')}
-									>+{remainingCount}</span>
-								{/if}
-								{#each exposedPorts as port}
-									<code class="text-xs bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 px-1 py-0.5 rounded shrink-0" title="Exposed (internal) port">{port.display}</code>
-								{/each}
-							</div>
-						{:else}
-							<span class="text-gray-400 dark:text-gray-600 text-xs">-</span>
-						{/if}
+						{@render portsList(container)}
 					{:else if column.id === 'autoUpdate'}
 						{#if autoUpdateSettings.get(container.name)?.enabled}
 							{@const settings = autoUpdateSettings.get(container.name)}
@@ -2991,6 +3061,22 @@
 {#if $canAccess('containers', 'create') && $currentEnvironment}
 	<MobileFab label="Create container" onclick={() => showCreateModal = true} />
 {/if}
+
+<!-- Prune confirmation, opened from the mobile overflow menu. The header's own
+     ConfirmPopover is desktop-only, and a confirm nested in the dropdown would
+     unmount with it, so this instance's sheet is driven by `confirmPrune` while
+     its own trigger stays hidden. -->
+<ConfirmPopover
+	open={confirmPrune}
+	action="Prune"
+	itemType="stopped containers"
+	title="Prune containers"
+	class="hidden"
+	onConfirm={pruneContainers}
+	onOpenChange={(open) => (confirmPrune = open)}
+>
+	{#snippet children()}<span></span>{/snippet}
+</ConfirmPopover>
 
 <CreateContainerModal
 	bind:open={showCreateModal}

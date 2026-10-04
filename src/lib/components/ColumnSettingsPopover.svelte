@@ -10,9 +10,11 @@
 
 	interface Props {
 		gridId: GridId;
+		/** Column ids hidden by the current environment; not listed and never reordered across */
+		hiddenColumns?: readonly string[];
 	}
 
-	let { gridId }: Props = $props();
+	let { gridId, hiddenColumns = [] }: Props = $props();
 
 	let open = $state(false);
 	let columns = $state<ColumnPreference[]>([]);
@@ -45,18 +47,28 @@
 		saveColumns(newColumns);
 	}
 
-	// Move column up/down
+	// Nearest column in direction `dir` that is not hidden by the environment, or -1
+	function neighborIndex(index: number, dir: -1 | 1): number {
+		for (let i = index + dir; i >= 0 && i < columns.length; i += dir) {
+			if (!hiddenColumns.includes(columns[i].id)) return i;
+		}
+		return -1;
+	}
+
+	// Move column up/down (skipping environment-hidden columns)
 	function moveUp(index: number) {
-		if (index <= 0) return;
+		const target = neighborIndex(index, -1);
+		if (target === -1) return;
 		const newColumns = [...columns];
-		[newColumns[index - 1], newColumns[index]] = [newColumns[index], newColumns[index - 1]];
+		[newColumns[target], newColumns[index]] = [newColumns[index], newColumns[target]];
 		saveColumns(newColumns);
 	}
 
 	function moveDown(index: number) {
-		if (index >= columns.length - 1) return;
+		const target = neighborIndex(index, 1);
+		if (target === -1) return;
 		const newColumns = [...columns];
-		[newColumns[index], newColumns[index + 1]] = [newColumns[index + 1], newColumns[index]];
+		[newColumns[index], newColumns[target]] = [newColumns[target], newColumns[index]];
 		saveColumns(newColumns);
 	}
 
@@ -100,37 +112,39 @@
 
 		<div class="max-h-64 overflow-y-auto p-2">
 			{#each columns as column, index (column.id)}
-				<div class="flex items-center gap-1 p-1 rounded hover:bg-muted/50">
-					<div class="flex flex-col">
-						<button
-							type="button"
-							class="p-0.5 hover:bg-muted rounded disabled:opacity-30"
-							disabled={index === 0}
-							onclick={() => moveUp(index)}
+				{#if !hiddenColumns.includes(column.id)}
+					<div class="flex items-center gap-1 p-1 rounded hover:bg-muted/50">
+						<div class="flex flex-col">
+							<button
+								type="button"
+								class="p-0.5 hover:bg-muted rounded disabled:opacity-30"
+								disabled={neighborIndex(index, -1) === -1}
+								onclick={() => moveUp(index)}
+							>
+								<ChevronUp class="w-3 h-3" />
+							</button>
+							<button
+								type="button"
+								class="p-0.5 hover:bg-muted rounded disabled:opacity-30"
+								disabled={neighborIndex(index, 1) === -1}
+								onclick={() => moveDown(index)}
+							>
+								<ChevronDown class="w-3 h-3" />
+							</button>
+						</div>
+						<Checkbox
+							id="col-{column.id}"
+							checked={column.visible}
+							onCheckedChange={() => toggleColumn(index)}
+						/>
+						<Label
+							for="col-{column.id}"
+							class="text-sm cursor-pointer flex-1 truncate"
 						>
-							<ChevronUp class="w-3 h-3" />
-						</button>
-						<button
-							type="button"
-							class="p-0.5 hover:bg-muted rounded disabled:opacity-30"
-							disabled={index === columns.length - 1}
-							onclick={() => moveDown(index)}
-						>
-							<ChevronDown class="w-3 h-3" />
-						</button>
+							{getColumnLabel(column.id)}
+						</Label>
 					</div>
-					<Checkbox
-						id="col-{column.id}"
-						checked={column.visible}
-						onCheckedChange={() => toggleColumn(index)}
-					/>
-					<Label
-						for="col-{column.id}"
-						class="text-sm cursor-pointer flex-1 truncate"
-					>
-						{getColumnLabel(column.id)}
-					</Label>
-				</div>
+				{/if}
 			{/each}
 		</div>
 

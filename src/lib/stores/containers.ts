@@ -2,7 +2,7 @@ import { writable, get } from 'svelte/store';
 import { browser } from '$app/environment';
 import { splitPendingUpdates } from '$lib/utils/pending-update-rows';
 import type { ContainerInfo, ContainerStats } from '$lib/types';
-import { appendEnvParam, clearStaleEnvironment, environments } from '$lib/stores/environment';
+import { appendEnvParam, clearStaleEnvironment, environments, isContainerMetricsEnabled } from '$lib/stores/environment';
 import { appSettings } from '$lib/stores/settings';
 import { toast } from 'svelte-sonner';
 import type { NewerVersion } from '$lib/types';
@@ -230,6 +230,7 @@ function createContainerStore() {
 
 	async function fetchStatsInternal(envId: number | null) {
 		if (!browser || !envId || fetchingStats) return;
+		if (!isContainerMetricsEnabled(get(environments).find((e) => e.id === envId))) return;
 		fetchingStats = true;
 
 		// Abort any previous in-flight stream

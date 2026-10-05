@@ -427,6 +427,14 @@ export interface SecretProvider<C extends SecretProviderConfig = SecretProviderC
 	readonly supportsBulk: boolean;
 
 	/**
+	 * The provider config alone fully scopes a bulk pull (Infisical project +
+	 * environment + path, a Doppler token's project/config), so a bound provider
+	 * bulk-pulls even with no selector set. A selector, where the provider uses
+	 * one, still overrides the configured scope.
+	 */
+	readonly bulkScopedByConfig?: boolean;
+
+	/**
 	 * Detects whether a variable value is an inline reference in this backend's
 	 * syntax. Bulk-only providers return false for everything.
 	 */
@@ -482,4 +490,15 @@ export interface SecretProvider<C extends SecretProviderConfig = SecretProviderC
 	 * with ciphertext in place of its secrets.
 	 */
 	decryptEnvFile?(config: C, content: string, logPrefix?: string): Promise<Record<string, string>>;
+}
+
+/**
+ * The selector to bulk-pull with, or null when no bulk pull should happen: the
+ * stack's selector when set, else '' for a provider whose config alone scopes
+ * the pull. Shared by deploy-time resolution and the editor probe so both agree.
+ */
+export function bulkPullSelector(provider: SecretProvider, selector: string | undefined): string | null {
+	if (!provider.supportsBulk) return null;
+	if (selector) return selector;
+	return provider.bulkScopedByConfig ? '' : null;
 }

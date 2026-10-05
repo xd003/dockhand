@@ -228,6 +228,7 @@ export const infisicalProvider: SecretProvider<InfisicalConfig> = {
 	label: 'Infisical',
 	supportsReferences: false,
 	supportsBulk: true,
+	bulkScopedByConfig: true,
 
 	isReference(_value: unknown): _value is string {
 		return false;

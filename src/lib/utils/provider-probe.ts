@@ -15,8 +15,9 @@ export type ProviderProbeResult = { keys: Set<string>; error: string | null };
  * What a live probe of the bound provider needs from the stack's env vars: the bulk
  * selector (DOCKHAND_SECRET_SELECTOR / legacy OP_ENVIRONMENT_ID) and the inline
  * provider references, mapped var -> ref so a resolved ref maps back to its var.
- * Null when there is nothing to probe (no provider, or neither a selector nor a ref) -
- * the same inputs deploy-time resolution needs to inject anything.
+ * Null only when no provider is bound. A bound provider is probed even with neither
+ * a selector nor a ref: the server decides whether its config alone scopes a bulk
+ * pull (Infisical, Doppler), exactly as deploy-time resolution does.
  */
 export function providerProbeInput(providerId: number | null, envVars: EnvVarLike[]): ProviderProbeInput | null {
 	if (providerId === null) return null;
@@ -35,7 +36,6 @@ export function providerProbeInput(providerId: number | null, envVars: EnvVarLik
 		const value = (v.value ?? '').trim();
 		if (key && isInlineProviderRef(value)) refPairs.push({ varName: key, ref: value });
 	}
-	if (!selector && refPairs.length === 0) return null;
 	return { providerId, selector, refPairs };
 }
 

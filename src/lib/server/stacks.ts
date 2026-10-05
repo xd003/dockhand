@@ -69,7 +69,7 @@ import {
 	getRegistries
 } from './db';
 import { getProvider } from './secretproviders';
-import { stripSurroundingQuotes } from './secretproviders/shared';
+import { bulkPullSelector, stripSurroundingQuotes } from './secretproviders/shared';
 import { resolveComposeDockerHost, buildComposeBaseArgs } from './compose-docker-args';
 import { unregisterSchedule } from './scheduler';
 import { sendEventNotification } from './notifications';
@@ -4113,7 +4113,8 @@ export async function saveStackEnvVars(
 // what the provider supports:
 //   - bulk pull: a whole environment / path of secrets, triggered by a selector
 //     variable (OP_ENVIRONMENT_ID for 1Password back-compat, or the generic
-//     DOCKHAND_SECRET_SELECTOR for any bulk-capable provider).
+//     DOCKHAND_SECRET_SELECTOR for any bulk-capable provider), or by binding a
+//     provider whose config alone scopes the pull (bulkScopedByConfig).
 //   - inline references: values the provider recognises as references (e.g.
 //     1Password op://...), resolved in place.
 // The bound provider decides what a reference is and how to resolve it; nothing
@@ -4176,29 +4177,32 @@ async function resolveProviderEnvVars(
 			break;
 		}
 	}
-	if (selector && selectorVar) {
+	const bulkSelector = providerRow && provider ? bulkPullSelector(provider, selector) : null;
+	if (providerRow && provider && bulkSelector !== null) {
 		try {
-			if (providerRow && provider?.supportsBulk) {
-				// Strip the selector var from the values passed to the stack
+			// Strip the selector var from the values passed to the stack
+			if (selectorVar) {
 				delete secretVars[selectorVar];
 				delete dbNonSecretVars[selectorVar];
-
-				console.log(`${logPrefix} Resolving bulk selector via "${providerRow.name}" (${provider.label})`);
-				const bulkVars = await provider.resolveBulk(providerRow.config, selector);
-				console.log(`${logPrefix} ${provider.label} injected ${Object.keys(bulkVars).length} secret(s)`);
-
-				// Bulk values merged underneath, with explicit DB secrets keeping priority
-				secretVars = Object.assign(bulkVars, secretVars);
-			} else if (!providerRow) {
-				console.warn(`${logPrefix} ${selectorVar} is set but no secret provider is bound to this stack`);
-			} else if (!provider) {
-				console.warn(`${logPrefix} ${selectorVar} is set but bound provider type "${providerRow.type}" is not registered`);
-			} else {
-				console.warn(`${logPrefix} ${selectorVar} is set but provider "${providerRow.name}" (${provider.label}) does not support bulk pull`);
 			}
+
+			console.log(`${logPrefix} Resolving bulk ${bulkSelector ? 'selector' : 'pull (provider-configured scope)'} via "${providerRow.name}" (${provider.label})`);
+			const bulkVars = await provider.resolveBulk(providerRow.config, bulkSelector);
+			console.log(`${logPrefix} ${provider.label} injected ${Object.keys(bulkVars).length} secret(s)`);
+
+			// Bulk values merged underneath, with explicit DB secrets keeping priority
+			secretVars = Object.assign(bulkVars, secretVars);
 		} catch (e: unknown) {
 			const msg = e instanceof Error ? e.message : String(e);
 			throw new Error(`Failed to load secrets from provider: ${msg}`);
+		}
+	} else if (selectorVar) {
+		if (!providerRow) {
+			console.warn(`${logPrefix} ${selectorVar} is set but no secret provider is bound to this stack`);
+		} else if (!provider) {
+			console.warn(`${logPrefix} ${selectorVar} is set but bound provider type "${providerRow.type}" is not registered`);
+		} else {
+			console.warn(`${logPrefix} ${selectorVar} is set but provider "${providerRow.name}" (${provider.label}) does not support bulk pull`);
 		}
 	}
 

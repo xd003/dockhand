@@ -9,6 +9,7 @@
  */
 import { describe, it, expect } from 'bun:test';
 import { probeCombinedCached } from '../src/lib/server/secretproviders/probe-cache';
+import type { SecretProviderConfig } from '../src/lib/server/secretproviders/shared';
 
 /**
  * A provider that counts sessions. `resolveCombined` counts as ONE; the split
@@ -91,6 +92,21 @@ describe('probeCombinedCached', () => {
 		expect(refsOnly.counts.combined).toBe(0);
 		expect(refsOnly.counts.refs).toBe(1);
 		expect(b.bulkKeys).toEqual([]);
+	});
+
+	it('no selector: bulk-pulls only when the provider config scopes it (Infisical, Doppler)', async () => {
+		// The fake provider ignores its config entirely.
+		const config = {} as unknown as SecretProviderConfig;
+		const selectorScoped = sessionCountingProvider();
+		const a = await probeCombinedCached(freshId(), selectorScoped.provider, config, undefined, []);
+		expect(selectorScoped.counts.bulk).toBe(0);
+		expect(a.bulkKeys).toEqual([]);
+
+		const configScoped = sessionCountingProvider();
+		configScoped.provider.bulkScopedByConfig = true;
+		const b = await probeCombinedCached(freshId(), configScoped.provider, config, undefined, []);
+		expect(configScoped.counts.bulk).toBe(1);
+		expect(b.bulkKeys).toEqual(['BULK_A', 'BULK_B']);
 	});
 
 	it('a second probe inside the TTL hits the cache instead of the provider', async () => {

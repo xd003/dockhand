@@ -7,7 +7,7 @@
  * SERVICE token (dp.st.) already identifies the project + config; a PERSONAL token
  * (dp.pt.) is account-wide and needs project/config supplied in the config. Either
  * way the DOCKHAND_SECRET_SELECTOR is ignored (the config, not the selector, is
- * the scope).
+ * the scope), so binding the provider alone triggers the bulk pull.
  *
  * Auth is a Doppler service token sent as `Authorization: Bearer <token>`. The
  * download endpoint returns a flat `{ KEY: value }` JSON map when asked for
@@ -58,6 +58,7 @@ export const dopplerProvider: SecretProvider<DopplerConfig> = {
 	label: 'Doppler',
 	supportsReferences: false,
 	supportsBulk: true,
+	bulkScopedByConfig: true,
 
 	isReference(_value: unknown): _value is string {
 		return false;

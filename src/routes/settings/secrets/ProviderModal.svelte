@@ -101,7 +101,7 @@
 
 	// Per-stack bulk-selector field metadata (UI-only, like PROVIDER_FIELDS above).
 	// A provider type with no entry shows no selector field: doppler ignores the
-	// selector, connect has no bulk pull. The field's value is written to the stack
+	// selector (binding it alone bulk-pulls), connect has no bulk pull. The field's value is written to the stack
 	// env as DOCKHAND_SECRET_SELECTOR (consumed by resolveProviderEnvVars).
 	export type BulkSelectorField = { label: string; placeholder?: string; hint?: string };
 	export const BULK_SELECTOR_FIELDS: Record<string, BulkSelectorField> = {
@@ -117,8 +117,8 @@
 		},
 		'infisical': {
 			get label() { return m.settings_secrets_field_secret_path(); },
-			placeholder: '/',
-			get hint() { return m.settings_secrets_bulk_infisical_hint(); }
+			placeholder: 'provider default',
+			hint: 'Every secret at the provider\'s configured path (default /) is loaded automatically. Set a path here only to override it for this stack.'
 		},
 		'bitwarden': {
 			get label() { return m.settings_secrets_field_project(); },

@@ -11,7 +11,7 @@
  *     call is already in flight share that one Promise instead of spawning their own.
  */
 
-import type { SecretProvider, SecretProviderConfig } from './shared';
+import { bulkPullSelector, type SecretProvider, type SecretProviderConfig } from './shared';
 
 const TTL_MS = 30_000;
 
@@ -145,10 +145,11 @@ export async function probeCombinedCached(
 	selector: string | undefined,
 	refs: string[]
 ): Promise<{ bulkKeys: string[]; resolvedRefs: string[] }> {
-	const wantBulk = !!selector && provider.supportsBulk;
+	const bulkSelector = bulkPullSelector(provider, selector);
+	const wantBulk = bulkSelector !== null;
 	const wantRefs = refs.length > 0 && provider.supportsReferences;
 
-	const bulkKey = wantBulk ? `${providerId}:${selector}` : null;
+	const bulkKey = wantBulk ? `${providerId}:${bulkSelector}` : null;
 	const refKey = wantRefs ? refsKey(providerId, refs) : null;
 	const now = Date.now();
 	const bulkHit = bulkKey ? freshEntry(cache, bulkKey, now) : null;
@@ -164,7 +165,7 @@ export async function probeCombinedCached(
 		if (pending) return pending;
 
 		const call = (async () => {
-			const combined = await provider.resolveCombined!(config, selector, refs);
+			const combined = await provider.resolveCombined!(config, bulkSelector!, refs);
 			const bulkKeys = Object.keys(combined.bulk);
 			const resolvedRefs = [...combined.refs.keys()];
 			const at = Date.now();
@@ -181,7 +182,7 @@ export async function probeCombinedCached(
 
 	return {
 		bulkKeys: wantBulk
-			? await probeBulkKeysCached(providerId, provider, config, selector!)
+			? await probeBulkKeysCached(providerId, provider, config, bulkSelector!)
 			: [],
 		resolvedRefs: wantRefs ? await probeRefsCached(providerId, provider, config, refs) : []
 	};

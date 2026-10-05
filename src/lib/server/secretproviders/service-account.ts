@@ -14,6 +14,7 @@
  */
 
 import { createClient } from '@1password/sdk';
+import type { GetVariablesResponse } from '@1password/sdk';
 import type { SecretProvider, ServiceAccountConfig, TestConnectionResult } from './shared';
 import { stripSurroundingQuotes } from './shared';
 
@@ -105,7 +106,12 @@ export const serviceAccountProvider: SecretProvider<ServiceAccountConfig> = {
 		selector: string
 	): Promise<Record<string, string>> {
 		const client = await makeClient(token);
-		const response = await client.environments.getVariables(selector);
+		let response: GetVariablesResponse;
+		try {
+			response = await client.environments.getVariables(selector);
+		} catch (e) {
+			throw new Error(environmentErrorMessage(e, selector), { cause: e });
+		}
 		const result: Record<string, string> = {};
 		for (const variable of response.variables) {
 			result[variable.name] = variable.value;
@@ -113,3 +119,18 @@ export const serviceAccountProvider: SecretProvider<ServiceAccountConfig> = {
 		return result;
 	}
 };
+
+// The 1Password backend answers an Environment that EXISTS but is not shared with
+// this service account with this generic text (an unknown ID gets "Environment was
+// not found" instead). Verified live against 1Password; the SDK exposes no error code.
+const ENVIRONMENT_NO_ACCESS = 'An unexpected error occurred while processing the request';
+
+// Kept under the probe route's 200-char error cap.
+function environmentErrorMessage(e: unknown, environmentId: string): string {
+	const raw = e instanceof Error ? e.message : String(e);
+	if (raw.trim() !== ENVIRONMENT_NO_ACCESS) return raw;
+	return (
+		`the service account has no access to Environment ${environmentId}. ` +
+		'Grant it in 1Password: Developer > View Environments > Manage environment.'
+	);
+}

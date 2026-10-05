@@ -27,7 +27,11 @@ mock.module('@1password/sdk', () => ({
 				}
 			},
 			environments: {
-				getVariables: async () => ({ variables: [{ name: 'BULK_A', value: 'a' }] })
+				getVariables: async (id: string) => {
+					if (id === 'unshared_env') throw new Error('An unexpected error occurred while processing the request');
+					if (id === 'unknown_env') throw new Error('bad input passed by the user: Environment was not found');
+					return { variables: [{ name: 'BULK_A', value: 'a' }] };
+				}
 			}
 		};
 	}
@@ -91,5 +95,18 @@ describe('1Password service-account provider (#1436 hygiene)', () => {
 		// Both operations run, but createClient is cached per token -> one handshake.
 		expect(createClientCalls).toBe(1);
 		expect(resolveAllCalls).toBe(1);
+	});
+
+	test('explains the opaque error 1Password returns for an Environment not shared with the service account', async () => {
+		const err = await serviceAccountProvider.resolveBulk(config, 'unshared_env').catch((e) => e);
+		expect(err.message).toContain('no access to Environment unshared_env');
+		expect(err.message).toContain('Manage environment');
+		// Must fit the probe route's 200-char cap or the guidance gets cut off.
+		expect(err.message.length).toBeLessThanOrEqual(200);
+	});
+
+	test('passes other Environment errors through unchanged', async () => {
+		const err = await serviceAccountProvider.resolveBulk(config, 'unknown_env').catch((e) => e);
+		expect(err.message).toBe('bad input passed by the user: Environment was not found');
 	});
 });

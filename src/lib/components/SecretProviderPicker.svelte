@@ -42,6 +42,19 @@
 		onchange?.();
 	}
 
+	// The selector is provider-specific (a 1Password Environment id, an Infisical
+	// project scope, a Vault path, ...), so it goes with the provider: unbinding
+	// (None) or switching to a provider of another type drops the stale row.
+	function selectProvider(value: string) {
+		const next = value ? parseInt(value) : null;
+		const nextType = providers.find((p) => p.id === next)?.type ?? null;
+		if (next === null || nextType !== selectedType) {
+			envVars = envVars.filter((v) => !SELECTOR_VARS.includes(v.key.trim()));
+		}
+		secretProviderId = next;
+		onchange?.();
+	}
+
 	// --- Infisical: pick the project / environment from what the identity can read.
 	type ProjectOption = { id: string; name: string; environments: { slug: string; name: string }[] };
 	type ProjectList = {
@@ -116,7 +129,7 @@
 			<Select.Root
 				type="single"
 				value={secretProviderId !== null ? String(secretProviderId) : ''}
-				onValueChange={(v) => { secretProviderId = v ? parseInt(v) : null; onchange?.(); }}
+				onValueChange={selectProvider}
 			>
 				<Select.Trigger id="secret-provider-select{idSuffix}" class="h-7 text-xs flex-1 min-w-0 max-w-xs overflow-hidden">
 					{#if secretProviderId !== null}

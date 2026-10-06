@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getSecretProviders, createSecretProvider } from '$lib/server/db';
-import { hasProvider } from '$lib/server/secretproviders';
+import { hasProvider, providerConfigError } from '$lib/server/secretproviders';
 import { authorize } from '$lib/server/authorize';
 import { auditSecretProvider } from '$lib/server/audit';
 
@@ -33,7 +33,7 @@ export const GET: RequestHandler = async ({ cookies }) => {
  * summary: Create a secret provider (Vault, Infisical, Doppler, 1Password Connect)
  * body: {name:string!, type:string!, config:object!}
  * resp-201: {id:integer!, name:string!, type:string!}
- * resp-400: Name and type are required, unknown provider type, config missing, or a provider with this name already exists
+ * resp-400: Name and type are required, unknown provider type, config missing or incomplete, or a provider with this name already exists
  * resp-403: Permission denied (needs secrets:create)
  * resp-500: Failed to create secret provider
  */
@@ -58,6 +58,10 @@ export const POST: RequestHandler = async (event) => {
 		}
 		if (!config || typeof config !== 'object' || Array.isArray(config)) {
 			return json({ error: 'Config is required' }, { status: 400 });
+		}
+		const configError = providerConfigError(type, config);
+		if (configError) {
+			return json({ error: configError }, { status: 400 });
 		}
 
 		const existing = await getSecretProviders();

@@ -17,7 +17,11 @@
 		/** When present, overrides `required` based on the current form values (e.g. a
 		 *  field that is only required for some auth shapes). */
 		requiredWhen?: (config: Record<string, string>) => boolean;
+		/** Error shown when this required field is blank (default: "<label> is required"). */
+		requiredMessage?: string;
 		placeholder?: string;
+		/** Pre-filled when the provider type is picked on create (e.g. a public cloud host). */
+		defaultValue?: string;
 		hint?: string;
 	}
 
@@ -49,16 +53,16 @@
 			{ key: 'token', get label() { return m.settings_secrets_field_connect_token(); }, type: 'password', required: true, placeholder: 'eyJ...', get hint() { return m.settings_secrets_field_connect_token_hint(); } },
 		],
 		infisical: [
-			{ key: 'host', get label() { return m.settings_secrets_field_infisical_host(); }, type: 'text', required: true, placeholder: 'https://app.infisical.com', get hint() { return m.settings_secrets_field_infisical_host_hint(); } },
-			{ key: 'token', get label() { return m.settings_secrets_field_infisical_token(); }, type: 'password', required: false, placeholder: 'st...', get hint() { return m.settings_secrets_field_infisical_token_hint(); } },
-			{ key: 'clientId', get label() { return m.settings_secrets_field_infisical_client_id(); }, type: 'text', required: false, get placeholder() { return m.settings_secrets_field_infisical_client_id_placeholder(); }, get hint() { return m.settings_secrets_field_infisical_client_id_hint(); } },
-			{ key: 'clientSecret', get label() { return m.settings_secrets_field_infisical_client_secret(); }, type: 'password', required: false, get placeholder() { return m.settings_secrets_field_infisical_client_secret_placeholder(); }, get hint() { return m.settings_secrets_field_infisical_client_secret_hint(); } },
-			// A single-scope service token (st.*) carries its own project + environment, so
-			// both are optional for it. A multi-scope or glob-path service token, and every
-			// other auth shape (Universal Auth, static non-st token), still need them.
-			{ key: 'projectId', get label() { return m.settings_secrets_field_project_id(); }, type: 'text', required: true, requiredWhen: (c) => !(c.token ?? '').trim().startsWith('st.'), get placeholder() { return m.settings_secrets_field_infisical_project_id_placeholder(); }, get hint() { return m.settings_secrets_field_infisical_project_id_hint(); } },
-			{ key: 'environment', get label() { return m.settings_secrets_field_environment(); }, type: 'text', required: true, requiredWhen: (c) => !(c.token ?? '').trim().startsWith('st.'), placeholder: 'prod', get hint() { return m.settings_secrets_field_infisical_environment_hint(); } },
-			{ key: 'path', get label() { return m.settings_secrets_field_secret_path(); }, type: 'text', required: false, placeholder: '/', get hint() { return m.settings_secrets_field_infisical_path_hint(); } },
+			{ key: 'host', get label() { return m.settings_secrets_field_infisical_host(); }, type: 'text', required: true, defaultValue: 'https://app.infisical.com', placeholder: 'https://app.infisical.com', hint: 'Infisical Cloud (app / eu.infisical.com) or your self-hosted URL.' },
+			// Auth is either the static token OR the Universal Auth client ID + secret pair.
+			{ key: 'token', get label() { return m.settings_secrets_field_infisical_token(); }, type: 'password', required: false, requiredWhen: (c) => !(c.clientId ?? '').trim() && !(c.clientSecret ?? '').trim(), requiredMessage: 'Enter an access token, or a Universal Auth client ID and client secret', placeholder: 'st...', get hint() { return m.settings_secrets_field_infisical_token_hint(); } },
+			{ key: 'clientId', get label() { return m.settings_secrets_field_infisical_client_id(); }, type: 'text', required: false, requiredWhen: (c) => !!(c.clientSecret ?? '').trim(), get placeholder() { return m.settings_secrets_field_infisical_client_id_placeholder(); }, get hint() { return m.settings_secrets_field_infisical_client_id_hint(); } },
+			{ key: 'clientSecret', get label() { return m.settings_secrets_field_infisical_client_secret(); }, type: 'password', required: false, requiredWhen: (c) => !!(c.clientId ?? '').trim(), get placeholder() { return m.settings_secrets_field_infisical_client_secret_placeholder(); }, get hint() { return m.settings_secrets_field_infisical_client_secret_hint(); } },
+			// Project / environment / path are only defaults: each stack picks its own
+			// project and environment, so one provider per Machine Identity serves them all.
+			{ key: 'projectId', label: 'Default project ID', type: 'text', required: false, placeholder: 'project id (UUID)', hint: 'Used by stacks that don\'t pick a project. Leave blank to choose the project per stack.' },
+			{ key: 'environment', label: 'Default environment', type: 'text', required: false, placeholder: 'e.g. prod', hint: 'Environment slug used by stacks that don\'t pick one.' },
+			{ key: 'path', label: 'Default secret path', type: 'text', required: false, placeholder: '/', get hint() { return m.settings_secrets_field_infisical_path_hint(); } },
 		],
 		vault: [
 			{ key: 'address', get label() { return m.settings_secrets_field_vault_address(); }, type: 'text', required: true, placeholder: 'https://vault.example.com', get hint() { return m.settings_secrets_field_vault_address_hint(); } },
@@ -120,9 +124,9 @@
 			get hint() { return m.settings_secrets_bulk_vault_hint(); }
 		},
 		'infisical': {
-			get label() { return m.settings_secrets_field_secret_path(); },
-			placeholder: 'provider default',
-			hint: 'Every secret at the provider\'s configured path (default /) is loaded automatically. Set a path here only to override it for this stack.'
+			label: 'Project',
+			placeholder: 'projectId[/env[/path]]',
+			hint: 'The Infisical project (and optionally environment and secret path) for this stack. Anything left blank uses the provider\'s defaults.'
 		},
 		'bitwarden': {
 			get label() { return m.settings_secrets_field_project(); },
@@ -274,7 +278,7 @@
 			// allowed to be empty; non-secret required fields still must be present.
 			if (editing && field.type === 'password') continue;
 			if (fieldRequired(field, config) && !config[field.key]) {
-				return m.settings_secrets_error_field_required({ field: field.label });
+				return field.requiredMessage ?? m.settings_secrets_error_field_required({ field: field.label });
 			}
 		}
 		return null;
@@ -282,8 +286,11 @@
 
 	function onTypeChange(value: string) {
 		formType = value;
-		// Fields differ per type; drop any stale values.
+		// Fields differ per type; drop any stale values and pre-fill the new defaults.
 		resetConfig();
+		for (const field of PROVIDER_FIELDS[value] ?? []) {
+			if (field.defaultValue) formConfig[field.key] = field.defaultValue;
+		}
 		formError = '';
 	}
 

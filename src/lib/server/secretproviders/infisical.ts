@@ -7,6 +7,11 @@
  * marker), so this provider is bulk-only: `resolveSecretReferences` is
  * unsupported and `isReference` is always false.
  *
+ * The provider holds the credentials; the project / environment / path stored on
+ * it are only defaults. Each stack picks its own scope through the bulk selector
+ * (`<projectId>[/<environment>[/<path>]]`, see $lib/utils/infisical-selector), and
+ * `listProjects` feeds the stack editor's project / environment pick lists.
+ *
  * Two auth shapes are supported (see InfisicalConfig):
  *   - a static `token`, sent as-is as `Authorization: Bearer <token>`.
  *   - a Machine Identity (`clientId` + `clientSecret`), exchanged for a
@@ -21,9 +26,10 @@
  */
 
 import { request } from 'undici';
-import type { InfisicalConfig, SecretProvider, TestConnectionResult } from './shared';
+import type { InfisicalConfig, ProviderProject, SecretProvider, TestConnectionResult } from './shared';
 import { assertSafeProviderHost, parseProviderError, isJsonResponse } from './shared';
 import { UnsupportedOperationError } from './shared';
+import { parseInfisicalSelector } from '../../utils/infisical-selector';
 
 /** Shape of a single secret in the /api/v3/secrets/raw response. */
 interface RawSecret {
@@ -58,9 +64,9 @@ function isServiceToken(token: string | undefined): boolean {
  * workspaceId, and Infisical answers a bare 400 - so when a service-token config with no
  * projectId gets a 4xx, point the user at the real cause.
  */
-function multiScopeHint(statusCode: number, config: InfisicalConfig): string {
-	if (statusCode === 400 && isServiceToken(config.token) && !config.projectId?.trim()) {
-		return ' - a multi-scope or glob-path service token still needs a Project ID; set it in the provider config';
+function multiScopeHint(statusCode: number, config: InfisicalConfig, projectId: string | undefined): string {
+	if (statusCode === 400 && isServiceToken(config.token) && !projectId) {
+		return ' - a multi-scope or glob-path service token still needs a Project ID; pick one for the stack or set a default on the provider';
 	}
 	return '';
 }
@@ -223,6 +229,57 @@ export function __resetInfisicalUniversalAuthCacheForTests(): void {
 	universalAuthTokenCache.clear();
 }
 
+/** A project as returned by GET /api/v1/projects (or the legacy /api/v1/workspace). */
+interface RawProject {
+	id?: string;
+	name?: string;
+	type?: string;
+	environments?: { slug?: string; name?: string }[];
+}
+
+/**
+ * Lists the secret-manager projects (with environments) the token can read. Uses
+ * GET /api/v1/projects; a self-hosted Infisical older than that route answers 404,
+ * so fall back to the deprecated GET /api/v1/workspace, which has the same shape
+ * under `workspaces`.
+ */
+async function fetchProjects(host: string, token: string): Promise<ProviderProject[]> {
+	const headers = { authorization: `Bearer ${token}` };
+	let { statusCode, body } = await request(`${baseUrl(host)}/api/v1/projects?type=secret-manager`, { method: 'GET', headers });
+	let listKey: 'projects' | 'workspaces' = 'projects';
+	if (statusCode === 404) {
+		await body.text().catch(() => '');
+		({ statusCode, body } = await request(`${baseUrl(host)}/api/v1/workspace`, { method: 'GET', headers }));
+		listKey = 'workspaces';
+	}
+
+	const rawBody = await body.text().catch(() => '');
+	if (statusCode < 200 || statusCode >= 300) {
+		if (rawBody) console.warn(`[Infisical] list projects ${statusCode}: ${rawBody}`);
+		const safe = parseProviderError(rawBody);
+		throw new Error(`[Infisical] Listing projects failed with HTTP ${statusCode}${safe ? `: ${safe}` : ''}`);
+	}
+	if (!isJsonResponse(rawBody)) {
+		throw new Error('[Infisical] did not return a JSON response - the host may not be an Infisical server');
+	}
+
+	const payload = JSON.parse(rawBody) as Partial<Record<typeof listKey, RawProject[]>>;
+	const projects: ProviderProject[] = [];
+	for (const p of payload[listKey] ?? []) {
+		if (!p?.id) continue;
+		// The legacy route has no type filter; drop cert-manager / kms / ... projects.
+		if (p.type && p.type !== 'secret-manager') continue;
+		projects.push({
+			id: p.id,
+			name: p.name || p.id,
+			environments: (p.environments ?? [])
+				.filter((e): e is { slug: string; name?: string } => !!e?.slug)
+				.map((e) => ({ slug: e.slug, name: e.name || e.slug }))
+		});
+	}
+	return projects.sort((a, b) => a.name.localeCompare(b.name));
+}
+
 export const infisicalProvider: SecretProvider<InfisicalConfig> = {
 	type: 'infisical',
 	label: 'Infisical',
@@ -233,6 +290,8 @@ export const infisicalProvider: SecretProvider<InfisicalConfig> = {
 	isReference(_value: unknown): _value is string {
 		return false;
 	},
+
+	validateConfig: authConfigError,
 
 	async testConnection(config: InfisicalConfig): Promise<TestConnectionResult> {
 		const host = config.host?.trim();
@@ -246,18 +305,17 @@ export const infisicalProvider: SecretProvider<InfisicalConfig> = {
 		if (authError) {
 			return { ok: false, error: authError };
 		}
-		// A service token carries its own project + environment, so they are optional
-		// for it; every other auth shape still requires them.
-		const serviceToken = isServiceToken(config.token);
-		if (!projectId && !serviceToken) {
-			return { ok: false, error: 'Project ID is empty' };
-		}
-		if (!environment && !serviceToken) {
-			return { ok: false, error: 'Environment is empty' };
-		}
 
 		try {
 			const token = await resolveAccessToken(config);
+			// Without a full default scope (stacks pick their own project) there is no
+			// secret path to read; listing projects proves the host + credentials instead.
+			// A service token carries its own scope, so it is tested against /secrets/raw.
+			if (!isServiceToken(config.token) && !(projectId && environment)) {
+				await fetchProjects(host, token);
+				return { ok: true };
+			}
+
 			const { statusCode, body } = await request(
 				rawSecretsUrl(host, projectId, environment, '/'),
 				{
@@ -276,7 +334,7 @@ export const infisicalProvider: SecretProvider<InfisicalConfig> = {
 			}
 			if (rawBody) console.warn(`[Infisical] testConnection ${statusCode}: ${rawBody}`);
 			const safe = parseProviderError(rawBody);
-			return { ok: false, error: `Infisical returned HTTP ${statusCode}${safe ? `: ${safe}` : ''}${multiScopeHint(statusCode, config)}` };
+			return { ok: false, error: `Infisical returned HTTP ${statusCode}${safe ? `: ${safe}` : ''}${multiScopeHint(statusCode, config, projectId)}` };
 		} catch (e: unknown) {
 			const message = e instanceof Error ? e.message : String(e);
 			return { ok: false, error: message || 'Connection failed' };
@@ -291,9 +349,12 @@ export const infisicalProvider: SecretProvider<InfisicalConfig> = {
 
 	async resolveBulk(config: InfisicalConfig, selector: string): Promise<Record<string, string>> {
 		const host = config.host?.trim();
-		const projectId = config.projectId?.trim();
-		const environment = config.environment?.trim();
-		const secretPath = selector?.trim() || config.path?.trim() || '/';
+		// The stack's selector picks the scope; anything it leaves out falls back to
+		// the provider's defaults.
+		const scope = parseInfisicalSelector(selector);
+		const projectId = scope.projectId || config.projectId?.trim();
+		const environment = scope.environment || config.environment?.trim();
+		const secretPath = scope.path || config.path?.trim() || '/';
 
 		if (!host) {
 			throw new Error('[Infisical] Host is required for a bulk pull');
@@ -306,10 +367,10 @@ export const infisicalProvider: SecretProvider<InfisicalConfig> = {
 		// still requires them.
 		const serviceToken = isServiceToken(config.token);
 		if (!projectId && !serviceToken) {
-			throw new Error('[Infisical] Project ID is required for a bulk pull');
+			throw new Error('[Infisical] No project selected - pick one for the stack or set a default on the provider');
 		}
 		if (!environment && !serviceToken) {
-			throw new Error('[Infisical] Environment is required for a bulk pull');
+			throw new Error('[Infisical] No environment selected - pick one for the stack or set a default on the provider');
 		}
 
 		const token = await resolveAccessToken(config);
@@ -325,7 +386,7 @@ export const infisicalProvider: SecretProvider<InfisicalConfig> = {
 			// Drain the body, log it server-side, but never reflect it to the client.
 			const detail = await body.text().catch(() => '');
 			if (detail) console.warn(`[Infisical] bulk pull ${statusCode}: ${detail}`);
-			throw new Error(`[Infisical] Bulk pull failed with HTTP ${statusCode}${multiScopeHint(statusCode, config)}`);
+			throw new Error(`[Infisical] Bulk pull failed with HTTP ${statusCode}${multiScopeHint(statusCode, config, projectId)}`);
 		}
 
 		const payload = (await body.json()) as RawSecretsResponse;
@@ -336,5 +397,17 @@ export const infisicalProvider: SecretProvider<InfisicalConfig> = {
 			}
 		}
 		return result;
+	},
+
+	async listProjects(config: InfisicalConfig): Promise<ProviderProject[]> {
+		const host = config.host?.trim();
+		if (!host) {
+			throw new Error('[Infisical] Host is required');
+		}
+		const authError = authConfigError(config);
+		if (authError) {
+			throw new Error(`[Infisical] ${authError}`);
+		}
+		return fetchProjects(host, await resolveAccessToken(config));
 	}
 };

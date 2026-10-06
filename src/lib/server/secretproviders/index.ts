@@ -49,6 +49,14 @@ export function hasProvider(type: SecretProviderType): boolean {
 }
 
 /**
+ * Offline completeness check of a config about to be saved (see
+ * SecretProvider.validateConfig). Null when the provider has no such check.
+ */
+export function providerConfigError(type: SecretProviderType, config: SecretProviderConfig): string | null {
+	return getProvider(type)?.validateConfig?.(config) ?? null;
+}
+
+/**
  * Validates a provider config against its backend. Returns a clear error when
  * the type is not registered.
  */

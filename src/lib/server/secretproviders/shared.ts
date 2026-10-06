@@ -148,9 +148,10 @@ export interface ConnectConfig {
 }
 
 /**
- * Infisical: an API host (self-hosted or cloud), a machine-identity or service
- * token, and the project/environment coordinates a bulk pull targets. `path`
- * and `environment` may be overridden per stack via the bulk selector.
+ * Infisical: an API host (self-hosted or cloud) and a machine-identity or service
+ * token. `projectId` / `environment` / `path` are DEFAULTS: each stack can pick its
+ * own via the bulk selector (see $lib/utils/infisical-selector), so one provider per
+ * identity serves every project the identity can access.
  */
 export interface InfisicalConfig {
 	host: string;
@@ -160,8 +161,8 @@ export interface InfisicalConfig {
 	clientId?: string;
 	/** Universal Auth (Machine Identity) client secret. Paired with clientId. */
 	clientSecret?: string;
-	/** Required for Universal Auth / static non-`st.` tokens; optional for a service
-	 *  token (`st.*`), which carries its own project. */
+	/** Default project for stacks whose selector names none. Not needed for a
+	 *  single-scope service token (`st.*`), which carries its own project. */
 	projectId?: string;
 	environment?: string;
 	path?: string;
@@ -432,7 +433,7 @@ export interface SecretProvider<C extends SecretProviderConfig = SecretProviderC
 	/**
 	 * Fetches every secret under a provider-defined selector as a flat key/value
 	 * map. The selector is opaque and provider-specific (a 1Password Environment
-	 * id, an Infisical path, a Vault kv path, ...). Providers without a bulk
+	 * id, an Infisical project/environment/path, a Vault kv path, ...). Providers without a bulk
 	 * concept throw {@link UnsupportedOperationError}.
 	 */
 	resolveBulk(config: C, selector: string): Promise<Record<string, string>>;
@@ -450,6 +451,29 @@ export interface SecretProvider<C extends SecretProviderConfig = SecretProviderC
 		refs: string[],
 		logPrefix?: string
 	): Promise<{ bulk: Record<string, string>; refs: Map<string, string> }>;
+
+	/**
+	 * Optional: the projects (and their environments) the configured credentials can
+	 * read, so the stack editor can offer them as a pick list instead of a raw id.
+	 * Only implemented where the backend can enumerate them (Infisical).
+	 */
+	listProjects?(config: C): Promise<ProviderProject[]>;
+
+	/**
+	 * Optional: offline check (no network) that a config is complete enough to save.
+	 * Returns a human-readable error, or null when usable. Runs on the EFFECTIVE config
+	 * at create/update (stored secrets merged in), since the edit form leaves secrets
+	 * blank to mean "keep". Implemented where the required set is conditional (Infisical:
+	 * a token OR a Universal Auth pair).
+	 */
+	validateConfig?(config: C): string | null;
+}
+
+/** A project the provider's credentials can read, with its environments. */
+export interface ProviderProject {
+	id: string;
+	name: string;
+	environments: { slug: string; name: string }[];
 }
 
 /**

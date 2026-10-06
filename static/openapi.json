@@ -24989,7 +24989,7 @@
             }
           },
           "400": {
-            "description": "Name and type are required, unknown provider type, config missing, or a provider with this name already exists"
+            "description": "Name and type are required, unknown provider type, config missing or incomplete, or a provider with this name already exists"
           },
           "403": {
             "description": "Permission denied (needs secrets:create)"
@@ -25189,7 +25189,7 @@
             }
           },
           "400": {
-            "description": "Invalid ID, empty name, unknown type, config not an object, or the name already exists"
+            "description": "Invalid ID, empty name, unknown type, config not an object or incomplete, or the name already exists"
           },
           "403": {
             "description": "Permission denied (needs secrets:edit)"
@@ -25406,6 +25406,85 @@
             }
           }
         }
+      }
+    },
+    "/api/secret-providers/{id}/projects": {
+      "get": {
+        "operationId": "get_api_secret-providers_id_projects",
+        "tags": [
+          "secret-providers"
+        ],
+        "summary": "List the projects and environments a stored provider's credentials can read",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "The secret provider id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok=true returns the projects (id, name, environments[{slug,name}]) and the provider's default projectId/environment/path; ok=false folds a provider error in (still 200) so an unreachable provider never breaks the editor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "projects": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {}
+                      }
+                    },
+                    "defaults": {
+                      "type": "object",
+                      "properties": {}
+                    },
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "ok"
+                  ]
+                },
+                "example": {
+                  "ok": true,
+                  "projects": [
+                    {}
+                  ],
+                  "defaults": {},
+                  "error": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid ID, unknown provider type, or the provider cannot list projects"
+          },
+          "403": {
+            "description": "Permission denied (needs secrets:view)"
+          },
+          "404": {
+            "description": "Secret provider not found"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ]
       }
     },
     "/api/secret-providers/{id}/test": {

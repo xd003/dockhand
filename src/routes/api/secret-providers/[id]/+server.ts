@@ -7,8 +7,9 @@ import {
 	deleteSecretProvider,
 	getStacksUsingSecretProvider
 } from '$lib/server/db';
-import { hasProvider } from '$lib/server/secretproviders';
-import { redactProviderConfig } from '$lib/server/secretproviders/shared';
+import { hasProvider, providerConfigError } from '$lib/server/secretproviders';
+import { redactProviderConfig, mergeProviderConfigForWrite } from '$lib/server/secretproviders/shared';
+import type { SecretProviderConfig } from '$lib/server/secretproviders/shared';
 import { authorize } from '$lib/server/authorize';
 import { auditSecretProvider } from '$lib/server/audit';
 
@@ -59,7 +60,7 @@ export const GET: RequestHandler = async ({ params, cookies }) => {
  * path: id:integer The secret provider id
  * body: {name:string, type:string, config:object}
  * resp-200: {id:integer!, name:string!, type:string!}
- * resp-400: Invalid ID, empty name, unknown type, config not an object, or the name already exists
+ * resp-400: Invalid ID, empty name, unknown type, config not an object or incomplete, or the name already exists
  * resp-403: Permission denied (needs secrets:edit)
  * resp-404: Secret provider not found
  * resp-500: Failed to update secret provider
@@ -95,6 +96,18 @@ export const PUT: RequestHandler = async (event) => {
 		}
 		if (config !== undefined && (typeof config !== 'object' || config === null || Array.isArray(config))) {
 			return json({ error: 'Config must be an object' }, { status: 400 });
+		}
+		if (config !== undefined) {
+			// Validate what will be persisted: with the type unchanged, blank secrets keep
+			// their stored values (same merge as updateSecretProvider).
+			const effectiveType = type ?? existing.type;
+			const effective = effectiveType === existing.type
+				? mergeProviderConfigForWrite(config, existing.config as unknown as Record<string, unknown>)
+				: config;
+			const configError = providerConfigError(effectiveType, effective as unknown as SecretProviderConfig);
+			if (configError) {
+				return json({ error: configError }, { status: 400 });
+			}
 		}
 
 		if (name !== undefined && name !== existing.name) {

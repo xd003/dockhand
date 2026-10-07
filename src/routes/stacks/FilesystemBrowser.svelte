@@ -62,6 +62,9 @@
 	let loading = $state(false);
 	let error = $state<string | null>(null);
 
+	// Filter query for quickly narrowing down the file list
+	let filterQuery = $state('');
+
 	// Track selected file
 	let selectedPath = $state<string | null>(null);
 	let selectedName = $state<string | null>(null);
@@ -101,6 +104,7 @@
 
 	async function loadDirectory(path: string) {
 		loading = true;
+		filterQuery = ''; // Clear filter when navigating
 		error = null;
 
 		try {
@@ -280,12 +284,15 @@
 
 	const canGoUp = $derived(currentPath && currentPath !== '/');
 
-	// In directory mode, only show directories; otherwise show all
-	const filteredEntries = $derived(
-		selectMode === 'directory'
+	// In directory mode, only show directories; otherwise show all.
+	// Also apply the user's filter query (case-insensitive name match).
+	const filteredEntries = $derived.by(() => {
+		const result = selectMode === 'directory'
 			? entries.filter(e => e.type === 'directory')
-			: entries
-	);
+			: entries;
+		const q = filterQuery.trim().toLowerCase();
+		return q ? result.filter(e => e.name.toLowerCase().includes(q)) : result;
+	});
 
 	const isAdoptMode = $derived(selectMode === 'adopt');
 </script>
@@ -328,6 +335,16 @@
 						<ArrowUp class="w-4 h-4" />
 					</button>
 					<code class="text-xs bg-muted px-2 py-1 rounded truncate flex-1 min-w-0">{currentPath || '/'}</code>
+					<div class="relative flex items-center flex-1 min-w-0 max-w-52">
+						<Search class="absolute left-2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
+						<input
+							type="text"
+							bind:value={filterQuery}
+							placeholder="Filter…"
+							aria-label="Filter files"
+							class="w-full pl-7 pr-2 py-1 text-xs rounded border bg-background focus:outline-none focus:ring-1 focus:ring-ring"
+						/>
+					</div>
 					{#if apiUrl === '/api/system/files' && creatingFolder}
 						<div class="flex items-center gap-1">
 							<Input
@@ -407,7 +424,12 @@
 				{:else if filteredEntries.length === 0}
 					<div class="flex flex-col items-center justify-center py-12 text-muted-foreground">
 						<FolderOpen class="w-12 h-12 mb-3 opacity-50" />
-						<p>{selectMode === 'directory' ? 'No subdirectories' : 'Directory is empty'}</p>
+						{#if filterQuery.trim() && entries.length > 0}
+							<p>No matches for "<span class="font-medium">{filterQuery}</span>"</p>
+							<button type="button" class="mt-2 text-xs text-primary hover:underline" onclick={() => filterQuery = ''}>Clear filter</button>
+						{:else}
+							<p>{selectMode === 'directory' ? 'No subdirectories' : 'Directory is empty'}</p>
+						{/if}
 					</div>
 				{:else}
 					<div class="divide-y">

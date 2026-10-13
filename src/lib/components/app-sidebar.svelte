@@ -4,6 +4,7 @@
 	import { goto } from '$app/navigation';
 	import * as Sidebar from '$lib/components/ui/sidebar';
 	import { useSidebar } from '$lib/components/ui/sidebar';
+	import { SIDEBAR_WIDTH } from '$lib/components/ui/sidebar/constants.js';
 	import {
 		LayoutDashboard,
 		Box,
@@ -181,6 +182,21 @@
 		}
 	});
 
+	// Fit the desktop sidebar to its longest menu label instead of a fixed width
+	// that is too wide in English and still too narrow in some translations.
+	// Labels truncate, so scrollWidth is their natural width at any sidebar width.
+	// 3.5rem = group padding (2×0.5rem) + button padding (2×0.5rem) + icon (1rem)
+	// + gap (0.5rem); 2px covers the border-e and scrollWidth rounding.
+	let sidebarRoot = $state<HTMLElement | null>(null);
+	$effect(() => {
+		void visibleItems;
+		if (!sidebarRoot || !sidebar.open) return;
+		const labels = sidebarRoot.querySelectorAll<HTMLElement>('[data-sidebar="menu-button"] > span:last-child');
+		let widest = 0;
+		for (const label of labels) widest = Math.max(widest, label.scrollWidth);
+		if (widest > 0) sidebarRoot.style.setProperty('--sidebar-width', `max(${SIDEBAR_WIDTH}, calc(3.5rem + ${widest + 2}px))`);
+	});
+
 	function persist(order: string[]) {
 		sidebarPreferencesStore.save({ order, hidden: [...hiddenSet] });
 	}
@@ -251,7 +267,7 @@
 	</div>
 {/snippet}
 
-<Sidebar.Root collapsible="icon">
+<Sidebar.Root collapsible="icon" bind:ref={sidebarRoot}>
 	<Sidebar.Header class="overflow-visible flex items-center justify-center p-0">
 		<!-- Expanded state: logo + collapse button -->
 		<div class="relative flex items-center justify-center w-full group-data-[state=collapsed]:hidden">

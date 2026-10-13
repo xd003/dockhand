@@ -15,7 +15,7 @@ What this fork adds on top of [upstream Dockhand](https://github.com/Finsys/dock
 | [Metrics and activity](#metrics-and-activity) | Per-environment switch for container stats, collection toggles that actually stop collection |
 | [Sign-in and environments](#sign-in-and-environments) | OIDC from environment variables, no duplicate environments |
 | [Phones and tablets](#phones-and-tablets) | Responsive layouts for every page and dialog |
-| [Fixes](#fixes) | Rows don't jump while hovered, deploy history survives an unwritable log dir, DB migrations apply exactly once |
+| [Fixes](#fixes) | Rows don't jump while hovered, deploy history survives an unwritable log dir, DB migrations apply exactly once, sidebar sized to its labels |
 | [Environment variables](#environment-variables) | Every variable the fork adds, in one table |
 
 ## Stacks
@@ -98,6 +98,7 @@ Untracked stacks (running in Docker, unknown to Dockhand) can be taken over with
 - **Rows stop jumping.** On the stacks and containers lists, live stats don't re-sort the row under your pointer.
 - **Deploy history survives log errors.** If the deploy-log directory isn't writable, the deploy is still recorded with its result (log marked truncated). Fresh containers also get correct ownership on that directory.
 - **Database migrations apply exactly once.** Databases upgraded in a certain order missed some of the fork's migrations (e.g. "no such column: collect_container_metrics"), and re-dated migrations could run twice ("duplicate column"). Applied migrations are now tracked by content, so each one runs exactly once, whatever order it arrives in.
+- **Sidebar fits its labels.** The desktop sidebar is as wide as its longest menu label (at least 9rem) instead of a fixed 12rem, so English isn't padded out and longer translations (French, Polish) still aren't truncated.
 
 ## Environment variables
 

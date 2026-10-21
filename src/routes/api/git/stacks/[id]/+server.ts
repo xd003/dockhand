@@ -293,7 +293,7 @@ export const PUT: RequestHandler = async (event) => {
 					console.error('Failed to deploy git stack:', error);
 					send('result', {
 						...safeUpdated,
-						deployResult: { success: false, error: 'Failed to deploy git stack' }
+						deployResult: { success: false, error: error instanceof Error ? error.message : String(error) }
 					});
 				}
 			}, request);

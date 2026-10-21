@@ -51,7 +51,7 @@ export const POST: RequestHandler = async (event) => {
 				send('result', result);
 			} catch (error) {
 				console.error('Failed to deploy git stack:', error);
-				send('result', { success: false, error: 'Failed to deploy git stack' });
+				send('result', { success: false, error: error instanceof Error ? error.message : String(error) });
 			}
 		}, event.request);
 	} catch (error) {

@@ -26,6 +26,23 @@ export function classifyMarker(
 }
 
 /**
+ * Classifies one optional compose var (`${VAR:-default}` / `${VAR-default}`).
+ * Compose never calls it missing, but the bound provider still injects it at deploy
+ * and that value beats the inline default - so a key the live probe confirmed is
+ * IN VAULT, whatever the fallback (including an empty `${VAR:-}`). A local value in
+ * the env editor keeps it plain optional, as does a failed probe.
+ */
+export function classifyOptionalMarker(
+	name: string,
+	hasLocalValue: boolean,
+	providerKeySet: Set<string>,
+	probeFailed: boolean
+): 'optional' | 'invault' {
+	if (!hasLocalValue && !probeFailed && providerKeySet.has(name)) return 'invault';
+	return 'optional';
+}
+
+/**
  * The panel's "missing" set: compose-required vars with no local value, MINUS the
  * ones the bound provider currently supplies (the LIVE probe set). This is the SAME
  * source the editor's IN VAULT markers use, so panel and editor always agree. The

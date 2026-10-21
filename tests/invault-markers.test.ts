@@ -1,6 +1,7 @@
 import { describe, test, expect } from 'bun:test';
 import {
 	classifyMarker,
+	classifyOptionalMarker,
 	resolvedRefVarNames,
 	effectiveMissing,
 	isInlineProviderRef,
@@ -29,6 +30,26 @@ describe('classifyMarker', () => {
 
 	test('empty provider set -> every missing var is missing', () => {
 		expect(classifyMarker('DB_PASSWORD', true, new Set(), false)).toBe('missing');
+	});
+});
+
+describe('classifyOptionalMarker', () => {
+	const inVault = new Set(['DEFAULT_USERNAME', 'NODE_ENV']);
+
+	test('an optional var (any default, even empty) present in the provider is invault', () => {
+		expect(classifyOptionalMarker('DEFAULT_USERNAME', false, inVault, false)).toBe('invault');
+	});
+
+	test('an optional var absent from the provider stays optional', () => {
+		expect(classifyOptionalMarker('COOKIE_DOMAIN', false, inVault, false)).toBe('optional');
+	});
+
+	test('a local value keeps it optional even when the provider has it', () => {
+		expect(classifyOptionalMarker('NODE_ENV', true, inVault, false)).toBe('optional');
+	});
+
+	test('probe failure keeps it optional (never a false green)', () => {
+		expect(classifyOptionalMarker('DEFAULT_USERNAME', false, inVault, true)).toBe('optional');
 	});
 });
 

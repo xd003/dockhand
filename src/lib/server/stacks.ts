@@ -347,8 +347,11 @@ export async function withStackLock<T>(stackName: string, fn: () => Promise<T>):
 const COMPOSE_TIMEOUT_MS = parseInt(process.env.COMPOSE_TIMEOUT || '900') * 1000; // Default 15 min
 const COMPOSE_KILL_GRACE_MS = 5000; // 5 seconds grace period before SIGKILL
 
-// Max Git publish transport size: 10 MB per file, 256 MB total payload
-const MAX_FILE_SIZE = 10 * 1024 * 1024;
+// Max Git publish transport size: per file (GIT_PUBLISH_MAX_FILE_SIZE_MB env var, default 10 MB), 256 MB total payload
+const MAX_FILE_SIZE = (() => {
+	const mb = Number(process.env.GIT_PUBLISH_MAX_FILE_SIZE_MB);
+	return (Number.isFinite(mb) && mb > 0 ? mb : 10) * 1024 * 1024;
+})();
 const MAX_TOTAL_SIZE = 256 * 1024 * 1024;
 
 // =============================================================================

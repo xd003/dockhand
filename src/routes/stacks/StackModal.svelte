@@ -10,7 +10,7 @@
 	import SecretProviderPicker from '$lib/components/SecretProviderPicker.svelte';
 	import { SELECTOR_VARS, BULK_SELECTOR_VAR, bulkSelectorValue } from '$lib/utils/bulk-selector';
 	import { parseEnvFileForForm } from '$lib/utils/env-file-values';
-	import { classifyMarker } from '$lib/utils/invault-markers';
+	import { classifyMarker, classifyOptionalMarker } from '$lib/utils/invault-markers';
 	import { probeProviderKeys, providerProbeInput } from '$lib/utils/provider-probe';
 	import { applyQuickFix, findingKey } from '$lib/utils/compose-quick-fix';
 	import { Layers, Save, Play, Code, GitGraph, GitBranch, GitCommitHorizontal, Github, Loader2, AlertCircle, X, Sun, Moon, TriangleAlert, GripVertical, GripHorizontal, FolderOpen, Copy, Check, XCircle, MapPin, ArrowRight, ArrowDown, Box, FolderSync, Archive, Lock, FileText, FilePlus, ListChecks, History, ChevronDown, Settings2, Download } from 'lucide-svelte';
@@ -1510,12 +1510,13 @@
 			}
 		}
 
-		// Add optional variables
+		// Add optional variables - the provider's value beats the inline default at
+		// deploy, so a key the live probe confirmed is 'invault' here too.
 		for (const name of envValidation.optional) {
 			const env = envVarMap.get(name);
 			markers.push({
 				name,
-				type: 'optional',
+				type: classifyOptionalMarker(name, !!env?.value, providerKeySet, probeError !== null),
 				value: env?.value,
 				isSecret: env?.isSecret
 			});

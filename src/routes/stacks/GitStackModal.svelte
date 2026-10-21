@@ -22,7 +22,7 @@
 	import type { VariableMarker } from '$lib/components/CodeEditor.svelte';
 	import SecretProviderPicker from '$lib/components/SecretProviderPicker.svelte';
 	import { SELECTOR_VARS } from '$lib/utils/bulk-selector';
-	import { classifyMarker } from '$lib/utils/invault-markers';
+	import { classifyMarker, classifyOptionalMarker } from '$lib/utils/invault-markers';
 	import { probeProviderKeys, providerProbeInput } from '$lib/utils/provider-probe';
 	import BranchCombobox from './BranchCombobox.svelte';
 	import IconPickerModal from './IconPickerModal.svelte';
@@ -767,7 +767,7 @@
 			})),
 			...envValidation.optional.map((name) => ({
 				name,
-				type: 'optional' as const,
+				type: classifyOptionalMarker(name, !!envVarMap.get(name)?.value, providerKeySet, probeError !== null),
 				value: envVarMap.get(name)?.value,
 				isSecret: envVarMap.get(name)?.isSecret
 			}))

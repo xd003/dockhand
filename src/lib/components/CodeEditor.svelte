@@ -368,23 +368,25 @@
 
 					// Determine what to show:
 					// 1. If value is provided in env vars editor -> green with that value
-					// 2. If no value but has default in syntax -> blue with default value
-					// 3. If no value and no default (missing) -> red MISSING
+					// 2. If the bound provider supplies it -> green IN VAULT (its value beats
+					//    any inline default at deploy)
+					// 3. If no value but has default in syntax -> blue with default value
+					// 4. If no value and no default (missing) -> red MISSING
 
 					let widget: VariableValueWidget;
 
 					if (marker.value) {
 						// Value provided in env vars editor -> GREEN
 						widget = new VariableValueWidget(marker.value, marker.isSecret ?? false, 'provided');
+					} else if (marker.type === 'invault') {
+						// Present in the bound secret provider (live) -> GREEN
+						widget = new VariableValueWidget('', false, 'invault');
 					} else if (hasDefault && match[1]) {
 						// Has default value from compose syntax -> BLUE
 						widget = new VariableValueWidget(match[1], false, 'default');
 					} else if (marker.defaultValue) {
 						// Has default value from marker -> BLUE
 						widget = new VariableValueWidget(marker.defaultValue, false, 'default');
-					} else if (marker.type === 'invault') {
-						// Present in the bound secret provider (live) -> GREEN
-						widget = new VariableValueWidget('', false, 'invault');
 					} else if (marker.type === 'missing') {
 						// Missing required variable -> RED
 						widget = new VariableValueWidget('', false, 'missing');

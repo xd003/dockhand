@@ -67,6 +67,7 @@ Untracked stacks (running in Docker, unknown to Dockhand) can be taken over with
   - Existing stacks migrate when an updated agent reconnects: the agent's files win, and the old copy is archived under `DATA_DIR/hawser-migration-archives`, not deleted.
   - Needs an agent that supports stack files. Offline or older agents can't deploy or edit files until connected or updated.
   - If the Docker host path differs from the agent's, mount the project directory into the Hawser container to manage it in place.
+  - Git stacks keep executable bits: files tracked as `100755` arrive on the agent as `0755`, and other tracked files as `0644`, even when the file already exists. `.env` files stay `0600`. Older agents ignore the mode and still deploy, but scripts arrive as `0644`.
 - **Live deploy output.** Pull and build output from Hawser Standard appears in the deploy window as it happens. Older agents keep the previous behaviour.
 - **Safe removal.** Removing a Hawser stack "with files" deletes only the Compose/env files and unchanged Git files Dockhand put there. Bind-mount data, other files and adopted project directories are left alone.
 

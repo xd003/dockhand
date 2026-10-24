@@ -92,6 +92,7 @@ import { buildDockhandOverrideFile } from './dockhand-override-file';
 import { isProtectedPath } from './fs-guard';
 import { parseCompose } from './compose-validate/parse';
 import { hawserStackFiles, hawserComposeProjectLabels, type HawserStackFileClient } from './hawser-stack-files';
+import { buildGitPublishChanges } from './hawser-git-publish';
 import { ensureHawserStackFilesReady } from './hawser-stack-file-migration';
 
 /** Convert an absolute agent path into a bound project-relative path. */
@@ -3607,22 +3608,14 @@ async function deployBoundHawserStack(options: DeployStackOptions): Promise<Stac
 			hawserRelativeFilePath(root, join(root, envFileName));
 			if (!selected.has(envFileName)) throw new Error(`Selected Git environment file ${envFileName} is unavailable in the publish set`);
 		}
-		const checkoutRoot = realpathSync(sourceDir);
-		const changes: Array<{ path: string; contentBase64: string; revision?: string }> = [];
-		let totalBytes = 0;
-		for (const path of selected) {
-			const target = join(checkoutRoot, path);
-			hawserRelativeFilePath(root, join(root, path));
-			if (!isPathUnderRoot(realpathSync(target), checkoutRoot) || !lstatSync(target).isFile()) throw new Error(`Git publish path is not a regular checkout file: ${path}`);
-			const size = statSync(target).size;
-			if (size > MAX_FILE_SIZE || (totalBytes += size) > MAX_TOTAL_SIZE) throw new Error(`Git publish file exceeds transport limits: ${path}`);
-			let revision: string | undefined;
-			try { revision = (await files.stat(path)).revision; }
+		for (const path of selected) hawserRelativeFilePath(root, join(root, path));
+		const changes = await buildGitPublishChanges(sourceDir, selected, { maxFileSize: MAX_FILE_SIZE, maxTotalSize: MAX_TOTAL_SIZE }, async (path) => {
+			try { return (await files.stat(path)).revision; }
 			catch (error) {
 				if (!(error && typeof error === 'object' && 'status' in error && error.status === 404)) throw error;
+				return undefined;
 			}
-			changes.push({ path, contentBase64: readFileSync(target).toString('base64'), revision });
-		}
+		});
 		const deleted: string[] = [];
 		const skipped: DeletionApplyResult['skipped'] = [];
 		let batch: typeof changes = [];

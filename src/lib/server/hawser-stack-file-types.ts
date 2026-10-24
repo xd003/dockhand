@@ -2,7 +2,9 @@
 export type HawserFileEntry = { path: string; type: 'file' | 'directory'; size?: number; revision?: string };
 export type HawserBinding = { root: string; composeFileNames: string[]; /** True for Hawser's own STACKS_DIR/<project> leaf; false for an in-place adopted root. */ managed?: boolean };
 export type HawserFile = { content: Uint8Array; revision: string; size: number };
-export type HawserFileChange = { path: string; contentBase64: string; revision?: string };
+/** Git index mode for a published regular file; omitted for edits and untracked files (agent keeps the existing mode). */
+export type HawserFileMode = 0o755 | 0o644;
+export type HawserFileChange = { path: string; contentBase64: string; revision?: string; mode?: HawserFileMode };
 export type HawserFileDeletion = { path: string; sha256: string };
 export interface HawserStackFileClient {
 	bind(composeFileNames?: string[], existingOnly?: boolean): Promise<HawserBinding>;

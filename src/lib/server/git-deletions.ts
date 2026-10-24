@@ -22,6 +22,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, unlinkSync, rmdirSync, lstatSync } from 'node:fs';
 import { join, resolve, sep, dirname, basename, isAbsolute } from 'node:path';
+import type { HawserFileMode } from './hawser-stack-file-types';
 
 // =============================================================================
 // Types
@@ -210,6 +211,28 @@ export function trackedGitFiles(dir: string): Set<string> {
 		maxBuffer: 16 * 1024 * 1024
 	}).toString('utf8');
 	return new Set(paths.split('\0').filter(Boolean));
+}
+
+/**
+ * Index modes of tracked regular files, relative to the checkout subdirectory. Read from
+ * Git (not the clone's filesystem) so the publish follows the repository; symlinks
+ * (120000) and submodules (160000) are left out like everywhere else in publication.
+ */
+export function gitIndexFileModes(dir: string): Map<string, HawserFileMode> {
+	const entries = execFileSync('git', ['ls-files', '--stage', '-z', '--', '.'], {
+		cwd: dir,
+		maxBuffer: 16 * 1024 * 1024
+	}).toString('utf8');
+	const modes = new Map<string, HawserFileMode>();
+	for (const entry of entries.split('\0')) {
+		// "<mode> <object> <stage>\t<path>"
+		const tab = entry.indexOf('\t');
+		if (tab < 0) continue;
+		const mode = entry.slice(0, entry.indexOf(' '));
+		if (mode === '100755') modes.set(entry.slice(tab + 1), 0o755);
+		else if (mode === '100644') modes.set(entry.slice(tab + 1), 0o644);
+	}
+	return modes;
 }
 
 // =============================================================================

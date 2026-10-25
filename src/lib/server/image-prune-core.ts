@@ -28,22 +28,9 @@ export function buildImagePruneFilters(dangling: boolean): string {
 	return encodeURIComponent(JSON.stringify(filters));
 }
 
-/**
- * `filters=` for listing images by the keep label: `negate` lists those without it.
- */
-export function buildKeepLabelFilter(negate: boolean): string {
-	return encodeURIComponent(JSON.stringify({ [negate ? 'label!' : 'label']: [PRUNE_KEEP_LABEL] }));
-}
-
-/**
- * Docker 29.0 - 29.4.0 with the containerd image store matches no image at all for
- * a `label!` filter (moby#52338, fixed in 29.4.1), so a prune of all unused images
- * removes nothing. Listing images with and without that filter tells: images exist,
- * yet none lacks the keep label. When every image carries it the answer is also
- * true, which is harmless: the image-by-image prune keeps them all the same.
- */
-export function labelNegationBroken(allImages: number, withoutKeepLabel: number): boolean {
-	return allImages > 0 && withoutKeepLabel === 0;
+/** `filters=` for listing the images that carry the keep label. */
+export function buildKeepLabelFilter(): string {
+	return encodeURIComponent(JSON.stringify({ label: [PRUNE_KEEP_LABEL] }));
 }
 
 export interface PruneImageSummary {
@@ -90,31 +77,26 @@ export interface ImagePrunePorts {
 }
 
 /**
- * Prune all unused images except those with the keep label. Where the engine's
- * `label!` filter is broken (see labelNegationBroken) Docker's prune would remove
- * nothing, so the images go one by one instead; Docker still refuses any a container
- * uses. That path cannot say how much space it freed, so it reports only the images.
+ * Prune all unused images except those with the keep label. Docker 29.0 - 29.4.0 with
+ * the containerd image store matches no image for the prune's `label!` filter
+ * (moby#52338, fixed in 29.4.1), so its prune removes nothing. The image list cannot
+ * probe that: engines before 29.4.1 reject `label!` there ("invalid filter"). So the
+ * prune runs first; when it removed nothing yet unused, unlabelled images exist, they
+ * go one by one instead and Docker still refuses any a container uses. That path
+ * cannot say how much space it freed, so it reports only the images.
  */
 export async function pruneAllUnused(docker: ImagePrunePorts): Promise<ImagePruneResult> {
-	const all = await docker.listImages();
-	let withoutKept: PruneImageSummary[];
-	try {
-		withoutKept = await docker.listImages(buildKeepLabelFilter(true));
-	} catch (err) {
-		// Older engines (Docker 20.10) refuse `label!` on the image list but honour it in prune.
-		docker.log(`label! image listing failed (${failure(err)}); using the ordinary prune`);
-		return docker.prune();
-	}
-	if (!labelNegationBroken(all.length, withoutKept.length)) {
-		docker.log(`label! filter works (${all.length} images, ${withoutKept.length} without the keep label); using the engine prune`);
-		return docker.prune();
-	}
+	const pruned = await docker.prune();
+	if (pruned.ImagesDeleted?.length) return pruned;
 
-	const kept = await docker.listImages(buildKeepLabelFilter(false));
+	const all = await docker.listImages();
+	const kept = await docker.listImages(buildKeepLabelFilter());
 	const containers = await docker.listContainers();
 	const usedIds = new Set(containers.map((c) => c.ImageID));
 	const targets = imageRefsToRemove(all, new Set(kept.map((i) => i.Id)), usedIds);
-	docker.log(`label! filter matches no image (${all.length} listed, ${kept.length} with the keep label, ${usedIds.size} in use by containers); removing ${targets.length} unused images one by one`);
+	if (!targets.length) return pruned;
+
+	docker.log(`prune removed nothing though unused images exist (${all.length} listed, ${kept.length} with the keep label, ${usedIds.size} in use by containers); removing ${targets.length} unused images one by one`);
 	const deleted: ImageDeleteEntry[] = [];
 	let refused = 0;
 	for (const refs of targets) {

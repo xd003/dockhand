@@ -1,6 +1,6 @@
 // @ts-expect-error -- bun:test is a runtime built-in with no types installed
 import { describe, test, expect } from 'bun:test';
-import { buildImagePruneFilters, buildKeepLabelFilter, labelNegationBroken, imageRefsToRemove, pruneAllUnused, PRUNE_KEEP_LABEL, type PruneImageSummary, holderFailureWarning } from '../src/lib/server/image-prune-core';
+import { buildImagePruneFilters, buildKeepLabelFilter, imageRefsToRemove, pruneAllUnused, PRUNE_KEEP_LABEL, type PruneImageSummary, holderFailureWarning } from '../src/lib/server/image-prune-core';
 
 function decode(filters: string): Record<string, string[]> {
 	return JSON.parse(decodeURIComponent(filters));
@@ -33,22 +33,9 @@ describe('buildImagePruneFilters', () => {
 });
 
 describe('buildKeepLabelFilter', () => {
-	test('lists images with the keep label, or with negate those without it', () => {
-		expect(decode(buildKeepLabelFilter(false))).toEqual({ label: [PRUNE_KEEP_LABEL] });
-		expect(decode(buildKeepLabelFilter(true))).toEqual({ 'label!': [PRUNE_KEEP_LABEL] });
-	});
-});
-
-describe('labelNegationBroken', () => {
-	// Docker 29.2.1 + containerd store, measured: 5 images, `label!` lists 0 of them.
-	test('images exist but none is listed without the keep label', () => {
-		expect(labelNegationBroken(5, 0)).toBe(true);
-	});
-
-	test('a working filter, or no images at all, is not broken', () => {
-		expect(labelNegationBroken(5, 4)).toBe(false);
-		expect(labelNegationBroken(5, 5)).toBe(false);
-		expect(labelNegationBroken(0, 0)).toBe(false);
+	// The image list rejects `label!` before Docker 29.4.1 ("invalid filter 'label!'").
+	test('lists images with the keep label through the plain label key', () => {
+		expect(decode(buildKeepLabelFilter())).toEqual({ label: [PRUNE_KEEP_LABEL] });
 	});
 });
 
@@ -74,9 +61,9 @@ describe('imageRefsToRemove', () => {
 });
 
 describe('pruneAllUnused', () => {
-	// The engine as measured on Docker 29.2.1 (containerd): `label!` lists nothing, the
-	// positive `label` filter works, DELETE of a tag answers with what it untagged and
-	// 409s the last tag of an image a container uses.
+	// The engine as measured on Docker 29.2.1 (containerd): the prune's `label!` matches
+	// nothing, the list rejects `label!`, the positive `label` filter works, DELETE of a
+	// tag answers with what it untagged and 409s the last tag of an image a container uses.
 	function engine(images: (PruneImageSummary & { label?: boolean })[], used: string[], broken: boolean) {
 		const calls: string[] = [];
 		const removed: string[] = [];
@@ -85,11 +72,14 @@ describe('pruneAllUnused', () => {
 				calls.push(`list ${filters ? Object.keys(decode(filters))[0] : 'all'}`);
 				if (!filters) return images;
 				const f = decode(filters);
-				if (f['label!']) return broken ? [] : images.filter((i) => !i.label);
+				if (f['label!']) throw Object.assign(new Error("invalid filter 'label!'"), { statusCode: 400 });
 				return images.filter((i) => i.label);
 			},
 			listContainers: async () => used.map((ImageID) => ({ ImageID })),
-			prune: async () => { calls.push('prune'); return { ImagesDeleted: [{ Deleted: 'sha256:x' }], SpaceReclaimed: 42 }; },
+			prune: async () => {
+				calls.push('prune');
+				return broken ? { ImagesDeleted: null, SpaceReclaimed: 0 } : { ImagesDeleted: [{ Deleted: 'sha256:x' }], SpaceReclaimed: 42 };
+			},
 			remove: async (ref: string) => {
 				calls.push(`delete ${ref}`);
 				const img = images.find((i) => i.Id === ref || i.RepoTags?.includes(ref))!;
@@ -112,13 +102,13 @@ describe('pruneAllUnused', () => {
 	test('a working engine gets one ordinary prune, its result untouched', async () => {
 		const { ports, calls } = engine(images, ['sha256:busybox'], false);
 		expect(await pruneAllUnused(ports)).toEqual({ ImagesDeleted: [{ Deleted: 'sha256:x' }], SpaceReclaimed: 42 });
-		expect(calls).toEqual(['list all', 'list label!', 'prune']);
+		expect(calls).toEqual(['prune']);
 	});
 
 	test('a broken engine removes the unused, unlabelled images one by one and reports no space', async () => {
 		const { ports, calls } = engine(images, ['sha256:busybox'], true);
 		const result = await pruneAllUnused(ports);
-		expect(calls.filter((c) => c.startsWith('delete') || c === 'prune')).toEqual(['delete alpine:3.20', 'delete multi:x', 'delete hello-world:latest']);
+		expect(calls.filter((c) => c.startsWith('delete') || c === 'prune')).toEqual(['prune', 'delete alpine:3.20', 'delete multi:x', 'delete hello-world:latest']);
 		expect(result).toEqual({
 			ImagesDeleted: [{ Untagged: 'alpine:3.20' }, { Untagged: 'multi:x' }, { Deleted: 'sha256:alpine' }, { Untagged: 'hello-world:latest' }, { Deleted: 'sha256:hello' }]
 		});
@@ -143,53 +133,18 @@ describe('pruneAllUnused', () => {
 		expect(calls.filter((c) => c.startsWith('delete'))).toEqual(['delete hello-world:latest']);
 	});
 
-	test('an engine that refuses label! on the image list gets the ordinary prune', async () => {
-		// Docker 20.10, measured: GET /images/json?filters={"label!":[...]} answers 400
-		// "Invalid filter 'label!'", while /images/prune accepts the same filter.
-		const { ports, calls } = engine(images, ['sha256:busybox'], false);
-		const listImages = ports.listImages;
-		ports.listImages = async (filters?: string) => {
-			if (filters && decode(filters)['label!']) throw new Error("Invalid filter 'label!'");
-			return listImages(filters);
-		};
-		const logs: string[] = [];
-		ports.log = (m: string) => { logs.push(m); };
-		expect(await pruneAllUnused(ports)).toEqual({ ImagesDeleted: [{ Deleted: 'sha256:x' }], SpaceReclaimed: 42 });
-		expect(calls.filter((c) => c === 'prune')).toEqual(['prune']);
-		expect(logs).toEqual(["label! image listing failed (Invalid filter 'label!'); using the ordinary prune"]);
-	});
-
-	test('the log says which path ran, with the counts behind the choice', async () => {
-		const ok = engine(images, ['sha256:busybox'], false);
-		const okLogs: string[] = [];
-		ok.ports.log = (m: string) => { okLogs.push(m); };
-		await pruneAllUnused(ok.ports);
-		expect(okLogs).toEqual(['label! filter works (4 images, 3 without the keep label); using the engine prune']);
-
+	test('the one-by-one path logs the counts behind it and its outcome', async () => {
 		const broken = engine(images, ['sha256:busybox'], true);
 		const logs: string[] = [];
 		broken.ports.log = (m: string) => { logs.push(m); };
 		await pruneAllUnused(broken.ports);
 		expect(logs).toEqual([
-			'label! filter matches no image (4 listed, 1 with the keep label, 1 in use by containers); removing 2 unused images one by one',
+			'prune removed nothing though unused images exist (4 listed, 1 with the keep label, 1 in use by containers); removing 2 unused images one by one',
 			'one-by-one prune done: 2 of 2 images removed, 0 kept by the engine, space freed not known'
 		]);
 	});
 
-	test('a listing failure carries the HTTP status', async () => {
-		const { ports } = engine(images, [], false);
-		const listImages = ports.listImages;
-		ports.listImages = async (filters?: string) => {
-			if (filters && decode(filters)['label!']) throw Object.assign(new Error("Invalid filter 'label!'"), { statusCode: 400 });
-			return listImages(filters);
-		};
-		const logs: string[] = [];
-		ports.log = (m: string) => { logs.push(m); };
-		await pruneAllUnused(ports);
-		expect(logs).toEqual(["label! image listing failed (HTTP 400: Invalid filter 'label!'); using the ordinary prune"]);
-	});
-
-	test('refusals are logged five at a time, the rest counted', async () => {
+	test('refusals are logged five at a time with their HTTP status, the rest counted', async () => {
 		const many = Array.from({ length: 8 }, (_, i) => ({ Id: `sha256:i${i}`, RepoTags: [`img${i}:1`] }));
 		const { ports } = engine(many, [], true);
 		ports.remove = async () => { throw Object.assign(new Error('conflict: image has dependent child images'), { statusCode: 409 }); };
@@ -202,9 +157,10 @@ describe('pruneAllUnused', () => {
 		expect(logs.at(-1)).toBe('one-by-one prune done: 0 of 8 images removed, 8 kept by the engine, space freed not known');
 	});
 
-	test('nothing to remove is reported as no images, like an empty prune', async () => {
-		const { ports } = engine([images[1]], [], true);
-		expect(await pruneAllUnused(ports)).toEqual({ ImagesDeleted: null });
+	test('nothing to remove keeps the empty prune result untouched', async () => {
+		const { ports, calls } = engine([images[1]], [], true);
+		expect(await pruneAllUnused(ports)).toEqual({ ImagesDeleted: null, SpaceReclaimed: 0 });
+		expect(calls).toEqual(['prune', 'list all', 'list label']);
 	});
 });
 

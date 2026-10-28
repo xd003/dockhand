@@ -1,6 +1,6 @@
 import { getEnvironment } from './db';
 import { dockerFetch, listContainers } from './docker';
-import { getEdgeAgentCapabilities } from './hawser';
+import { getEdgeAgentCapabilities, getEdgeConnectionInfo } from './hawser';
 
 import { isAbsolute, join, relative } from 'node:path';
 
@@ -52,16 +52,20 @@ export async function hawserStackFiles(environmentId: number, projectName: strin
 		throw new Error('Stack files require a Hawser environment');
 	}
 	let capabilities: string[];
+	let maxFileSize: number | undefined;
 	if (environment.connectionType === 'hawser-edge') {
 		capabilities = getEdgeAgentCapabilities(environmentId);
 		if (capabilities.length === 0) throw new Error('Hawser Edge is disconnected; stack files are unavailable');
+		maxFileSize = getEdgeConnectionInfo(environmentId)?.maxStackFileSize;
 	} else {
 		const response = await dockerFetch('/_hawser/info', { method: 'GET' }, environmentId);
 		if (!response.ok) throw new Error(`Hawser agent info unavailable (${response.status}); stack files are unavailable`);
-		const info = await response.json() as { capabilities?: string[] };
+		const info = await response.json() as { capabilities?: string[]; maxStackFileSize?: number };
 		capabilities = info.capabilities ?? [];
+		maxFileSize = info.maxStackFileSize;
 	}
 	if (!capabilities.includes('stack-files-v1')) throw new Error('Hawser agent must be upgraded to support stack-files-v1');
+	if (!(typeof maxFileSize === 'number' && Number.isSafeInteger(maxFileSize) && maxFileSize > 0)) maxFileSize = undefined;
 
 	async function request(input: Omit<Request, 'projectName'>): Promise<Reply> {
 		const response = await dockerFetch('/_hawser/stack-files', {
@@ -73,6 +77,7 @@ export async function hawserStackFiles(environmentId: number, projectName: strin
 		return result;
 	}
 	return {
+		maxFileSize,
 		async bind(composeFileNames?: string[], existingOnly?: boolean): Promise<HawserBinding> {
 			const reply = await request({ action: 'bind', composeFileNames, existingOnly });
 			return { root: reply.root!, composeFileNames: reply.composeFileNames ?? [] };

@@ -92,7 +92,7 @@ import { buildDockhandOverrideFile } from './dockhand-override-file';
 import { isProtectedPath } from './fs-guard';
 import { parseCompose } from './compose-validate/parse';
 import { hawserStackFiles, hawserComposeProjectLabels, type HawserStackFileClient } from './hawser-stack-files';
-import { buildGitPublishChanges } from './hawser-git-publish';
+import { buildGitPublishChanges, gitPublishFileLimit } from './hawser-git-publish';
 import { ensureHawserStackFilesReady } from './hawser-stack-file-migration';
 
 /** Convert an absolute agent path into a bound project-relative path. */
@@ -3609,7 +3609,8 @@ async function deployBoundHawserStack(options: DeployStackOptions): Promise<Stac
 			if (!selected.has(envFileName)) throw new Error(`Selected Git environment file ${envFileName} is unavailable in the publish set`);
 		}
 		for (const path of selected) hawserRelativeFilePath(root, join(root, path));
-		const changes = await buildGitPublishChanges(sourceDir, selected, { maxFileSize: MAX_FILE_SIZE, maxTotalSize: MAX_TOTAL_SIZE }, async (path) => {
+		const limits = { ...gitPublishFileLimit(MAX_FILE_SIZE, files.maxFileSize), maxTotalSize: MAX_TOTAL_SIZE };
+		const changes = await buildGitPublishChanges(sourceDir, selected, limits, async (path) => {
 			try { return (await files.stat(path)).revision; }
 			catch (error) {
 				if (!(error && typeof error === 'object' && 'status' in error && error.status === 404)) throw error;

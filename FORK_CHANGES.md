@@ -125,6 +125,7 @@ Untracked stacks (running in Docker, unknown to Dockhand) can be taken over with
 | `DOCKHAND_GIT_CENTRALIZED_MODE` | Locks the default engine for new Git stacks: `true` = shared repositories, any other non-empty value = one clone per stack. Existing stacks are not migrated. Unset: chosen in **Settings → General** |
 | `DOCKHAND_GIT_STACK_DEPLOY_TIMEOUT_MS` | Per-stack time limit when a shared repository deploys all of its stacks (default `1800000`, 30 min). A stack exceeding it is marked failed and the rest continue |
 | `DOCKHAND_GIT_TRANSITION_DRAIN_TIMEOUT_MS` | How long migrating a stack to the other engine waits for its running syncs and deploys to finish before aborting (default `120000`, 2 min) |
+| `GIT_PUBLISH_MAX_FILE_SIZE_MB` | Largest single file a Git deploy writes to a Hawser agent (default `10`). An agent that reports a smaller `MAX_STACK_FILE_SIZE_MB` lowers it; the deploy is then refused before any file is written, naming the setting to raise |
 
 **Environments**
 

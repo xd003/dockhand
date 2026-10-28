@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildGitPublishChanges } from '../src/lib/server/hawser-git-publish';
+import { buildGitPublishChanges, gitPublishFileLimit } from '../src/lib/server/hawser-git-publish';
 
 test('Hawser Git publish payload carries each file’s Git index mode, not the clone’s filesystem mode', async () => {
 	const repo = mkdtempSync(join(tmpdir(), 'dockhand-git-modes-'));
@@ -35,6 +35,25 @@ test('Hawser Git publish payload carries each file’s Git index mode, not the c
 		]);
 		expect(JSON.parse(JSON.stringify(changes))[1].mode).toBe(493);
 		expect('mode' in JSON.parse(JSON.stringify(changes))[3]).toBe(false);
+	} finally {
+		rmSync(repo, { recursive: true, force: true });
+	}
+});
+
+test('a Git publish to Hawser uses the smaller of Dockhand\'s and the agent\'s per-file limit, and names it', async () => {
+	const MiB = 1024 * 1024;
+	expect(gitPublishFileLimit(10 * MiB, undefined)).toEqual({ maxFileSize: 10 * MiB, fileSizeSetting: 'GIT_PUBLISH_MAX_FILE_SIZE_MB on Dockhand' });
+	expect(gitPublishFileLimit(10 * MiB, 50 * MiB).maxFileSize).toBe(10 * MiB);
+	expect(gitPublishFileLimit(10 * MiB, 10 * MiB).fileSizeSetting).toBe('GIT_PUBLISH_MAX_FILE_SIZE_MB on Dockhand');
+	expect(gitPublishFileLimit(50 * MiB, 10 * MiB)).toEqual({ maxFileSize: 10 * MiB, fileSizeSetting: 'MAX_STACK_FILE_SIZE_MB on the Hawser agent' });
+
+	const repo = mkdtempSync(join(tmpdir(), 'dockhand-git-limit-'));
+	try {
+		execFileSync('git', ['init', '-q'], { cwd: repo });
+		writeFileSync(join(repo, 'big.bin'), Buffer.alloc(3 * MiB / 2));
+		const limits = { ...gitPublishFileLimit(50 * MiB, MiB), maxTotalSize: 256 * MiB };
+		await expect(buildGitPublishChanges(repo, ['big.bin'], limits, async () => undefined))
+			.rejects.toThrow('Git publish file big.bin is 1.5 MiB, over the 1 MiB per-file limit (MAX_STACK_FILE_SIZE_MB on the Hawser agent)');
 	} finally {
 		rmSync(repo, { recursive: true, force: true });
 	}

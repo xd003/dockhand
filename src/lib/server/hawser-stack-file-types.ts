@@ -7,6 +7,8 @@ export type HawserFileMode = 0o755 | 0o644;
 export type HawserFileChange = { path: string; contentBase64: string; revision?: string; mode?: HawserFileMode };
 export type HawserFileDeletion = { path: string; sha256: string };
 export interface HawserStackFileClient {
+	/** Agent's per-file limit in bytes (MAX_STACK_FILE_SIZE_MB); undefined for agents that do not report it. */
+	readonly maxFileSize?: number;
 	bind(composeFileNames?: string[], existingOnly?: boolean): Promise<HawserBinding>;
 	enroll(root: string, composeFileNames: string[]): Promise<HawserBinding>;
 	binding(): Promise<HawserBinding>;

@@ -49,6 +49,8 @@ export interface EdgeConnection {
 	dockerVersion: string;
 	hostname: string;
 	stacksDir?: string;
+	/** Agent's per-file stack-files limit in bytes (MAX_STACK_FILE_SIZE_MB); absent on older agents. */
+	maxStackFileSize?: number;
 	capabilities: string[];
 	connectedAt: Date;
 	lastHeartbeat: number;
@@ -536,6 +538,7 @@ export function handleEdgeConnection(
 		dockerVersion: hello.dockerVersion,
 		hostname: hello.hostname,
 		stacksDir: hello.stacksDir,
+		maxStackFileSize: hello.maxStackFileSize,
 		capabilities: hello.capabilities,
 		connectedAt: new Date(),
 		lastHeartbeat: Date.now(),
@@ -994,6 +997,7 @@ export interface HelloMessage {
 	dockerVersion: string;
 	hostname: string;
 	stacksDir?: string;
+	maxStackFileSize?: number;
 	capabilities: string[];
 }
 

@@ -151,6 +151,11 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 		}
 		const git = source?.sourceType === 'git' ? await gitDetails(root, source, path) : null;
 		const readRemote = !!remote && !git?.tracked;
+		if (readRemote) {
+			// Hawser refuses to read a file above its own limit; answer like the local path does.
+			const entry = await remote!.stat(path);
+			if ((entry.size ?? 0) > Math.min(MAX_STACK_WORKSPACE_TEXT_SIZE, remote!.maxFileSize ?? Infinity)) return json({ binary: true, size: entry.size });
+		}
 		const file = readRemote ? await remote!.read(path) : null;
 		// Tracked files are shown from the checkout; host-only files from the deployed directory.
 		const content = file ? Buffer.from(file.content) : await readFile(await resolveWorkspacePath(git?.tracked ? root : files, path));

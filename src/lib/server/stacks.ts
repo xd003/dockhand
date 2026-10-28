@@ -92,7 +92,7 @@ import { pendingRowsToClear } from './pending-updates-core';
 import { buildDockhandOverrideFile } from './dockhand-override-file';
 import { parseCompose } from './compose-validate/parse';
 import { hawserStackFiles, hawserComposeProjectLabels, type HawserStackFileClient } from './hawser-stack-files';
-import { buildGitPublishChanges } from './hawser-git-publish';
+import { buildGitPublishChanges, gitPublishFileLimit } from './hawser-git-publish';
 import { ensureHawserStackFilesReady } from './hawser-stack-file-migration';
 
 /** Convert an absolute agent path into a bound project-relative path. */
@@ -348,10 +348,11 @@ export async function withStackLock<T>(stackName: string, fn: () => Promise<T>):
 const COMPOSE_TIMEOUT_MS = parseInt(process.env.COMPOSE_TIMEOUT || '900') * 1000; // Default 15 min
 const COMPOSE_KILL_GRACE_MS = 5000; // 5 seconds grace period before SIGKILL
 
-// Max Git publish transport size: per file (GIT_PUBLISH_MAX_FILE_SIZE_MB env var, default 10 MB), 256 MB total payload
+// Max Git publish transport size: 256 MB total payload. Per file only when the
+// GIT_PUBLISH_MAX_FILE_SIZE_MB env var is set; otherwise the agent's MAX_STACK_FILE_SIZE_MB applies.
 const MAX_FILE_SIZE = (() => {
 	const mb = Number(process.env.GIT_PUBLISH_MAX_FILE_SIZE_MB);
-	return (Number.isFinite(mb) && mb > 0 ? mb : 10) * 1024 * 1024;
+	return Number.isFinite(mb) && mb > 0 ? mb * 1024 * 1024 : undefined;
 })();
 const MAX_TOTAL_SIZE = 256 * 1024 * 1024;
 
@@ -3634,7 +3635,8 @@ async function deployBoundHawserStack(options: DeployStackOptions): Promise<Stac
 			if (!selected.has(envFileName)) throw new Error(`Selected Git environment file ${envFileName} is unavailable in the publish set`);
 		}
 		for (const path of selected) hawserRelativeFilePath(root, join(root, path));
-		const changes = await buildGitPublishChanges(sourceDir, selected, { maxFileSize: MAX_FILE_SIZE, maxTotalSize: MAX_TOTAL_SIZE }, async (path) => {
+		const limits = { ...gitPublishFileLimit(MAX_FILE_SIZE, files.maxFileSize), maxTotalSize: MAX_TOTAL_SIZE };
+		const changes = await buildGitPublishChanges(sourceDir, selected, limits, async (path) => {
 			try { return (await files.stat(path)).revision; }
 			catch (error) {
 				if (!(error && typeof error === 'object' && 'status' in error && error.status === 404)) throw error;

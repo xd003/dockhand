@@ -3265,6 +3265,15 @@
 					</div>
 					<div class="flex min-h-0 flex-1 max-md:flex-col">
 						<div class="flex min-h-0 min-w-0 flex-shrink-0 flex-col max-md:w-full! {mobilePane === 'compose' ? 'max-md:flex-1' : 'max-md:hidden'}" style="width: {splitRatio}%">
+							{#if loadError}
+								<div class="flex min-h-0 flex-1 flex-col px-3 py-3 sm:px-8 sm:py-6">
+									<div class="flex flex-1 flex-col items-center justify-center rounded-lg border border-dashed px-8 text-center">
+										<TriangleAlert class="mb-4 h-12 w-12 text-red-400" />
+										<h3 class="mb-2 text-sm font-medium text-red-700 dark:text-red-300">Failed to load compose file</h3>
+										<p class="max-w-sm break-all text-xs text-red-600 dark:text-red-400">{loadError}</p>
+									</div>
+								</div>
+							{:else}
 							<StackFileEditor
 								composePaths={workingComposePaths}
 								composeContents={{ ...composeContents, ...(activeComposePath ? { [activeComposePath]: composeContent } : {}) }}
@@ -3304,6 +3313,7 @@
 									{/if}
 								{/snippet}
 							</StackFileEditor>
+							{/if}
 						</div>
 						<div class="w-1 flex-shrink-0 cursor-col-resize bg-zinc-200 transition-colors hover:bg-blue-400 dark:bg-zinc-700 dark:hover:bg-blue-500 max-md:hidden" role="separator" aria-orientation="vertical" onmousedown={startSplitDrag} tabindex="0"></div>
 							<div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden {mobilePane === 'vars' ? 'max-md:flex-1' : 'max-md:hidden'}">

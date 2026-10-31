@@ -100,6 +100,7 @@ Untracked stacks (running in Docker, unknown to Dockhand) can be taken over with
 - **Deploy history survives log errors.** If the deploy-log directory isn't writable, the deploy is still recorded with its result (log marked truncated). Fresh containers also get correct ownership on that directory.
 - **Database migrations apply exactly once.** Databases upgraded in a certain order missed some of the fork's migrations (e.g. "no such column: collect_container_metrics"), and re-dated migrations could run twice ("duplicate column"). Applied migrations are now tracked by content, so each one runs exactly once, whatever order it arrives in.
 - **Sidebar fits its labels.** The desktop sidebar is as wide as its longest menu label (at least 9rem) instead of a fixed 12rem, so English isn't padded out and longer translations (French, Polish) still aren't truncated.
+- **Stack Config shows load errors.** With Stack Workspace enabled, a stack whose Compose file can't be read (e.g. its deploy directory was deleted) shows "Failed to load compose file" with the reason, instead of an empty editor.
 
 ## Environment variables
 

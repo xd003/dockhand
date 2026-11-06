@@ -149,6 +149,9 @@
 			console.error('Failed to deploy git stack:', error);
 			overallStatus = 'error';
 			errorMessage = error.message || m.stacks_git_deploy_failed_fallback();
+			// The log may already hold progress lines, which hides the error box below;
+			// append the reason so the failure isn't a bare "Failed".
+			if (logLines.length > 0) logLines = [...logLines, errorMessage];
 			deployFinished = true;
 		}
 	}

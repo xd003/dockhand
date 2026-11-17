@@ -93,8 +93,14 @@ export async function resolvedHostReason(
 	lookupAll: (host: string) => Promise<string[]> = async (h) => (await lookup(h, { all: true })).map((a) => a.address),
 	{ allowLoopback = false }: { allowLoopback?: boolean } = {}
 ): Promise<string | null> {
-	const name = host.trim().replace(/^\[|\]$/g, '');
+	// A trailing root dot names the same host, but the system resolver may miss it (glibc does
+	// not match `localhost.` against /etc/hosts) while the HTTP client still connects. Strip it,
+	// and judge localhost names (RFC 6761) without asking the resolver at all.
+	const name = host.trim().replace(/^\[|\]$/g, '').replace(/\.+$/, '').toLowerCase();
 	if (!name || isIP(name.replace(/%.*$/, ''))) return null;
+	if (name === 'localhost' || name.endsWith('.localhost')) {
+		return allowLoopback ? null : `${name} resolves to a blocked address (loopback)`;
+	}
 	let addresses: string[];
 	try {
 		addresses = await lookupAll(name);

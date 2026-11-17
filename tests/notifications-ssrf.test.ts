@@ -213,8 +213,17 @@ describe('resolvedHostReason - where a notification host name points', () => {
 		expect(await resolvedHostReason('missing.example', lookupAll)).toBeNull();
 	});
 
+	test('localhost names are refused without the resolver, trailing dot or not', async () => {
+		// glibc misses `localhost.` in /etc/hosts and fails without DNS, yet Bun's fetch still connects.
+		const never = async () => { throw new Error('getaddrinfo EAI_AGAIN'); };
+		for (const h of ['localhost', 'localhost.', 'LocalHost..', 'api.localhost.']) {
+			expect(await resolvedHostReason(h, never)).toContain('resolves to a blocked address');
+			expect(await resolvedHostReason(h, never, { allowLoopback: true })).toBeNull();
+		}
+	});
+
 	test('fetch and MQTT refuse a name that resolves to loopback before connecting; SMTP allows it', async () => {
-		// localhost resolves offline, so this exercises the real resolver and the wiring.
+		// Exercises the real wiring; localhost names are judged without depending on the host's DNS.
 		await expect(notificationFetch('http://localhost.:8080/hook')).rejects.toThrow(/resolves to a blocked address/);
 		const payload = { title: 't', message: 'm' } as any;
 		expect((await sendMqtt('mqtt://localhost.:1883/t', payload)).error).toMatch(/resolves to a blocked address/);
